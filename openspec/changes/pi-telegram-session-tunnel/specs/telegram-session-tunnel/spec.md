@@ -86,6 +86,32 @@ The system SHALL let the authorized Telegram user request full output for the la
 - **WHEN** an authorized Telegram user sends `/full` before any completed output is available
 - **THEN** the system replies that no full output is available for the bound session
 
+### Requirement: Actionable long-output delivery
+The system SHALL preserve access to important trailing content when assistant output is too long to fit comfortably in a single Telegram notification.
+
+#### Scenario: Decision block appears near the end of a long response
+- **WHEN** a completed assistant response contains an actionable tail section such as numbered choices or a final “Choose” prompt near the end
+- **THEN** the system sends Telegram a notification strategy that still exposes that decision block, such as chunking into multiple messages, sending an explicit continuation, or attaching a clear full-output affordance
+
+#### Scenario: Preview omits critical trailing content
+- **WHEN** a concise completion preview would hide the most important concluding instructions or options
+- **THEN** the system avoids head-only truncation and preserves access to the omitted portion in the same notification flow
+
+### Requirement: Interactive answer workflow
+The system SHALL make it easy for the authorized Telegram user to answer the latest structured assistant question or choice set from mobile using a guided workflow rather than manual copy/paste.
+
+#### Scenario: Latest assistant output contains structured options
+- **WHEN** the latest assistant response contains numbered or clearly separated answer options
+- **THEN** the system exposes a Telegram-side guided answer flow such as inline buttons, question-by-question prompts, or both
+
+#### Scenario: User answers through the Telegram workflow
+- **WHEN** the authorized Telegram user advances through the guided Telegram answer flow and submits one or more answers
+- **THEN** the system injects the selected answers into the bound Pi session using the same authorization and delivery rules as other remote prompts
+
+#### Scenario: No structured question metadata is available
+- **WHEN** the user tries to enter the guided answer flow but no recent structured question or option set is available
+- **THEN** the system explains that there is nothing to answer yet and suggests `/full` or a normal text reply instead
+
 ### Requirement: Session lifecycle handling
 The system SHALL keep tunnel routing consistent with Pi session lifecycle events.
 

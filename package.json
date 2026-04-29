@@ -1,0 +1,47 @@
+{
+  "name": "pi-telegram-session-tunnel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi package that pairs a Telegram chat to the active Pi session for notifications and remote control.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "telegram",
+    "bot",
+    "remote-control"
+  ],
+  "scripts": {
+    "build": "echo 'No build step required for JITI-loaded TypeScript'",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/telegram-tunnel/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "grammy": "^1.38.3",
+    "proper-lockfile": "^4.1.2",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  }
+}

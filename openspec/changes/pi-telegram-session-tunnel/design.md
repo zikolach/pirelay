@@ -67,7 +67,7 @@ Reserve Telegram slash commands for tunnel controls and treat non-command text a
 - idle session: normal `sendUserMessage()` prompt;
 - busy session: `followUp` by default, with `/steer <text>` available for steering and `/followup <text>` for explicit follow-up.
 
-Core commands: `/help`, `/status`, `/summary`, `/full`, `/steer`, `/followup`, `/abort`, `/compact`, `/pause`, `/resume`, and `/disconnect`. Inline keyboards can provide common actions such as “Full output”, “Abort”, and “Disconnect”.
+Core commands: `/help`, `/status`, `/summary`, `/full`, `/steer`, `/followup`, `/abort`, `/compact`, `/pause`, `/resume`, and `/disconnect`. Inline keyboards can provide common actions such as “Full output”, “Abort”, “Disconnect”, and entry into a structured answer flow when the latest assistant output contains numbered options or explicit questions.
 
 Alternatives considered:
 - Forward all Telegram messages verbatim to the model: unsafe for control commands and poor for abort/status.
@@ -77,9 +77,15 @@ Alternatives considered:
 
 At `agent_end`, extract the final assistant text from the completed turn. Send a Telegram completion message containing status, elapsed time, compact final text or generated summary, and buttons/commands for full output. If an LLM summary mode is enabled, use a cheap/selected model through Pi's model registry; otherwise use deterministic truncation/extraction. Store the last full assistant response and last-turn metadata in extension memory/session metadata so `/full` can send paginated chunks respecting Telegram message limits.
 
+When the assistant output contains an actionable tail section such as “Choose:” with numbered options near the end, the delivery logic should not hide that part behind a short head-only excerpt. Instead, the tunnel should either send the relevant continuation chunk automatically, include an explicit “continued” follow-up message, or attach a clear affordance (`/full`, inline button, or both) that preserves access to the final decision block.
+
+The runtime should also parse lightweight structured question/choice metadata from the latest assistant response when it detects numbered options, bullet options, explicit questions, or similar answer prompts. That metadata can drive a Telegram-side guided answer flow that mirrors a Pi skill/workflow for interactive answering: the user enters an answer mode, sees one question or option set at a time, and submits answers via buttons or guided free-text replies without manually copying long blocks back into Telegram.
+
 Alternatives considered:
 - Always send the full response: noisy and can exceed Telegram limits.
 - Always call an LLM summarizer: higher cost and can fail if no secondary model/key is configured.
+- Require the user to retype option text manually: works everywhere, but is awkward on mobile and error-prone when the visible preview cropped the decisive part.
+- Add a dedicated Telegram slash command for answers: possible, but less natural than a guided workflow derived from the same structured-answer semantics used in Pi.
 
 ### Security and privacy posture
 
@@ -95,7 +101,7 @@ Alternatives considered:
 - Remote control can execute powerful agent actions → require pairing confirmation, user allow-list, revocation, audit messages, and conservative default follow-up behavior while busy.
 - Telegram messages can leak sensitive task output → warn during setup, allow summary-only mode, redact known secret patterns before sending, and require explicit `/full` for long output.
 - Pi process offline means Telegram cannot reach the session → bot replies with offline state if broker is alive, or no response in in-process MVP; reconnect on `session_start`.
-- Large outputs exceed Telegram limits → chunk/paginate with safe formatting and rate limiting.
+- Large outputs exceed Telegram limits → chunk/paginate with safe formatting and rate limiting, and preserve important tail content such as decision prompts rather than only keeping the beginning of the response.
 - LLM-generated summaries can be inaccurate → deterministic final-message summary is the default; generated summaries are optional and labeled.
 
 ## Migration Plan
