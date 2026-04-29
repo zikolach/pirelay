@@ -62,7 +62,7 @@
 
 ## 9. Telegram Decision UX Follow-up
 
-- [ ] 9.1 Detect and persist structured choice metadata from the latest assistant output, including numbered options and explicit answer prompts.
-- [ ] 9.2 Improve completion notification delivery so important trailing content is not hidden by head-only truncation; use chunking, continuation messages, or explicit full-output affordances as needed.
-- [ ] 9.3 Add a Telegram guided answer workflow for the latest question/choice set, reusing Pi-side structured-answer semantics with inline buttons and/or question-by-question prompts.
-- [ ] 9.4 Add tests and documentation for long-output cropping, decision-block preservation, and Telegram answer flows.
+- [x] 9.1 Detect and persist structured choice metadata from the latest assistant output, including numbered options and explicit answer prompts.
+- [x] 9.2 Improve completion notification delivery so important trailing content is not hidden by head-only truncation; use chunking, continuation messages, or explicit full-output affordances as needed.
+- [x] 9.3 Add a Telegram guided answer workflow for the latest question/choice set, reusing Pi-side structured-answer semantics with inline buttons and/or question-by-question prompts.
+- [x] 9.4 Add tests and documentation for long-output cropping, decision-block preservation, and Telegram answer flows.

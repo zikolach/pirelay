@@ -6,6 +6,7 @@ import { renderQrLines } from "./qr.js";
 import { getOrCreateTunnelRuntime, sendSessionNotification } from "./runtime.js";
 import { TunnelStateStore } from "./state-store.js";
 import type { BindingEntryData, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
+import { extractStructuredAnswerMetadata } from "./answer-workflow.js";
 import { extractFinalAssistantText, extractTextContent, getTelegramUserLabel, sessionKeyOf, sessionLabelOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
 
 const BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -381,6 +382,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.notification.lastFailure = undefined;
     currentRoute.notification.lastStatus = "running";
     currentRoute.notification.abortRequested = false;
+    currentRoute.notification.structuredAnswer = undefined;
     currentRoute.lastActivityAt = Date.now();
     await publishRouteState();
   });
@@ -425,6 +427,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const finalText = extractFinalAssistantText(event.messages as AgentMessage[]);
     if (finalText) {
       currentRoute.notification.lastAssistantText = finalText;
+      currentRoute.notification.structuredAnswer = extractStructuredAnswerMetadata(finalText);
+    } else {
+      currentRoute.notification.structuredAnswer = undefined;
     }
 
     const status = currentRoute.notification.abortRequested

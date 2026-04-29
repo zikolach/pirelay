@@ -83,6 +83,17 @@ Plain text messages are delivered as:
 
 When multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list them and `/use <session>` to switch the active target.
 
+## Guided answers for long outputs
+
+When a Pi response ends with structured choices or questions, the tunnel preserves that trailing decision block in Telegram instead of only showing a head-only preview.
+
+- if the assistant returned numbered options, Telegram sends the option block as a follow-up message
+- you can reply with the option number directly for a quick answer
+- or send `answer` to enter a guided question/answer flow
+- send `cancel` to leave the guided flow
+
+This is especially useful when the most important part of the output appears near the end.
+
 ## Security notes
 
 - only private Telegram chats are supported

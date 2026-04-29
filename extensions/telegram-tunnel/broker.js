@@ -1,6 +1,15 @@
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import { Api, GrammyError, HttpError } from 'grammy';
+import {
+  advanceGuidedAnswerFlow,
+  buildChoiceInjection,
+  isGuidedAnswerStart,
+  matchChoiceOption,
+  renderGuidedAnswerPrompt,
+  startGuidedAnswerFlow,
+  summarizeTailForTelegram,
+} from './answer-workflow.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
@@ -13,6 +22,7 @@ const clients = new Map();
 const routes = new Map();
 const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
+const answerFlows = new Map();
 const statePath = `${config.stateDir}/state.json`;
 let updateOffset;
 let shuttingDown = false;
@@ -32,6 +42,7 @@ const HELP_TEXT = [
   '/pause - pause remote delivery',
   '/resume - resume remote delivery',
   '/disconnect - revoke this chat binding',
+  "answer - start a guided answer flow when the latest output contains choices/questions",
 ].join('\n');
 
 function nowIso() {
@@ -250,6 +261,31 @@ function requestClient(route, action, payload = {}) {
   });
 }
 
+function getAnswerFlowKey(route) {
+  return `${route.sessionKey}:${route.binding?.chatId ?? 'unbound'}`;
+}
+
+async function deliverAnswerInjection(route, message, text) {
+  const deliverAs = route.busy ? config.busyDeliveryMode : undefined;
+  await requestClient(route, 'deliverPrompt', {
+    text,
+    deliverAs,
+    auditMessage: `Telegram ${getUserLabel(message.user)} answered a guided Telegram question flow.`,
+  });
+}
+
+function clearAnswerFlow(route) {
+  answerFlows.delete(getAnswerFlowKey(route));
+}
+
+function getAnswerFlow(route) {
+  return answerFlows.get(getAnswerFlowKey(route));
+}
+
+function setAnswerFlow(route, state) {
+  answerFlows.set(getAnswerFlowKey(route), state);
+}
+
 async function consumePendingPairing(nonce) {
   const { createHash } = await import('node:crypto');
   const nonceHash = createHash('sha256').update(nonce).digest('hex');
@@ -368,6 +404,70 @@ async function handleUseCommand(message, args) {
   await sendPlainText(message.chat.id, `Active session set to ${route.sessionLabel}.`);
 }
 
+async function startAnswerFlow(message, route) {
+  const metadata = route?.notification?.structuredAnswer;
+  if (!route || !route.binding || !metadata) {
+    await sendPlainText(message.chat.id, 'There is nothing to answer yet. Use /full or send a normal text reply instead.');
+    return true;
+  }
+
+  const state = startGuidedAnswerFlow();
+  setAnswerFlow(route, state);
+  await sendPlainText(message.chat.id, renderGuidedAnswerPrompt(metadata, state));
+  return true;
+}
+
+async function handleAnswerFlowReply(message, route) {
+  const metadata = route?.notification?.structuredAnswer;
+  const state = route ? getAnswerFlow(route) : undefined;
+  if (!route || !route.binding || !metadata || !state) {
+    return false;
+  }
+
+  const result = advanceGuidedAnswerFlow(metadata, state, message.text);
+  if (result.cancelled) {
+    clearAnswerFlow(route);
+    await sendPlainText(message.chat.id, result.responseText);
+    return true;
+  }
+
+  if (result.done && result.injectionText) {
+    clearAnswerFlow(route);
+    await deliverAnswerInjection(route, message, result.injectionText);
+    await sendPlainText(message.chat.id, result.responseText);
+    return true;
+  }
+
+  if (result.nextState) {
+    setAnswerFlow(route, result.nextState);
+    await sendPlainText(message.chat.id, result.responseText);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleDirectStructuredAnswer(message, route) {
+  const metadata = route?.notification?.structuredAnswer;
+  if (!route || !route.binding || !metadata || metadata.kind !== 'choice') {
+    return false;
+  }
+
+  const matchedOption = matchChoiceOption(metadata, message.text);
+  const injectionText = matchedOption
+    ? buildChoiceInjection(metadata, matchedOption)
+    : undefined;
+
+  if (!injectionText) {
+    return false;
+  }
+
+  clearAnswerFlow(route);
+  await deliverAnswerInjection(route, message, injectionText);
+  await sendPlainText(message.chat.id, `Selected option ${matchedOption.id}: ${matchedOption.label}`);
+  return true;
+}
+
 async function handleAuthorizedCommand(message, route, command, args) {
   const binding = route?.binding;
   if (command === 'help') {
@@ -474,6 +574,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
       return;
     }
     case 'disconnect': {
+      clearAnswerFlow(route);
       route.binding = undefined;
       await revokeBinding(route.sessionKey);
       await requestClient(route, 'persistBinding', { binding: null, revoked: true });
@@ -494,6 +595,16 @@ async function handleAuthorizedText(message, route) {
   }
   if (route.binding.paused) {
     await sendPlainText(message.chat.id, 'The tunnel is paused. Use /resume first.');
+    return;
+  }
+  if (await handleAnswerFlowReply(message, route)) {
+    return;
+  }
+  if (isGuidedAnswerStart(message.text)) {
+    await startAnswerFlow(message, route);
+    return;
+  }
+  if (await handleDirectStructuredAnswer(message, route)) {
     return;
   }
   const deliverAs = route.busy ? config.busyDeliveryMode : undefined;
@@ -576,6 +687,8 @@ function removeClient(socket) {
   const client = clients.get(socket);
   if (!client) return;
   for (const sessionKey of client.routes) {
+    const existing = routes.get(sessionKey);
+    if (existing) clearAnswerFlow(existing);
     routes.delete(sessionKey);
   }
   clients.delete(socket);
@@ -602,7 +715,11 @@ async function handleClientRequest(socket, message) {
         const client = clients.get(socket);
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
+        const previousRoute = routes.get(route.sessionKey);
         routes.set(route.sessionKey, { ...route, socket });
+        if (!route.notification?.structuredAnswer && previousRoute) {
+          clearAnswerFlow(previousRoute);
+        }
         if (route.binding) {
           await upsertBinding(route.binding);
           if (!activeSessionByChatId.has(String(route.binding.chatId))) activeSessionByChatId.set(String(route.binding.chatId), route.sessionKey);
@@ -613,6 +730,8 @@ async function handleClientRequest(socket, message) {
       case 'unregisterRoute': {
         const client = clients.get(socket);
         client?.routes.delete(message.sessionKey);
+        const existing = routes.get(message.sessionKey);
+        if (existing) clearAnswerFlow(existing);
         routes.delete(message.sessionKey);
         respond(true, true);
         return;
@@ -624,6 +743,9 @@ async function handleClientRequest(socket, message) {
           return;
         }
         await sendPlainText(route.binding.chatId, message.text);
+        if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
+          await sendPlainText(route.binding.chatId, summarizeTailForTelegram(route.notification.structuredAnswer));
+        }
         respond(true, true);
         return;
       }

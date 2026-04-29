@@ -1,5 +1,6 @@
 import type { Model } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { StructuredAnswerMetadata } from "./answer-workflow.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
@@ -100,6 +101,7 @@ export interface SessionNotificationState {
   lastFailure?: string;
   lastStatus?: "idle" | "running" | "completed" | "failed" | "aborted";
   abortRequested?: boolean;
+  structuredAnswer?: StructuredAnswerMetadata;
 }
 
 export interface SessionRouteActions {

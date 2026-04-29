@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
@@ -204,5 +205,113 @@ describe("InProcessTunnelRuntime", () => {
     });
 
     expect(deliveries).toEqual([{ text: "continue with the test cleanup", deliverAs: "followUp" }]);
+  });
+
+  it("accepts direct numeric answers for structured choice metadata", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-4:/tmp/session-4.jsonl",
+      sessionId: "session-4",
+      sessionFile: "/tmp/session-4.jsonl",
+      sessionLabel: "session-4.jsonl",
+      chatId: 888,
+      userId: 10,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata([
+      "Choose:",
+      "1. sync — sync specs now, then archive",
+      "2. skip — archive without syncing",
+    ].join("\n"));
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    (runtime as any).api = { sendPlainText: async () => undefined };
+
+    await (runtime as any).processInbound({
+      updateId: 4,
+      messageId: 4,
+      text: "1",
+      chat: { id: 888, type: "private" },
+      user: { id: 10, username: "owner" },
+    });
+
+    expect(deliveries).toEqual([
+      {
+        text: "Answer to: Choose:\nSelected option 1: sync — sync specs now, then archive",
+        deliverAs: undefined,
+      },
+    ]);
+  });
+
+  it("supports guided question-by-question answers", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-5:/tmp/session-5.jsonl",
+      sessionId: "session-5",
+      sessionFile: "/tmp/session-5.jsonl",
+      sessionLabel: "session-5.jsonl",
+      chatId: 999,
+      userId: 11,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata([
+      "Please answer the following questions.",
+      "What environment should we target?",
+      "Do we archive immediately?",
+    ].join("\n"));
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 5,
+      messageId: 5,
+      text: "answer",
+      chat: { id: 999, type: "private" },
+      user: { id: 11, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 6,
+      messageId: 6,
+      text: "staging",
+      chat: { id: 999, type: "private" },
+      user: { id: 11, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 7,
+      messageId: 7,
+      text: "yes, archive now",
+      chat: { id: 999, type: "private" },
+      user: { id: 11, username: "owner" },
+    });
+
+    expect(sent[0]).toContain("Question 1/2");
+    expect(sent[1]).toContain("Question 2/2");
+    expect(deliveries).toEqual([
+      {
+        text: [
+          "Please answer the following questions.",
+          "Q1: What environment should we target?",
+          "A1: staging",
+          "",
+          "Q2: Do we archive immediately?",
+          "A2: yes, archive now",
+        ].join("\n"),
+        deliverAs: undefined,
+      },
+    ]);
   });
 });

@@ -5,6 +5,15 @@ import { summarizeForTelegram } from "./summary.js";
 import { BrokerTunnelRuntime } from "./broker-runtime.js";
 import { TunnelStateStore } from "./state-store.js";
 import { TelegramApiClient } from "./telegram-api.js";
+import {
+  advanceGuidedAnswerFlow,
+  buildChoiceInjection,
+  isGuidedAnswerStart,
+  matchChoiceOption,
+  renderGuidedAnswerPrompt,
+  startGuidedAnswerFlow,
+  summarizeTailForTelegram,
+} from "./answer-workflow.js";
 import type {
   SessionRoute,
   SessionStatusSnapshot,
@@ -37,11 +46,13 @@ const HELP_TEXT = [
   "/pause - pause remote delivery",
   "/resume - resume remote delivery",
   "/disconnect - revoke this chat binding",
+  "answer - start a guided answer flow when the latest output contains choices/questions",
 ].join("\n");
 
 export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly api: TelegramApiClient;
   private readonly routes = new Map<string, SessionRoute>();
+  private readonly answerFlows = new Map<string, ReturnType<typeof startGuidedAnswerFlow>>();
   private started = false;
   private pollingTask?: Promise<void>;
   private releaseLock?: () => Promise<void>;
@@ -98,6 +109,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   async registerRoute(route: SessionRoute): Promise<void> {
+    if (!route.notification.structuredAnswer) {
+      this.answerFlows.delete(this.answerFlowKey(route));
+    }
     this.routes.set(route.sessionKey, route);
     if (route.binding) {
       await this.store.upsertBinding(route.binding);
@@ -106,6 +120,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
+    const route = this.routes.get(sessionKey);
+    if (route) this.answerFlows.delete(this.answerFlowKey(route));
     this.routes.delete(sessionKey);
   }
 
@@ -119,6 +135,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
     await this.api.sendPlainText(route.binding.chatId, text);
+    if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
+      await this.api.sendPlainText(route.binding.chatId, summarizeTailForTelegram(route.notification.structuredAnswer));
+    }
+  }
+
+  private answerFlowKey(route: SessionRoute): string {
+    return `${route.sessionKey}:${route.binding?.chatId ?? "unbound"}`;
   }
 
   private async acquireLock(): Promise<void> {
@@ -360,6 +383,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "disconnect": {
+        this.answerFlows.delete(this.answerFlowKey(route));
         await this.revokeBinding(route, `Telegram ${getTelegramUserLabel(message.user)} disconnected the tunnel.`);
         await this.api.sendPlainText(message.chat.id, "Disconnected. Future messages from this chat will be ignored until a new pairing is created.");
         return;
@@ -375,6 +399,48 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!binding) return;
     if (binding.paused) {
       await this.api.sendPlainText(message.chat.id, "The tunnel is paused. Use /resume first.");
+      return;
+    }
+
+    const metadata = route.notification.structuredAnswer;
+    const flowKey = this.answerFlowKey(route);
+    const activeFlow = this.answerFlows.get(flowKey);
+    if (metadata && activeFlow) {
+      const result = advanceGuidedAnswerFlow(metadata, activeFlow, message.text);
+      if (result.cancelled) {
+        this.answerFlows.delete(flowKey);
+        await this.api.sendPlainText(message.chat.id, result.responseText);
+        return;
+      }
+      if (result.done && result.injectionText) {
+        this.answerFlows.delete(flowKey);
+        route.actions.sendUserMessage(result.injectionText, route.actions.context.isIdle() ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
+        await this.api.sendPlainText(message.chat.id, result.responseText);
+        return;
+      }
+      if (result.nextState) {
+        this.answerFlows.set(flowKey, result.nextState);
+        await this.api.sendPlainText(message.chat.id, result.responseText);
+        return;
+      }
+    }
+
+    if (metadata && isGuidedAnswerStart(message.text)) {
+      const state = startGuidedAnswerFlow();
+      this.answerFlows.set(flowKey, state);
+      await this.api.sendPlainText(message.chat.id, renderGuidedAnswerPrompt(metadata, state));
+      return;
+    }
+
+    const matchedOption = metadata ? matchChoiceOption(metadata, message.text) : undefined;
+    if (metadata && matchedOption) {
+      route.actions.sendUserMessage(
+        buildChoiceInjection(metadata, matchedOption),
+        route.actions.context.isIdle() ? undefined : { deliverAs: this.config.busyDeliveryMode },
+      );
+      route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
+      await this.api.sendPlainText(message.chat.id, `Selected option ${matchedOption.id}: ${matchedOption.label}`);
       return;
     }
 
@@ -427,6 +493,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         route.binding.chatId,
         `✅ Pi task completed in ${durationLabel}\n\n${summary}\n\nUse /full for the full assistant output.`,
       );
+      if (notification.structuredAnswer) {
+        await this.api.sendPlainText(route.binding.chatId, summarizeTailForTelegram(notification.structuredAnswer));
+      }
       return;
     }
 

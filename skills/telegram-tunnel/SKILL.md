@@ -41,6 +41,16 @@ Plain text messages are delivered as normal Pi prompts when idle and as follow-u
 
 If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list them and `/use <session>` to switch the active one.
 
+## Guided Telegram answer flow
+
+If the latest Pi output contains numbered options or explicit questions, Telegram preserves that trailing decision block and supports a lightweight guided answer flow:
+
+- reply with an option number for direct choice selection
+- send `answer` to step through a guided answer flow
+- send `cancel` to leave the guided answer flow
+
+This helps when the important decision prompt appears near the end of a long assistant response.
+
 ## Security reminders
 
 - private chats only
