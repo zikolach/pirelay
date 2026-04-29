@@ -1,7 +1,7 @@
 # telegram-session-tunnel Specification
 
 ## Purpose
-TBD - created by archiving change pi-telegram-session-tunnel. Update Purpose after archive.
+Defines Telegram-backed pairing, notifications, remote prompt delivery, guided answers, and lifecycle handling for Pi sessions.
 ## Requirements
 ### Requirement: Session-scoped Telegram pairing
 The system SHALL allow a local Pi user to pair exactly the active Pi session with a Telegram private chat by invoking a tunnel setup command or skill workflow from that session.
@@ -47,6 +47,10 @@ The system SHALL route authorized Telegram text messages into the bound Pi sessi
 #### Scenario: Busy session receives a steering command
 - **WHEN** an authorized Telegram user sends `/steer <text>` while the Pi session is processing
 - **THEN** the system queues `<text>` as a steering message for that session
+
+#### Scenario: Local Pi prompt after pairing still works
+- **WHEN** a Telegram chat is paired to a Pi session and the local user submits a normal prompt or invokes a skill from the same Pi session
+- **THEN** the session remains locally interactive and processes the local input without being blocked by tunnel synchronization or guided-answer state
 
 ### Requirement: Remote control commands
 The system SHALL expose Telegram commands for common tunnel and Pi session controls without forwarding those command messages to the model.
@@ -100,6 +104,10 @@ The system SHALL preserve access to important trailing content when assistant ou
 - **WHEN** a concise completion preview would hide the most important concluding instructions or options
 - **THEN** the system avoids head-only truncation and preserves access to the omitted portion in the same notification flow
 
+#### Scenario: Accepted remote prompt starts visible Telegram activity
+- **WHEN** an authorized remote prompt or guided-answer submission is accepted for delivery to Pi
+- **THEN** the system attempts to surface Telegram-native recipient activity status for the bound chat while Pi is processing, or clearly falls back when the client-visible indicator is unavailable
+
 ### Requirement: Interactive answer workflow
 The system SHALL make it easy for the authorized Telegram user to answer the latest structured assistant question or choice set from mobile using a guided workflow rather than manual copy/paste.
 
@@ -110,6 +118,11 @@ The system SHALL make it easy for the authorized Telegram user to answer the lat
 #### Scenario: User answers through the Telegram workflow
 - **WHEN** the authorized Telegram user advances through the guided Telegram answer flow and submits one or more answers
 - **THEN** the system injects the selected answers into the bound Pi session using the same authorization and delivery rules as other remote prompts
+- **AND** the workflow operates on a normalized answer draft derived from the latest completed assistant output, such as a stable choice list or `Q1`/`A1` template, rather than requiring the user to respond against raw assistant prose alone
+
+#### Scenario: Guided answer parsing is ambiguous or malformed
+- **WHEN** the latest assistant output looks partially structured but cannot be parsed into a reliable question or option set
+- **THEN** the system declines to enter the guided answer flow and directs the user to `/full` or a normal text reply instead of presenting misleading choices
 
 #### Scenario: No structured question metadata is available
 - **WHEN** the user tries to enter the guided answer flow but no recent structured question or option set is available
@@ -151,4 +164,3 @@ The system SHALL respect Telegram Bot API operational constraints during all out
 #### Scenario: Bot cannot message user before start
 - **WHEN** the local user generates a pairing QR code but the Telegram user has not started the bot
 - **THEN** the system waits for the Telegram `/start` update instead of attempting unsolicited private messages
-
