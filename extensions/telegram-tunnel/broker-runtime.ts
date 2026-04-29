@@ -82,6 +82,9 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   async unregisterRoute(sessionKey: string): Promise<void> {
     this.routes.delete(sessionKey);
     await this.request("unregisterRoute", { clientId: this.clientId, sessionKey });
+    if (this.routes.size === 0) {
+      await this.stop();
+    }
   }
 
   getStatus(sessionKey: string): SessionStatusSnapshot | undefined {

@@ -66,3 +66,11 @@
 - [x] 9.2 Improve completion notification delivery so important trailing content is not hidden by head-only truncation; use chunking, continuation messages, or explicit full-output affordances as needed.
 - [x] 9.3 Add a Telegram guided answer workflow for the latest question/choice set, reusing Pi-side structured-answer semantics with inline buttons and/or question-by-question prompts.
 - [x] 9.4 Add tests and documentation for long-output cropping, decision-block preservation, and Telegram answer flows.
+
+## 10. Regression Stabilization and Test Coverage
+
+- [x] 10.1 Reproduce and fix the local-session interactivity regression: after `/telegram-tunnel connect` and after Telegram-driven prompt/answer flows, the original Pi session must still accept normal prompts, skills, and non-built-in commands.
+- [x] 10.2 Reproduce and fix Telegram activity-indicator reliability so accepted remote prompts surface recipient `typing...` status when the Telegram client supports it, with explicit fallback behavior when not observable.
+- [x] 10.3 Expand parser and workflow tests for structured answers using real-world transcripts: numbered options, bullet options, mixed prose plus options, multi-question tails, malformed choices, repeated answer cycles, cancel/restart, and direct numeric replies.
+- [ ] 10.4 Add integration-style tests that exercise local + remote coexistence, broker route synchronization, post-pairing local prompt submission, skill invocation after pairing, and recovery after disconnect/reconnect.
+- [x] 10.5 Add manual smoke-test documentation for Telegram client behavior, including expected `typing...` visibility, local Pi session responsiveness after pairing, and guided-answer fallback behavior.

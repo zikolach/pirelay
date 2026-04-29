@@ -23,6 +23,7 @@ const routes = new Map();
 const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
 const answerFlows = new Map();
+const activityIndicators = new Map();
 const statePath = `${config.stateDir}/state.json`;
 let updateOffset;
 let shuttingDown = false;
@@ -44,6 +45,30 @@ const HELP_TEXT = [
   '/disconnect - revoke this chat binding',
   "answer - start a guided answer flow when the latest output contains choices/questions",
 ].join('\n');
+
+const TELEGRAM_ACTIVITY_ACTION = 'typing';
+const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1200;
+const TELEGRAM_ACTIVITY_REFRESH_MS = 4000;
+
+function unrefTimer(timer) {
+  if (timer && typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
+}
+
+function isTerminalStatus(status) {
+  return status === 'completed' || status === 'failed' || status === 'aborted';
+}
+
+function isEffectivelyBusy(route) {
+  if (!route) return false;
+  if (isTerminalStatus(route.notification?.lastStatus)) return false;
+  return Boolean(route.busy || route.notification?.lastStatus === 'running');
+}
+
+function hasAnswerableLatestOutput(route) {
+  return route?.notification?.lastStatus === 'completed'
+    && Boolean(route.notification?.lastAssistantText)
+    && Boolean(route.notification?.structuredAnswer);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -129,6 +154,22 @@ async function sendPlainText(chatId, text) {
   }
 }
 
+async function sendChatAction(chatId, action = TELEGRAM_ACTIVITY_ACTION) {
+  let lastError;
+  const retries = Math.max(1, config.sendRetryCount || 1);
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      await api.sendChatAction(chatId, action);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !isRetriable(error)) break;
+      await sleep(retryDelay(error, attempt));
+    }
+  }
+  throw lastError;
+}
+
 async function loadState() {
   await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
   try {
@@ -185,7 +226,7 @@ function routeStatusLine(route, online) {
   const binding = route.binding;
   if (!binding) return `${route.sessionLabel} (${online ? 'online' : 'offline'}) - not paired`;
   const paused = binding.paused ? ', paused' : '';
-  return `${route.sessionLabel} (${online ? 'online' : 'offline'}, ${route.busy ? 'busy' : 'idle'}${paused})`;
+  return `${route.sessionLabel} (${online ? 'online' : 'offline'}, ${isEffectivelyBusy(route) ? 'busy' : 'idle'}${paused})`;
 }
 
 function getLiveRoutesForChat(chatId, userId) {
@@ -266,7 +307,8 @@ function getAnswerFlowKey(route) {
 }
 
 async function deliverAnswerInjection(route, message, text) {
-  const deliverAs = route.busy ? config.busyDeliveryMode : undefined;
+  const deliverAs = isEffectivelyBusy(route) ? config.busyDeliveryMode : undefined;
+  await startActivityIndicator(route);
   await requestClient(route, 'deliverPrompt', {
     text,
     deliverAs,
@@ -284,6 +326,87 @@ function getAnswerFlow(route) {
 
 function setAnswerFlow(route, state) {
   answerFlows.set(getAnswerFlowKey(route), state);
+}
+
+function getActivityKey(route) {
+  return route?.binding ? `${route.sessionKey}:${route.binding.chatId}` : undefined;
+}
+
+function clearAllActivityIndicators() {
+  for (const timer of activityIndicators.values()) {
+    clearTimeout(timer);
+  }
+  activityIndicators.clear();
+}
+
+function clearActivityIndicator(route) {
+  const key = getActivityKey(route);
+  if (!key) return;
+  clearActivityIndicatorByKey(key);
+}
+
+function clearActivityIndicatorByKey(key) {
+  const timer = activityIndicators.get(key);
+  if (timer) clearTimeout(timer);
+  activityIndicators.delete(key);
+}
+
+function shouldContinueActivityIndicator(route) {
+  if (!route?.binding || route.binding.paused) return false;
+  if (isTerminalStatus(route.notification?.lastStatus)) return false;
+  return isEffectivelyBusy(route);
+}
+
+function syncActivityIndicator(route) {
+  if (shouldContinueActivityIndicator(route)) {
+    void startActivityIndicator(route);
+    return;
+  }
+  clearActivityIndicator(route);
+}
+
+async function startActivityIndicator(route) {
+  const key = getActivityKey(route);
+  if (!key || !route?.binding || route.binding.paused) return false;
+  if (activityIndicators.has(key)) return true;
+
+  const sent = await trySendActivityIndicator(route.binding.chatId);
+  if (!sent) return false;
+  scheduleActivityRefresh(route.sessionKey, route.binding.chatId, key, TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS);
+  return true;
+}
+
+function scheduleActivityRefresh(sessionKey, chatId, key, delayMs = TELEGRAM_ACTIVITY_REFRESH_MS) {
+  const timer = setTimeout(() => {
+    void refreshActivityIndicator(sessionKey, chatId, key);
+  }, delayMs);
+  unrefTimer(timer);
+  activityIndicators.set(key, timer);
+}
+
+async function refreshActivityIndicator(sessionKey, chatId, key) {
+  const route = routes.get(sessionKey);
+  if (!route || route.binding?.chatId !== chatId || !shouldContinueActivityIndicator(route)) {
+    clearActivityIndicatorByKey(key);
+    return;
+  }
+
+  const sent = await trySendActivityIndicator(chatId);
+  if (!sent) {
+    clearActivityIndicatorByKey(key);
+    return;
+  }
+  if (!activityIndicators.has(key)) return;
+  scheduleActivityRefresh(sessionKey, chatId, key);
+}
+
+async function trySendActivityIndicator(chatId) {
+  try {
+    await sendChatAction(chatId, TELEGRAM_ACTIVITY_ACTION);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function consumePendingPairing(nonce) {
@@ -405,9 +528,14 @@ async function handleUseCommand(message, args) {
 }
 
 async function startAnswerFlow(message, route) {
-  const metadata = route?.notification?.structuredAnswer;
+  const metadata = hasAnswerableLatestOutput(route) ? route?.notification?.structuredAnswer : undefined;
   if (!route || !route.binding || !metadata) {
-    await sendPlainText(message.chat.id, 'There is nothing to answer yet. Use /full or send a normal text reply instead.');
+    await sendPlainText(
+      message.chat.id,
+      route?.notification?.lastStatus === 'completed' && route?.notification?.lastAssistantText
+        ? 'I could not build a structured answer draft from the latest completed assistant output. Use /full or send a normal text reply instead.'
+        : 'There is nothing to answer yet. Use /full or send a normal text reply instead.',
+    );
     return true;
   }
 
@@ -418,7 +546,7 @@ async function startAnswerFlow(message, route) {
 }
 
 async function handleAnswerFlowReply(message, route) {
-  const metadata = route?.notification?.structuredAnswer;
+  const metadata = hasAnswerableLatestOutput(route) ? route?.notification?.structuredAnswer : undefined;
   const state = route ? getAnswerFlow(route) : undefined;
   if (!route || !route.binding || !metadata || !state) {
     return false;
@@ -448,7 +576,7 @@ async function handleAnswerFlowReply(message, route) {
 }
 
 async function handleDirectStructuredAnswer(message, route) {
-  const metadata = route?.notification?.structuredAnswer;
+  const metadata = hasAnswerableLatestOutput(route) ? route?.notification?.structuredAnswer : undefined;
   if (!route || !route.binding || !metadata || metadata.kind !== 'choice') {
     return false;
   }
@@ -501,7 +629,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
       const lines = [
         `Session: ${route.sessionLabel}`,
         `Online: yes`,
-        `Busy: ${route.busy ? 'yes' : 'no'}`,
+        `Busy: ${isEffectivelyBusy(route) ? 'yes' : 'no'}`,
         `Model: ${route.modelId || 'unknown'}`,
         `Last activity: ${route.lastActivityAt ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
         `Paused: ${binding.paused ? 'yes' : 'no'}`,
@@ -523,12 +651,13 @@ async function handleAuthorizedCommand(message, route, command, args) {
         await sendPlainText(message.chat.id, 'Usage: /steer <text>');
         return;
       }
+      await startActivityIndicator(route);
       await requestClient(route, 'deliverPrompt', {
         text: args,
-        deliverAs: route.busy ? 'steer' : undefined,
+        deliverAs: isEffectivelyBusy(route) ? 'steer' : undefined,
         auditMessage: `Telegram ${getUserLabel(message.user)} sent a steering instruction.`,
       });
-      await sendPlainText(message.chat.id, route.busy ? 'Steering queued.' : 'Sent as a prompt.');
+      await sendPlainText(message.chat.id, isEffectivelyBusy(route) ? 'Steering queued.' : 'Sent as a prompt.');
       return;
     }
     case 'followup': {
@@ -536,16 +665,17 @@ async function handleAuthorizedCommand(message, route, command, args) {
         await sendPlainText(message.chat.id, 'Usage: /followup <text>');
         return;
       }
+      await startActivityIndicator(route);
       await requestClient(route, 'deliverPrompt', {
         text: args,
-        deliverAs: route.busy ? 'followUp' : undefined,
+        deliverAs: isEffectivelyBusy(route) ? 'followUp' : undefined,
         auditMessage: `Telegram ${getUserLabel(message.user)} queued a follow-up.`,
       });
-      await sendPlainText(message.chat.id, route.busy ? 'Follow-up queued.' : 'Sent as a prompt.');
+      await sendPlainText(message.chat.id, isEffectivelyBusy(route) ? 'Follow-up queued.' : 'Sent as a prompt.');
       return;
     }
     case 'abort': {
-      if (!route.busy) {
+      if (!isEffectivelyBusy(route)) {
         await sendPlainText(message.chat.id, 'The Pi session is already idle.');
         return;
       }
@@ -561,6 +691,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'pause': {
       route.binding = { ...binding, paused: true, lastSeenAt: nowIso() };
+      clearActivityIndicator(route);
       await upsertBinding(route.binding);
       await requestClient(route, 'persistBinding', { binding: route.binding, revoked: false });
       await sendPlainText(message.chat.id, 'Tunnel paused. Remote prompts and notifications are suspended until /resume.');
@@ -575,6 +706,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'disconnect': {
       clearAnswerFlow(route);
+      clearActivityIndicator(route);
       route.binding = undefined;
       await revokeBinding(route.sessionKey);
       await requestClient(route, 'persistBinding', { binding: null, revoked: true });
@@ -607,15 +739,22 @@ async function handleAuthorizedText(message, route) {
   if (await handleDirectStructuredAnswer(message, route)) {
     return;
   }
-  const deliverAs = route.busy ? config.busyDeliveryMode : undefined;
+  const deliverAs = isEffectivelyBusy(route) ? config.busyDeliveryMode : undefined;
+  const activityStarted = await startActivityIndicator(route);
   await requestClient(route, 'deliverPrompt', {
     text: message.text,
     deliverAs,
-    auditMessage: route.busy
+    auditMessage: isEffectivelyBusy(route)
       ? `Telegram ${getUserLabel(message.user)} queued a ${deliverAs} message.`
       : `Telegram ${getUserLabel(message.user)} sent a prompt.`,
   });
-  await sendPlainText(message.chat.id, route.busy ? `Pi is busy; your message was queued as ${deliverAs}.` : 'Prompt delivered to Pi.');
+  if (isEffectivelyBusy(route)) {
+    await sendPlainText(message.chat.id, `Pi is busy; your message was queued as ${deliverAs}.`);
+    return;
+  }
+  if (!activityStarted) {
+    await sendPlainText(message.chat.id, 'Prompt delivered to Pi.');
+  }
 }
 
 async function processInbound(message) {
@@ -688,7 +827,10 @@ function removeClient(socket) {
   if (!client) return;
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
-    if (existing) clearAnswerFlow(existing);
+    if (existing) {
+      clearAnswerFlow(existing);
+      clearActivityIndicator(existing);
+    }
     routes.delete(sessionKey);
   }
   clients.delete(socket);
@@ -697,6 +839,9 @@ function removeClient(socket) {
       pending.reject(new Error('Client disconnected.'));
       pendingClientRequests.delete(requestId);
     }
+  }
+  if (!shuttingDown && routes.size === 0) {
+    void shutdown();
   }
 }
 
@@ -716,13 +861,18 @@ async function handleClientRequest(socket, message) {
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
         const previousRoute = routes.get(route.sessionKey);
-        routes.set(route.sessionKey, { ...route, socket });
+        const nextRoute = { ...route, socket };
+        if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
+          clearActivityIndicator(previousRoute);
+        }
+        routes.set(route.sessionKey, nextRoute);
         if (!route.notification?.structuredAnswer && previousRoute) {
           clearAnswerFlow(previousRoute);
         }
-        if (route.binding) {
-          await upsertBinding(route.binding);
-          if (!activeSessionByChatId.has(String(route.binding.chatId))) activeSessionByChatId.set(String(route.binding.chatId), route.sessionKey);
+        syncActivityIndicator(nextRoute);
+        if (nextRoute.binding) {
+          await upsertBinding(nextRoute.binding);
+          if (!activeSessionByChatId.has(String(nextRoute.binding.chatId))) activeSessionByChatId.set(String(nextRoute.binding.chatId), nextRoute.sessionKey);
         }
         respond(true, true);
         return;
@@ -731,7 +881,10 @@ async function handleClientRequest(socket, message) {
         const client = clients.get(socket);
         client?.routes.delete(message.sessionKey);
         const existing = routes.get(message.sessionKey);
-        if (existing) clearAnswerFlow(existing);
+        if (existing) {
+          clearAnswerFlow(existing);
+          clearActivityIndicator(existing);
+        }
         routes.delete(message.sessionKey);
         respond(true, true);
         return;
@@ -742,6 +895,7 @@ async function handleClientRequest(socket, message) {
           respond(true, false);
           return;
         }
+        syncActivityIndicator(route);
         await sendPlainText(route.binding.chatId, message.text);
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(route.binding.chatId, summarizeTailForTelegram(route.notification.structuredAnswer));
@@ -796,6 +950,7 @@ server.listen(socketPath, async () => {
 
 const shutdown = async () => {
   shuttingDown = true;
+  clearAllActivityIndicators();
   server.close();
   try { await unlink(socketPath); } catch {}
   process.exit(0);

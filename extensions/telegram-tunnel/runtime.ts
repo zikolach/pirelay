@@ -49,10 +49,36 @@ const HELP_TEXT = [
   "answer - start a guided answer flow when the latest output contains choices/questions",
 ].join("\n");
 
+const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
+const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
+const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+}
+
+function isTerminalStatus(status: SessionRoute["notification"]["lastStatus"]): boolean {
+  return status === "completed" || status === "failed" || status === "aborted";
+}
+
+function isEffectivelyIdle(route: SessionRoute): boolean {
+  if (isTerminalStatus(route.notification.lastStatus)) return true;
+  return route.actions.context.isIdle();
+}
+
+function hasAnswerableLatestOutput(route: SessionRoute): boolean {
+  return route.notification.lastStatus === "completed"
+    && Boolean(route.notification.lastAssistantText)
+    && Boolean(route.notification.structuredAnswer);
+}
+
 export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly api: TelegramApiClient;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly answerFlows = new Map<string, ReturnType<typeof startGuidedAnswerFlow>>();
+  private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
   private started = false;
   private pollingTask?: Promise<void>;
   private releaseLock?: () => Promise<void>;
@@ -80,6 +106,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   async stop(): Promise<void> {
     this.started = false;
+    this.clearAllActivityIndicators();
     await this.pollingTask?.catch(() => undefined);
     this.pollingTask = undefined;
     if (this.releaseLock) {
@@ -109,10 +136,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   async registerRoute(route: SessionRoute): Promise<void> {
+    const previousRoute = this.routes.get(route.sessionKey);
+    if (previousRoute?.binding?.chatId !== route.binding?.chatId && previousRoute?.binding) {
+      this.clearActivityIndicator(previousRoute);
+    }
     if (!route.notification.structuredAnswer) {
       this.answerFlows.delete(this.answerFlowKey(route));
     }
     this.routes.set(route.sessionKey, route);
+    this.syncActivityIndicator(route);
     if (route.binding) {
       await this.store.upsertBinding(route.binding);
     }
@@ -121,8 +153,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   async unregisterRoute(sessionKey: string): Promise<void> {
     const route = this.routes.get(sessionKey);
-    if (route) this.answerFlows.delete(this.answerFlowKey(route));
+    if (route) {
+      this.answerFlows.delete(this.answerFlowKey(route));
+      this.clearActivityIndicator(route);
+    }
     this.routes.delete(sessionKey);
+    if (this.routes.size === 0) {
+      await this.stop();
+    }
   }
 
   getStatus(sessionKey: string): SessionStatusSnapshot | undefined {
@@ -142,6 +180,92 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private answerFlowKey(route: SessionRoute): string {
     return `${route.sessionKey}:${route.binding?.chatId ?? "unbound"}`;
+  }
+
+  private activityKey(sessionKey: string, chatId: number): string {
+    return `${sessionKey}:${chatId}`;
+  }
+
+  private activityKeyForRoute(route: SessionRoute): string | undefined {
+    return route.binding ? this.activityKey(route.sessionKey, route.binding.chatId) : undefined;
+  }
+
+  private clearAllActivityIndicators(): void {
+    for (const timer of this.activityIndicators.values()) {
+      clearTimeout(timer);
+    }
+    this.activityIndicators.clear();
+  }
+
+  private clearActivityIndicator(route: SessionRoute): void {
+    const key = this.activityKeyForRoute(route);
+    if (!key) return;
+    this.clearActivityIndicatorByKey(key);
+  }
+
+  private clearActivityIndicatorByKey(key: string): void {
+    const timer = this.activityIndicators.get(key);
+    if (timer) clearTimeout(timer);
+    this.activityIndicators.delete(key);
+  }
+
+  private shouldContinueActivityIndicator(route: SessionRoute): boolean {
+    if (!route.binding || route.binding.paused) return false;
+    if (isTerminalStatus(route.notification.lastStatus)) return false;
+    return !route.actions.context.isIdle() || route.notification.lastStatus === "running";
+  }
+
+  private syncActivityIndicator(route: SessionRoute): void {
+    if (this.shouldContinueActivityIndicator(route)) {
+      void this.startActivityIndicator(route);
+      return;
+    }
+    this.clearActivityIndicator(route);
+  }
+
+  private async startActivityIndicator(route: SessionRoute): Promise<boolean> {
+    if (!route.binding || route.binding.paused) return false;
+    const key = this.activityKeyForRoute(route);
+    if (!key) return false;
+    if (this.activityIndicators.has(key)) return true;
+
+    const sent = await this.trySendActivityIndicator(route.binding.chatId);
+    if (!sent) return false;
+    this.scheduleActivityRefresh(route.sessionKey, route.binding.chatId, key, TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS);
+    return true;
+  }
+
+  private scheduleActivityRefresh(sessionKey: string, chatId: number, key: string, delayMs = TELEGRAM_ACTIVITY_REFRESH_MS): void {
+    const timer = setTimeout(() => {
+      void this.refreshActivityIndicator(sessionKey, chatId, key);
+    }, delayMs);
+    unrefTimer(timer);
+    this.activityIndicators.set(key, timer);
+  }
+
+  private async refreshActivityIndicator(sessionKey: string, chatId: number, key: string): Promise<void> {
+    const route = this.routes.get(sessionKey);
+    if (!route || route.binding?.chatId !== chatId || !this.shouldContinueActivityIndicator(route)) {
+      this.clearActivityIndicatorByKey(key);
+      return;
+    }
+
+    const sent = await this.trySendActivityIndicator(chatId);
+    if (!sent) {
+      this.clearActivityIndicatorByKey(key);
+      return;
+    }
+    if (!this.activityIndicators.has(key)) return;
+    this.scheduleActivityRefresh(sessionKey, chatId, key);
+  }
+
+  private async trySendActivityIndicator(chatId: number): Promise<boolean> {
+    try {
+      await this.api.sendChatAction(chatId, TELEGRAM_ACTIVITY_ACTION);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async acquireLock(): Promise<void> {
@@ -336,9 +460,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           await this.api.sendPlainText(message.chat.id, "Usage: /steer <text>");
           return;
         }
-        route.actions.sendUserMessage(args, { deliverAs: route.actions.context.isIdle() ? undefined : "steer" });
+        await this.startActivityIndicator(route);
+        route.actions.sendUserMessage(args, { deliverAs: isEffectivelyIdle(route) ? undefined : "steer" });
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a steering instruction.`);
-        await this.api.sendPlainText(message.chat.id, route.actions.context.isIdle() ? "Sent as a prompt." : "Steering queued.");
+        await this.api.sendPlainText(message.chat.id, isEffectivelyIdle(route) ? "Sent as a prompt." : "Steering queued.");
         return;
       }
       case "followup": {
@@ -346,9 +471,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           await this.api.sendPlainText(message.chat.id, "Usage: /followup <text>");
           return;
         }
-        route.actions.sendUserMessage(args, { deliverAs: route.actions.context.isIdle() ? undefined : "followUp" });
+        await this.startActivityIndicator(route);
+        route.actions.sendUserMessage(args, { deliverAs: isEffectivelyIdle(route) ? undefined : "followUp" });
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} queued a follow-up.`);
-        await this.api.sendPlainText(message.chat.id, route.actions.context.isIdle() ? "Sent as a prompt." : "Follow-up queued.");
+        await this.api.sendPlainText(message.chat.id, isEffectivelyIdle(route) ? "Sent as a prompt." : "Follow-up queued.");
         return;
       }
       case "abort": {
@@ -370,6 +496,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       case "pause": {
         binding.paused = true;
+        this.clearActivityIndicator(route);
         await this.store.upsertBinding(binding);
         route.actions.persistBinding(binding, false);
         await this.api.sendPlainText(message.chat.id, "Tunnel paused. Remote prompts and notifications are suspended until /resume.");
@@ -384,6 +511,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       case "disconnect": {
         this.answerFlows.delete(this.answerFlowKey(route));
+        this.clearActivityIndicator(route);
         await this.revokeBinding(route, `Telegram ${getTelegramUserLabel(message.user)} disconnected the tunnel.`);
         await this.api.sendPlainText(message.chat.id, "Disconnected. Future messages from this chat will be ignored until a new pairing is created.");
         return;
@@ -402,7 +530,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const metadata = route.notification.structuredAnswer;
+    const metadata = hasAnswerableLatestOutput(route) ? route.notification.structuredAnswer : undefined;
     const flowKey = this.answerFlowKey(route);
     const activeFlow = this.answerFlows.get(flowKey);
     if (metadata && activeFlow) {
@@ -414,7 +542,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       if (result.done && result.injectionText) {
         this.answerFlows.delete(flowKey);
-        route.actions.sendUserMessage(result.injectionText, route.actions.context.isIdle() ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        await this.startActivityIndicator(route);
+        route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
         await this.api.sendPlainText(message.chat.id, result.responseText);
         return;
@@ -426,7 +555,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
     }
 
-    if (metadata && isGuidedAnswerStart(message.text)) {
+    if (isGuidedAnswerStart(message.text)) {
+      if (!metadata) {
+        await this.api.sendPlainText(
+          message.chat.id,
+          route.notification.lastStatus === "completed" && route.notification.lastAssistantText
+            ? "I could not build a structured answer draft from the latest completed assistant output. Use /full or send a normal text reply instead."
+            : "There is nothing to answer yet. Use /full or send a normal text reply instead.",
+        );
+        return;
+      }
       const state = startGuidedAnswerFlow();
       this.answerFlows.set(flowKey, state);
       await this.api.sendPlainText(message.chat.id, renderGuidedAnswerPrompt(metadata, state));
@@ -435,27 +573,31 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
     const matchedOption = metadata ? matchChoiceOption(metadata, message.text) : undefined;
     if (metadata && matchedOption) {
-      route.actions.sendUserMessage(
-        buildChoiceInjection(metadata, matchedOption),
-        route.actions.context.isIdle() ? undefined : { deliverAs: this.config.busyDeliveryMode },
-      );
+      await this.startActivityIndicator(route);
+      route.actions.sendUserMessage(buildChoiceInjection(metadata, matchedOption), isEffectivelyIdle(route)
+        ? undefined
+        : { deliverAs: this.config.busyDeliveryMode });
       route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
       await this.api.sendPlainText(message.chat.id, `Selected option ${matchedOption.id}: ${matchedOption.label}`);
       return;
     }
 
-    const idle = route.actions.context.isIdle();
+    const idle = isEffectivelyIdle(route);
     const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
+    const activityStarted = await this.startActivityIndicator(route);
     route.actions.sendUserMessage(message.text, deliverAs ? { deliverAs } : undefined);
     route.actions.appendAudit(
       idle
         ? `Telegram ${getTelegramUserLabel(message.user)} sent a prompt.`
         : `Telegram ${getTelegramUserLabel(message.user)} queued a ${deliverAs} message.`,
     );
-    await this.api.sendPlainText(
-      message.chat.id,
-      idle ? "Prompt delivered to Pi." : `Pi is busy; your message was queued as ${deliverAs}.`,
-    );
+    if (!idle) {
+      await this.api.sendPlainText(message.chat.id, `Pi is busy; your message was queued as ${deliverAs}.`);
+      return;
+    }
+    if (!activityStarted) {
+      await this.api.sendPlainText(message.chat.id, "Prompt delivered to Pi.");
+    }
   }
 
   private async revokeBinding(route: SessionRoute, auditMessage: string): Promise<void> {
@@ -472,7 +614,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       sessionId: route.sessionId,
       sessionFile: route.sessionFile,
       online,
-      busy: !route.actions.context.isIdle(),
+      busy: !isEffectivelyIdle(route),
       modelId: formatModelId(route.actions.getModel()),
       lastActivityAt: route.lastActivityAt,
       binding: route.binding,
@@ -481,6 +623,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
+    this.clearActivityIndicator(route);
     if (!route.binding || route.binding.paused) return;
     const notification = route.notification;
     const durationMs = notification.startedAt ? Date.now() - notification.startedAt : undefined;

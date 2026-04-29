@@ -55,6 +55,27 @@ export class TelegramApiClient {
     }
   }
 
+  async sendChatAction(chatId: number, action: "typing" = "typing"): Promise<void> {
+    const totalAttempts = Math.max(1, this.config.sendRetryCount);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+      try {
+        await this.api.sendChatAction(chatId, action);
+        return;
+      } catch (error) {
+        lastError = error;
+        const retryAfterMs = getRetryDelay(error) ?? this.config.sendRetryBaseMs * attempt;
+        if (attempt >= totalAttempts || !isRetriableError(error)) {
+          break;
+        }
+        await sleep(retryAfterMs);
+      }
+    }
+
+    throw normalizeTelegramError(lastError);
+  }
+
   private async sendChunk(chatId: number, chunk: TelegramOutboundChunk): Promise<void> {
     const totalAttempts = Math.max(1, this.config.sendRetryCount);
     let lastError: unknown;

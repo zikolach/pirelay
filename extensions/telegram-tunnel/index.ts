@@ -106,6 +106,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let runtime: TunnelRuntime | undefined;
   let currentRoute: SessionRoute | undefined;
   let latestContext: ExtensionContext | undefined;
+  let closeConnectQrScreen: (() => void) | undefined;
 
   async function ensureConfig(ctx?: ExtensionContext, interactiveNotice = false): Promise<TelegramTunnelConfig> {
     if (configCache) return configCache;
@@ -158,6 +159,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         appendAudit,
         persistBinding,
         promptLocalConfirmation: async (identity) => {
+          closeConnectQrScreen?.();
+          closeConnectQrScreen = undefined;
           if (!latestContext?.hasUI) return false;
           return latestContext.ui.confirm(
             "Telegram Pairing Request",
@@ -183,6 +186,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   async function publishRouteState(): Promise<void> {
     if (!runtime || !currentRoute) return;
     await runtime.registerRoute(currentRoute);
+  }
+
+  function publishRouteStateSoon(): void {
+    void publishRouteState().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      latestContext?.ui.setStatus("telegram-tunnel-sync", `telegram sync error: ${message}`);
+    });
   }
 
   async function restoreBinding(ctx: ExtensionContext, config: TelegramTunnelConfig): Promise<TelegramBindingMetadata | undefined> {
@@ -240,6 +250,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) {
       throw new Error("Failed to initialize the current Pi session route.");
     }
+    await tunnelRuntime.registerRoute(currentRoute);
 
     const store = new TunnelStateStore(config.stateDir);
     const { nonce, pairing } = await store.createPendingPairing({
@@ -255,9 +266,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     if (ctx.hasUI) {
       ctx.ui.setWidget(CONNECT_WIDGET_KEY, undefined);
-      await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-        return new PairingQrScreen(theme, currentRoute!.sessionLabel, qrLines, deepLink, expiryMinutes, () => done(undefined));
-      });
+      try {
+        await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+          closeConnectQrScreen = () => done(undefined);
+          return new PairingQrScreen(theme, currentRoute!.sessionLabel, qrLines, deepLink, expiryMinutes, () => done(undefined));
+        });
+      } finally {
+        closeConnectQrScreen = undefined;
+      }
       ctx.ui.notify(`Pairing link ready for @${setup.botUsername}. Expires in about ${expiryMinutes} minute(s).`, "info");
       return;
     }
@@ -270,10 +286,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const store = new TunnelStateStore(config.stateDir);
     if (!currentRoute) await syncRoute(ctx);
     if (!currentRoute) return;
+    const disconnectedRoute = currentRoute;
     currentRoute.binding = undefined;
     await store.revokeBinding(currentRoute.sessionKey);
     persistBinding(null, true);
-    await publishRouteState();
+    if (runtime) {
+      await runtime.unregisterRoute(disconnectedRoute.sessionKey);
+    }
+    currentRoute = undefined;
     ctx.ui.setStatus("telegram-tunnel", "telegram: disconnected");
     ctx.ui.setWidget(CONNECT_WIDGET_KEY, undefined);
     appendAudit("Telegram tunnel disconnected locally.");
@@ -352,6 +372,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     latestContext = ctx;
+    closeConnectQrScreen = undefined;
     if (runtime && currentRoute) {
       await runtime.unregisterRoute(currentRoute.sessionKey);
     }
@@ -361,7 +382,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestContext = ctx;
     if (currentRoute) {
       currentRoute.actions.context = ctx;
-      await publishRouteState();
+      publishRouteStateSoon();
     }
   });
 
@@ -369,7 +390,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestContext = ctx;
     if (currentRoute) {
       currentRoute.actions.context = ctx;
-      await publishRouteState();
+      publishRouteStateSoon();
     }
   });
 
@@ -384,7 +405,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.notification.abortRequested = false;
     currentRoute.notification.structuredAnswer = undefined;
     currentRoute.lastActivityAt = Date.now();
-    await publishRouteState();
+    publishRouteStateSoon();
   });
 
   pi.on("message_update", async (event, ctx) => {
@@ -404,7 +425,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (event.message.role === "assistant") {
       currentRoute.notification.lastAssistantText = extractTextContent(event.message.content);
       currentRoute.lastActivityAt = Date.now();
-      await publishRouteState();
+      publishRouteStateSoon();
     }
   });
 
@@ -414,7 +435,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.actions.context = ctx;
     if (event.isError) {
       currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
-      await publishRouteState();
+      publishRouteStateSoon();
     }
   });
 
@@ -443,7 +464,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       currentRoute.notification.lastFailure = "The agent finished without a final assistant response.";
     }
 
-    await publishRouteState();
+    publishRouteStateSoon();
     await sendSessionNotification(runtime, currentRoute, status);
   });
 }

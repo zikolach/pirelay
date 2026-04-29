@@ -10,8 +10,18 @@ Pi sessions are currently easiest to monitor and steer from the terminal where t
 - Preserve important decision points when long assistant output would otherwise be cropped in Telegram, including chunked continuation or explicit full-output affordances.
 - Accept authorized Telegram messages and commands, routing them back into the paired Pi session as normal prompts, steering messages, follow-ups, or control operations.
 - Support a structured mobile answer workflow for assistant outputs that contain questions or choices, so the user can respond interactively without manually retyping long option blocks.
+- Keep the original Pi session locally interactive after pairing and after Telegram-driven actions, so local prompts, skills, and normal session work continue to function alongside the Telegram tunnel.
 - Persist session-scoped binding metadata so a resumed session can reconnect, while keeping bot tokens and pairing secrets out of session history.
 - Include guardrails for Telegram message limits, authorization, pairing expiry, disconnect/revoke, and multi-session routing.
+
+## Regression Follow-up
+
+Recent real-world testing surfaced reliability gaps in two critical areas:
+
+- Telegram `typing...` activity is not consistently visible in clients even though the feature was marked complete.
+- After pairing and remote use, the local Pi session can become effectively non-interactive for normal prompts and skills.
+
+This follow-up reopens the change so those behaviors are treated as blocking regressions rather than deferred polish.
 
 ## Capabilities
 

@@ -73,13 +73,25 @@ Alternatives considered:
 - Forward all Telegram messages verbatim to the model: unsafe for control commands and poor for abort/status.
 - Make every remote message steer while busy: powerful but surprising; follow-up is safer as a default.
 
+### Local and remote interaction coexistence
+
+Pairing a Telegram chat must not monopolize the bound Pi session. The local Pi user should still be able to type normal prompts, invoke skills, and continue working in the same session after pairing, after guided-answer use, and after any Telegram-driven prompt injection. Route-state publication to the broker therefore needs to be strictly non-blocking on the interactive path, and any confirmation or synchronization workflow must avoid deadlocking the main session loop.
+
+Alternatives considered:
+- Treat the Telegram tunnel as exclusive control once paired: rejected because the primary use case is mobile monitoring/steering of a still-local Pi session.
+- Open a separate hidden session for Telegram work: rejected because it breaks the requirement that Telegram maps to the exact active session.
+
 ### Summary and full-output delivery
 
 At `agent_end`, extract the final assistant text from the completed turn. Send a Telegram completion message containing status, elapsed time, compact final text or generated summary, and buttons/commands for full output. If an LLM summary mode is enabled, use a cheap/selected model through Pi's model registry; otherwise use deterministic truncation/extraction. Store the last full assistant response and last-turn metadata in extension memory/session metadata so `/full` can send paginated chunks respecting Telegram message limits.
 
 When the assistant output contains an actionable tail section such as “Choose:” with numbered options near the end, the delivery logic should not hide that part behind a short head-only excerpt. Instead, the tunnel should either send the relevant continuation chunk automatically, include an explicit “continued” follow-up message, or attach a clear affordance (`/full`, inline button, or both) that preserves access to the final decision block.
 
-The runtime should also parse lightweight structured question/choice metadata from the latest assistant response when it detects numbered options, bullet options, explicit questions, or similar answer prompts. That metadata can drive a Telegram-side guided answer flow that mirrors a Pi skill/workflow for interactive answering: the user enters an answer mode, sees one question or option set at a time, and submits answers via buttons or guided free-text replies without manually copying long blocks back into Telegram.
+The runtime should also parse lightweight structured question/choice metadata from the latest completed assistant response when it detects numbered options, bullet options, explicit questions, or similar answer prompts. That metadata should not be treated as a raw mirror of the assistant text. Instead, when the user enters `answer`, the tunnel should generate a normalized answer draft from the latest completed output, similar to Pi's prompt-generator/Q&A pattern: present a stable choice list or `Q1/A1` template, then accept a deterministic reply against that generated draft. For question sets, the primary path should be a filled answer template (`A1: ...`, `A2: ...`), with question-by-question replies as a fallback rather than the only mode.
+
+This keeps the mobile answer workflow closer to Pi's own answer UX: operate on the latest completed assistant output, generate explicit editable answer structure, and avoid making the user respond against fragile raw prose. It also means the tunnel must only start answer mode when it has reliable structured metadata from a completed assistant turn; otherwise it should decline cleanly and point the user to `/full` or a normal free-text reply.
+
+Because these flows are driven by heuristic parsing of assistant output, the package needs broader regression coverage over real transcripts, including numbered lists, bulleted lists, mixed prose-plus-options responses, multi-question tails, repeated answer cycles, and interruption/recovery cases. The answer workflow should prefer a conservative fallback (plain `/full` or normal free-text reply) over entering a broken guided flow.
 
 Alternatives considered:
 - Always send the full response: noisy and can exceed Telegram limits.
@@ -103,6 +115,8 @@ Alternatives considered:
 - Pi process offline means Telegram cannot reach the session → bot replies with offline state if broker is alive, or no response in in-process MVP; reconnect on `session_start`.
 - Large outputs exceed Telegram limits → chunk/paginate with safe formatting and rate limiting, and preserve important tail content such as decision prompts rather than only keeping the beginning of the response.
 - LLM-generated summaries can be inaccurate → deterministic final-message summary is the default; generated summaries are optional and labeled.
+- Broker route synchronization or guided-answer control flow can block the local Pi session → keep the interactive path non-blocking and add explicit regression tests for continued local input/skill usage after pairing.
+- Telegram `typing...` behavior is client-dependent and timing-sensitive → validate with end-to-end tests and manual smoke checks, and make fallback messaging explicit when chat actions are not observable.
 
 ## Migration Plan
 

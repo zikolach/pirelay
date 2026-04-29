@@ -37,7 +37,7 @@ Use the extension command for all runtime actions:
 - `/resume`
 - `/disconnect`
 
-Plain text messages are delivered as normal Pi prompts when idle and as follow-up/steer messages when busy.
+Plain text messages are delivered as normal Pi prompts when idle and as follow-up/steer messages when busy. Accepted idle prompts show Telegram's `typing...` activity while Pi works instead of a noisy "Prompt delivered to Pi" acknowledgement; busy follow-up/steer messages keep their queued acknowledgement and continue the activity indicator.
 
 If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list them and `/use <session>` to switch the active one.
 
