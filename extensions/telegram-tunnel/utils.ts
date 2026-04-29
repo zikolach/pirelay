@@ -33,6 +33,10 @@ export function createPairingNonce(): string {
   return randomBytes(32).toString("base64url");
 }
 
+export function createTurnId(): string {
+  return randomBytes(8).toString("hex");
+}
+
 export function redactSecret(value: string, patterns: string[], replacement = "[redacted]"): string {
   let output = value;
   for (const pattern of patterns) {
@@ -144,6 +148,15 @@ export function chunkTelegramText(text: string, maxChars: number): TelegramOutbo
 export function formatModelId(model: Model<any> | undefined): string | undefined {
   if (!model) return undefined;
   return `${model.provider}/${model.id}`;
+}
+
+export function safeTelegramFilename(baseName: string, extension: string): string {
+  const safeBase = baseName
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "pi-output";
+  const safeExtension = extension.replace(/^\.+/, "") || "txt";
+  return `${safeBase}.${safeExtension}`;
 }
 
 export function sleep(ms: number): Promise<void> {

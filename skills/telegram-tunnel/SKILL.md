@@ -45,9 +45,18 @@ If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to
 
 If the latest Pi output contains numbered options or explicit questions, Telegram preserves that trailing decision block and supports a lightweight guided answer flow:
 
+- tap an inline option button when choices are recognized
+- tap **Custom answer** and send a free-form answer as the next message
 - reply with an option number for direct choice selection
 - send `answer` to step through a guided answer flow
 - send `cancel` to leave the guided answer flow
+
+Completion and decision messages also expose full-output buttons when the latest assistant output is available:
+
+- **Show in chat** sends Telegram-sized chunks
+- **Download .md** sends a Markdown attachment
+
+Markdown tables shown in chat are reformatted into mobile-friendly code-style blocks because Telegram does not render Markdown tables. The downloaded `.md` keeps the original Markdown table format aside from configured redaction.
 
 This helps when the important decision prompt appears near the end of a long assistant response.
 

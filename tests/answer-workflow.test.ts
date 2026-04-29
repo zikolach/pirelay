@@ -20,7 +20,7 @@ describe("answer workflow", () => {
       "2. skip — archive without syncing",
     ].join("\n"));
 
-    expect(metadata).toEqual({
+    expect(metadata).toMatchObject({
       kind: "choice",
       prompt: "Choose:",
       options: [
@@ -41,6 +41,9 @@ describe("answer workflow", () => {
         "2. skip — archive without syncing",
       ].join("\n"),
     });
+    expect(metadata?.turnId).toMatch(/^[a-f0-9]+$/);
+    expect(metadata?.confidence).toBeGreaterThanOrEqual(65);
+    expect(metadata?.diagnostics).toContain("stable-continuous-ids");
   });
 
   it("extracts inline lettered options from a single response paragraph", () => {
@@ -48,7 +51,7 @@ describe("answer workflow", () => {
       "What should we do next? A) Clean up the OpenSpec/git working tree B) Run a real Telegram smoke test for typing C) Add the missing integration-style tests D) Commit the current completed changes E) Inspect/fix anything suspicious before committing",
     );
 
-    expect(metadata).toEqual({
+    expect(metadata).toMatchObject({
       kind: "choice",
       prompt: "What should we do next?",
       options: [
@@ -81,6 +84,7 @@ describe("answer workflow", () => {
       tailExcerpt:
         "A) Clean up the OpenSpec/git working tree B) Run a real Telegram smoke test for typing C) Add the missing integration-style tests D) Commit the current completed changes E) Inspect/fix anything suspicious before committing",
     });
+    expect(metadata?.diagnostics).toContain("inline-options");
   });
 
   it("matches lettered options case-insensitively and by ordinal number", () => {
@@ -126,7 +130,7 @@ describe("answer workflow", () => {
       "2. skip — archive without syncing",
     ].join("\n"));
 
-    expect(summarizeTailForTelegram(metadata!)).toContain("Reply with an option directly");
+    expect(summarizeTailForTelegram(metadata!)).toContain("reply with an option directly");
     expect(summarizeTailForTelegram(metadata!)).toContain("Use /full");
   });
 
@@ -149,9 +153,40 @@ describe("answer workflow", () => {
     ]);
   });
 
+  it("detects lettered, parenthesized, and option-label choices", () => {
+    expect(extractStructuredAnswerMetadata([
+      "Next options:",
+      "A. Sync specs now",
+      "B. Archive without syncing",
+    ].join("\n"))?.options?.map((option) => option.id)).toEqual(["A", "B"]);
+
+    expect(extractStructuredAnswerMetadata([
+      "Choose one:",
+      "(A) Show in chat",
+      "(B) Download Markdown",
+    ].join("\n"))?.options?.map((option) => option.id)).toEqual(["A", "B"]);
+
+    expect(extractStructuredAnswerMetadata([
+      "Select output format:",
+      "Option A: Chat chunks",
+      "Option B: Markdown document",
+    ].join("\n"))?.options?.map((option) => option.label)).toEqual(["Chat chunks", "Markdown document"]);
+  });
+
   it("returns undefined for malformed or ambiguous partial choice blocks", () => {
     expect(extractStructuredAnswerMetadata(["Choose:", "1.", "2."].join("\n"))).toBeUndefined();
     expect(extractStructuredAnswerMetadata(["Options:", "maybe", "perhaps"].join("\n"))).toBeUndefined();
+  });
+
+  it("rejects ordinary numbered task lists despite structural formatting", () => {
+    const metadata = extractStructuredAnswerMetadata([
+      "Tasks completed:",
+      "1. Added tests",
+      "2. Updated docs",
+      "3. Ran typecheck",
+    ].join("\n"));
+
+    expect(metadata).toBeUndefined();
   });
 
   it("does not enable guided answers for ordinary trailing bullet lists", () => {

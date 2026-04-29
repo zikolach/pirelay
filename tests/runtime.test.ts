@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
@@ -495,5 +496,197 @@ describe("InProcessTunnelRuntime", () => {
     expect(deliveries).toEqual([{ text: "check openspec status", deliverAs: undefined }]);
     expect(sent).not.toContain("Pi is busy; your message was queued as followUp.");
     expect(actions).toEqual(["typing"]);
+  });
+
+  it("handles inline option callbacks for the current assistant turn", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-callback-option:/tmp/session-callback-option.jsonl",
+      sessionId: "session-callback-option",
+      sessionFile: "/tmp/session-callback-option.jsonl",
+      sessionLabel: "session-callback-option.jsonl",
+      chatId: 1002,
+      userId: 22,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-callback";
+    route.notification.lastAssistantText = ["Choose:", "1. sync", "2. skip"].join("\n");
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(route.notification.lastAssistantText, { turnId: "turn-callback" });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async () => undefined,
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 11,
+      callbackQueryId: "cb-1",
+      data: buildAnswerOptionCallbackData("turn-callback", "2"),
+      chat: { id: 1002, type: "private" },
+      user: { id: 22, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Selected 2"]);
+    expect(deliveries).toEqual([{ text: "Answer to: Choose:\nSelected option 2: skip", deliverAs: undefined }]);
+  });
+
+  it("captures custom answers after an inline custom-answer callback and lets commands bypass capture", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-custom-callback:/tmp/session-custom-callback.jsonl",
+      sessionId: "session-custom-callback",
+      sessionFile: "/tmp/session-custom-callback.jsonl",
+      sessionLabel: "session-custom-callback.jsonl",
+      chatId: 1003,
+      userId: 23,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-custom";
+    route.notification.lastAssistantText = ["Choose:", "1. sync", "2. skip"].join("\n");
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(route.notification.lastAssistantText, { turnId: "turn-custom" });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 12,
+      callbackQueryId: "cb-2",
+      data: buildAnswerCustomCallbackData("turn-custom"),
+      chat: { id: 1003, type: "private" },
+      user: { id: 23, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 13,
+      messageId: 13,
+      text: "cancel",
+      chat: { id: 1003, type: "private" },
+      user: { id: 23, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 14,
+      callbackQueryId: "cb-3",
+      data: buildAnswerCustomCallbackData("turn-custom"),
+      chat: { id: 1003, type: "private" },
+      user: { id: 23, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 15,
+      messageId: 15,
+      text: "/status",
+      chat: { id: 1003, type: "private" },
+      user: { id: 23, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 16,
+      messageId: 16,
+      text: "Use my own custom plan",
+      chat: { id: 1003, type: "private" },
+      user: { id: 23, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Send your custom answer.", "Send your custom answer."]);
+    expect(sent[0]).toContain("Send your custom answer");
+    expect(sent).toContain("Custom answer cancelled.");
+    expect(sent.some((text) => text.includes("Session:"))).toBe(true);
+    expect(sent.at(-1)).toBe("Sent your custom answer to Pi.");
+    expect(deliveries).toEqual([{ text: "Answer to: Choose:\nUse my own custom plan", deliverAs: undefined }]);
+  });
+
+  it("rejects stale callbacks and handles full-output actions", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-full-callback:/tmp/session-full-callback.jsonl",
+      sessionId: "session-full-callback",
+      sessionFile: "/tmp/session-full-callback.jsonl",
+      sessionLabel: "session-full-callback.jsonl",
+      chatId: 1004,
+      userId: 24,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-full";
+    route.notification.lastAssistantText = "Full assistant output";
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const callbacks: string[] = [];
+    const sent: string[] = [];
+    const documents: Array<{ filename: string; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string) => documents.push({ filename, text }),
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 15,
+      callbackQueryId: "cb-unauthorized",
+      data: buildFullChatCallbackData("turn-full"),
+      chat: { id: 1004, type: "private" },
+      user: { id: 999, username: "intruder" },
+    });
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 16,
+      callbackQueryId: "cb-3",
+      data: buildAnswerOptionCallbackData("older-turn", "1"),
+      chat: { id: 1004, type: "private" },
+      user: { id: 24, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 17,
+      callbackQueryId: "cb-4",
+      data: buildFullChatCallbackData("turn-full"),
+      chat: { id: 1004, type: "private" },
+      user: { id: 24, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 18,
+      callbackQueryId: "cb-5",
+      data: buildFullMarkdownCallbackData("turn-full"),
+      chat: { id: 1004, type: "private" },
+      user: { id: 24, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Unauthorized.", "This action is no longer current.", "Sending full output.", "Sending Markdown file."]);
+    expect(sent).toContain("Full assistant output");
+    expect(documents[0]?.filename).toContain("pi-output-session-full-callback-turn-full.md");
+    expect(documents[0]?.text).toBe("Full assistant output");
+    expect(deliveries).toEqual([]);
   });
 });

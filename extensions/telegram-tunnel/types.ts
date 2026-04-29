@@ -96,6 +96,7 @@ export interface ParsedTelegramCommand {
 
 export interface SessionNotificationState {
   startedAt?: number;
+  lastTurnId?: string;
   lastAssistantText?: string;
   lastSummary?: string;
   lastFailure?: string;
@@ -140,12 +141,32 @@ export interface SessionStatusSnapshot {
 }
 
 export interface TelegramInboundMessage {
+  kind?: "message";
   updateId: number;
   messageId: number;
   text: string;
   chat: TelegramChatSummary;
   user: TelegramUserSummary;
 }
+
+export interface TelegramInboundCallback {
+  kind: "callback";
+  updateId: number;
+  callbackQueryId: string;
+  messageId?: number;
+  data: string;
+  chat: TelegramChatSummary;
+  user: TelegramUserSummary;
+}
+
+export type TelegramInboundUpdate = TelegramInboundMessage | TelegramInboundCallback;
+
+export interface TelegramInlineKeyboardButton {
+  text: string;
+  callbackData: string;
+}
+
+export type TelegramInlineKeyboard = TelegramInlineKeyboardButton[][];
 
 export interface TelegramOutboundChunk {
   text: string;

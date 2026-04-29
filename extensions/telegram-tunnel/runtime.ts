@@ -8,26 +8,37 @@ import { TelegramApiClient } from "./telegram-api.js";
 import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
+  buildFreeTextChoiceInjection,
   isGuidedAnswerStart,
+  isGuidedAnswerCancel,
   matchChoiceOption,
   renderGuidedAnswerPrompt,
   startGuidedAnswerFlow,
   summarizeTailForTelegram,
 } from "./answer-workflow.js";
+import {
+  buildAnswerActionKeyboard,
+  buildFullOutputKeyboard,
+  parseTelegramActionCallbackData,
+} from "./telegram-actions.js";
 import type {
   SessionRoute,
   SessionStatusSnapshot,
   SetupCache,
   TelegramBindingMetadata,
+  TelegramInboundCallback,
   TelegramInboundMessage,
+  TelegramInboundUpdate,
   TelegramTunnelConfig,
   TunnelRuntime,
   TelegramUserSummary,
 } from "./types.js";
 import {
+  createTurnId,
   formatModelId,
   getTelegramUserLabel,
   parseTelegramCommand,
+  safeTelegramFilename,
   statusLineForBinding,
   summarizeTextDeterministically,
   toIsoNow,
@@ -52,6 +63,15 @@ const HELP_TEXT = [
 const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
+const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
+
+interface PendingCustomAnswerState {
+  sessionKey: string;
+  chatId: number;
+  userId: number;
+  turnId: string;
+  expiresAt: number;
+}
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
@@ -78,6 +98,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly api: TelegramApiClient;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly answerFlows = new Map<string, ReturnType<typeof startGuidedAnswerFlow>>();
+  private readonly pendingCustomAnswers = new Map<string, PendingCustomAnswerState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
   private started = false;
   private pollingTask?: Promise<void>;
@@ -143,6 +164,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!route.notification.structuredAnswer) {
       this.answerFlows.delete(this.answerFlowKey(route));
     }
+    this.clearStaleCustomAnswers(route);
     this.routes.set(route.sessionKey, route);
     this.syncActivityIndicator(route);
     if (route.binding) {
@@ -155,6 +177,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const route = this.routes.get(sessionKey);
     if (route) {
       this.answerFlows.delete(this.answerFlowKey(route));
+      this.clearCustomAnswersForRoute(route);
       this.clearActivityIndicator(route);
     }
     this.routes.delete(sessionKey);
@@ -172,14 +195,68 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
-    await this.api.sendPlainText(route.binding.chatId, text);
+    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, text, this.fullOutputKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
-      await this.api.sendPlainText(route.binding.chatId, summarizeTailForTelegram(route.notification.structuredAnswer));
+      await this.api.sendPlainTextWithKeyboard(
+        route.binding.chatId,
+        summarizeTailForTelegram(route.notification.structuredAnswer),
+        buildAnswerActionKeyboard(route.notification.structuredAnswer),
+      );
     }
   }
 
   private answerFlowKey(route: SessionRoute): string {
     return `${route.sessionKey}:${route.binding?.chatId ?? "unbound"}`;
+  }
+
+  private customAnswerKey(sessionKey: string, chatId: number, userId: number): string {
+    return `${sessionKey}:${chatId}:${userId}`;
+  }
+
+  private currentTurnId(route: SessionRoute): string | undefined {
+    return route.notification.structuredAnswer?.turnId ?? route.notification.lastTurnId;
+  }
+
+  private fullOutputKeyboardForRoute(route: SessionRoute) {
+    const turnId = this.currentTurnId(route);
+    return route.notification.lastAssistantText && turnId ? buildFullOutputKeyboard(turnId) : undefined;
+  }
+
+  private clearCustomAnswersForRoute(route: SessionRoute): void {
+    for (const [key, pending] of this.pendingCustomAnswers.entries()) {
+      if (pending.sessionKey === route.sessionKey) this.pendingCustomAnswers.delete(key);
+    }
+  }
+
+  private clearStaleCustomAnswers(route: SessionRoute): void {
+    const currentTurnId = this.currentTurnId(route);
+    const now = Date.now();
+    for (const [key, pending] of this.pendingCustomAnswers.entries()) {
+      if (pending.sessionKey !== route.sessionKey) continue;
+      if (pending.expiresAt <= now || pending.turnId !== currentTurnId) {
+        this.pendingCustomAnswers.delete(key);
+      }
+    }
+  }
+
+  private setPendingCustomAnswer(route: SessionRoute, user: TelegramUserSummary, turnId: string): void {
+    if (!route.binding) return;
+    this.pendingCustomAnswers.set(this.customAnswerKey(route.sessionKey, route.binding.chatId, user.id), {
+      sessionKey: route.sessionKey,
+      chatId: route.binding.chatId,
+      userId: user.id,
+      turnId,
+      expiresAt: Date.now() + CUSTOM_ANSWER_EXPIRY_MS,
+    });
+  }
+
+  private takePendingCustomAnswer(route: SessionRoute, user: TelegramUserSummary): PendingCustomAnswerState | undefined {
+    if (!route.binding) return undefined;
+    const key = this.customAnswerKey(route.sessionKey, route.binding.chatId, user.id);
+    const pending = this.pendingCustomAnswers.get(key);
+    if (!pending) return undefined;
+    this.pendingCustomAnswers.delete(key);
+    return pending;
   }
 
   private activityKey(sessionKey: string, chatId: number): string {
@@ -279,10 +356,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     while (this.started) {
       try {
         await this.store.cleanupExpiredPairings();
-        const messages = await this.api.getUpdates(this.updateOffset);
-        for (const message of messages) {
-          this.updateOffset = message.updateId + 1;
-          await this.processInbound(message);
+        const updates = await this.api.getUpdates(this.updateOffset);
+        for (const update of updates) {
+          this.updateOffset = update.updateId + 1;
+          await this.processInbound(update);
         }
       } catch (error) {
         if (!this.started) break;
@@ -295,7 +372,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
-  private async processInbound(message: TelegramInboundMessage): Promise<void> {
+  private async processInbound(message: TelegramInboundUpdate): Promise<void> {
+    if (message.kind === "callback") {
+      await this.processCallback(message);
+      return;
+    }
+
     const command = parseTelegramCommand(message.text);
     if (command?.command === "start") {
       await this.handleStart(message, command.args);
@@ -341,6 +423,97 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     await this.handleAuthorizedText(route, message);
+  }
+
+  private async processCallback(callback: TelegramInboundCallback): Promise<void> {
+    const action = parseTelegramActionCallbackData(callback.data);
+    if (!action) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Unknown action.");
+      return;
+    }
+
+    const persisted = await this.store.getBindingByChatId(callback.chat.id);
+    if (!persisted || persisted.status === "revoked") {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "This chat is not paired.");
+      return;
+    }
+
+    const route = this.routes.get(persisted.sessionKey);
+    if (!route) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
+      await this.api.sendPlainText(callback.chat.id, `The paired Pi session (${persisted.sessionLabel}) is currently offline. Resume it locally, then try again.`);
+      return;
+    }
+
+    if (!route.binding || !(await this.isAuthorized(route, callback.user))) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Unauthorized.");
+      return;
+    }
+
+    if (route.binding.paused) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Tunnel paused.");
+      return;
+    }
+
+    const currentTurnId = this.currentTurnId(route);
+    if (!currentTurnId || action.turnId !== currentTurnId) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "This action is no longer current.");
+      await this.api.sendPlainText(callback.chat.id, "That Telegram action belongs to an older Pi output. Use the latest buttons or /full.");
+      return;
+    }
+
+    switch (action.kind) {
+      case "answer-option": {
+        const metadata = hasAnswerableLatestOutput(route) ? route.notification.structuredAnswer : undefined;
+        const option = metadata?.kind === "choice" ? matchChoiceOption(metadata, action.optionId) : undefined;
+        if (!metadata || !option) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "No matching option.");
+          return;
+        }
+        this.answerFlows.delete(this.answerFlowKey(route));
+        this.takePendingCustomAnswer(route, callback.user);
+        await this.startActivityIndicator(route);
+        route.actions.sendUserMessage(buildChoiceInjection(metadata, option), isEffectivelyIdle(route)
+          ? undefined
+          : { deliverAs: this.config.busyDeliveryMode });
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} selected an inline answer option.`);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, `Selected ${option.id}`);
+        return;
+      }
+      case "answer-custom": {
+        const metadata = hasAnswerableLatestOutput(route) ? route.notification.structuredAnswer : undefined;
+        if (!metadata || metadata.kind !== "choice") {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "No custom answer is available.");
+          return;
+        }
+        this.setPendingCustomAnswer(route, callback.user, action.turnId);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Send your custom answer.");
+        await this.api.sendPlainText(callback.chat.id, "Send your custom answer as the next message, or send 'cancel' to stop.");
+        return;
+      }
+      case "full-chat": {
+        const text = route.notification.lastAssistantText;
+        await this.api.answerCallbackQuery(callback.callbackQueryId, text ? "Sending full output." : "No output available.");
+        await this.api.sendPlainText(callback.chat.id, text ? text : "No completed assistant output is available yet for this session.");
+        return;
+      }
+      case "full-markdown": {
+        const text = route.notification.lastAssistantText;
+        if (!text) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "No output available.");
+          await this.api.sendPlainText(callback.chat.id, "No completed assistant output is available yet for this session.");
+          return;
+        }
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending Markdown file.");
+        await this.api.sendMarkdownDocument(
+          callback.chat.id,
+          safeTelegramFilename(`pi-output-${route.sessionId}-${currentTurnId}`, "md"),
+          text,
+          "Latest assistant output",
+        );
+        return;
+      }
+    }
   }
 
   private async handleStart(message: TelegramInboundMessage, nonce: string): Promise<void> {
@@ -530,6 +703,27 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
+    const pendingCustom = this.takePendingCustomAnswer(route, message.user);
+    if (pendingCustom) {
+      if (isGuidedAnswerCancel(message.text)) {
+        await this.api.sendPlainText(message.chat.id, "Custom answer cancelled.");
+        return;
+      }
+      const currentTurnId = this.currentTurnId(route);
+      const metadata = hasAnswerableLatestOutput(route) ? route.notification.structuredAnswer : undefined;
+      if (pendingCustom.expiresAt <= Date.now() || pendingCustom.turnId !== currentTurnId || !metadata || metadata.kind !== "choice") {
+        await this.api.sendPlainText(message.chat.id, "That custom answer request is no longer current. Use the latest buttons or send a normal prompt.");
+        return;
+      }
+      await this.startActivityIndicator(route);
+      route.actions.sendUserMessage(buildFreeTextChoiceInjection(metadata, message.text), isEffectivelyIdle(route)
+        ? undefined
+        : { deliverAs: this.config.busyDeliveryMode });
+      route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a custom inline answer.`);
+      await this.api.sendPlainText(message.chat.id, "Sent your custom answer to Pi.");
+      return;
+    }
+
     const metadata = hasAnswerableLatestOutput(route) ? route.notification.structuredAnswer : undefined;
     const flowKey = this.answerFlowKey(route);
     const activeFlow = this.answerFlows.get(flowKey);
@@ -632,12 +826,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (status === "completed" && notification.lastAssistantText) {
       const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
       notification.lastSummary = summary;
-      await this.api.sendPlainText(
+      await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
         `✅ Pi task completed in ${durationLabel}\n\n${summary}\n\nUse /full for the full assistant output.`,
+        this.fullOutputKeyboardForRoute(route),
       );
       if (notification.structuredAnswer) {
-        await this.api.sendPlainText(route.binding.chatId, summarizeTailForTelegram(notification.structuredAnswer));
+        await this.api.sendPlainTextWithKeyboard(
+          route.binding.chatId,
+          summarizeTailForTelegram(notification.structuredAnswer),
+          buildAnswerActionKeyboard(notification.structuredAnswer),
+        );
       }
       return;
     }

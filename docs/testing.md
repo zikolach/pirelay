@@ -55,9 +55,17 @@ Choose:
 
 Check:
 - the important trailing decision block appears in Telegram even if the full output is long
+- recognized choices appear as inline buttons
+- tapping a choice button injects that answer into Pi without typing the number
+- tapping `Custom answer` prompts for custom text, captures the next non-command message, and `cancel` exits without injection
 - replying `1` or `2` works directly
 - sending `answer` starts guided mode
 - sending `cancel` exits guided mode safely
+- tapping `Show in chat` sends the latest assistant output as chunks
+- tapping `Download .md` sends a Markdown file containing the latest assistant output
+- Markdown tables in chat are converted to readable aligned code-style blocks
+- Markdown tables in the downloaded `.md` remain source-style Markdown, except configured redaction
+- fenced code blocks are preserved and not reformatted as tables
 - malformed or ambiguous structured output falls back to `/full` or a free-text reply rather than a broken guided flow
 
 ## 4. Multi-session and reconnect behavior

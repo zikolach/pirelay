@@ -7,7 +7,7 @@ import { getOrCreateTunnelRuntime, sendSessionNotification } from "./runtime.js"
 import { TunnelStateStore } from "./state-store.js";
 import type { BindingEntryData, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { extractStructuredAnswerMetadata } from "./answer-workflow.js";
-import { extractFinalAssistantText, extractTextContent, getTelegramUserLabel, sessionKeyOf, sessionLabelOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
+import { createTurnId, extractFinalAssistantText, extractTextContent, getTelegramUserLabel, sessionKeyOf, sessionLabelOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
 
 const BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
 const AUDIT_MESSAGE_TYPE = "telegram-tunnel-audit";
@@ -399,6 +399,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
     currentRoute.notification.startedAt = Date.now();
+    currentRoute.notification.lastTurnId = undefined;
     currentRoute.notification.lastAssistantText = undefined;
     currentRoute.notification.lastFailure = undefined;
     currentRoute.notification.lastStatus = "running";
@@ -446,9 +447,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.lastActivityAt = Date.now();
 
     const finalText = extractFinalAssistantText(event.messages as AgentMessage[]);
+    const turnId = createTurnId();
+    currentRoute.notification.lastTurnId = turnId;
     if (finalText) {
       currentRoute.notification.lastAssistantText = finalText;
-      currentRoute.notification.structuredAnswer = extractStructuredAnswerMetadata(finalText);
+      currentRoute.notification.structuredAnswer = extractStructuredAnswerMetadata(finalText, { turnId });
     } else {
       currentRoute.notification.structuredAnswer = undefined;
     }

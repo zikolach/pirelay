@@ -1,15 +1,23 @@
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
-import { Api, GrammyError, HttpError } from 'grammy';
+import { Api, GrammyError, HttpError, InputFile } from 'grammy';
 import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
+  buildFreeTextChoiceInjection,
   isGuidedAnswerStart,
+  isGuidedAnswerCancel,
   matchChoiceOption,
   renderGuidedAnswerPrompt,
   startGuidedAnswerFlow,
   summarizeTailForTelegram,
 } from './answer-workflow.ts';
+import {
+  buildAnswerActionKeyboard,
+  buildFullOutputKeyboard,
+  parseTelegramActionCallbackData,
+} from './telegram-actions.ts';
+import { formatTelegramChatText } from './telegram-format.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
@@ -23,6 +31,7 @@ const routes = new Map();
 const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
 const answerFlows = new Map();
+const pendingCustomAnswers = new Map();
 const activityIndicators = new Map();
 const statePath = `${config.stateDir}/state.json`;
 let updateOffset;
@@ -49,6 +58,7 @@ const HELP_TEXT = [
 const TELEGRAM_ACTIVITY_ACTION = 'typing';
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4000;
+const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60 * 1000;
 
 function unrefTimer(timer) {
   if (timer && typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
@@ -102,7 +112,7 @@ function redact(text) {
 
 function chunkText(text) {
   const maxChars = config.maxTelegramMessageChars || 3900;
-  const safe = redact(String(text || '')).replace(/\r\n/g, '\n');
+  const safe = formatTelegramChatText(redact(String(text || ''))).replace(/\r\n/g, '\n');
   if (safe.length <= maxChars) return [safe];
   const chunks = [];
   let remaining = safe;
@@ -134,33 +144,21 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendPlainText(chatId, text) {
-  const chunks = chunkText(text);
-  for (const chunk of chunks) {
-    let lastError;
-    const retries = Math.max(1, config.sendRetryCount || 1);
-    for (let attempt = 1; attempt <= retries; attempt += 1) {
-      try {
-        await api.sendMessage(chatId, chunk);
-        lastError = undefined;
-        break;
-      } catch (error) {
-        lastError = error;
-        if (attempt >= retries || !isRetriable(error)) break;
-        await sleep(retryDelay(error, attempt));
-      }
-    }
-    if (lastError) throw lastError;
-  }
+function toReplyMarkup(keyboard) {
+  return {
+    inline_keyboard: keyboard.map((row) => row.map((button) => ({
+      text: button.text,
+      callback_data: button.callbackData,
+    }))),
+  };
 }
 
-async function sendChatAction(chatId, action = TELEGRAM_ACTIVITY_ACTION) {
+async function withRetry(operation) {
   let lastError;
   const retries = Math.max(1, config.sendRetryCount || 1);
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
-      await api.sendChatAction(chatId, action);
-      return;
+      return await operation();
     } catch (error) {
       lastError = error;
       if (attempt >= retries || !isRetriable(error)) break;
@@ -168,6 +166,28 @@ async function sendChatAction(chatId, action = TELEGRAM_ACTIVITY_ACTION) {
     }
   }
   throw lastError;
+}
+
+async function sendPlainText(chatId, text, keyboard) {
+  const chunks = chunkText(text);
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const replyMarkup = keyboard && index === chunks.length - 1 ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
+    await withRetry(() => api.sendMessage(chatId, chunk, replyMarkup));
+  }
+}
+
+async function sendMarkdownDocument(chatId, filename, text, caption) {
+  const redacted = redact(text);
+  await withRetry(() => api.sendDocument(chatId, new InputFile(Buffer.from(redacted, 'utf8'), filename), caption ? { caption } : undefined));
+}
+
+async function answerCallbackQuery(callbackQueryId, text) {
+  await withRetry(() => api.answerCallbackQuery(callbackQueryId, text ? { text } : undefined));
+}
+
+async function sendChatAction(chatId, action = TELEGRAM_ACTIVITY_ACTION) {
+  await withRetry(() => api.sendChatAction(chatId, action));
 }
 
 async function loadState() {
@@ -304,6 +324,63 @@ function requestClient(route, action, payload = {}) {
 
 function getAnswerFlowKey(route) {
   return `${route.sessionKey}:${route.binding?.chatId ?? 'unbound'}`;
+}
+
+function getCurrentTurnId(route) {
+  return route?.notification?.structuredAnswer?.turnId || route?.notification?.lastTurnId;
+}
+
+function fullOutputKeyboardForRoute(route) {
+  const turnId = getCurrentTurnId(route);
+  return route?.notification?.lastAssistantText && turnId ? buildFullOutputKeyboard(turnId) : undefined;
+}
+
+function safeFilename(baseName, extension) {
+  const safeBase = String(baseName || 'pi-output')
+    .replace(/[^a-z0-9._-]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'pi-output';
+  const safeExtension = String(extension || 'txt').replace(/^\.+/, '') || 'txt';
+  return `${safeBase}.${safeExtension}`;
+}
+
+function getCustomAnswerKey(route, userId) {
+  return `${route.sessionKey}:${route.binding?.chatId ?? 'unbound'}:${userId}`;
+}
+
+function clearCustomAnswersForRoute(route) {
+  for (const [key, pending] of pendingCustomAnswers.entries()) {
+    if (pending.sessionKey === route.sessionKey) pendingCustomAnswers.delete(key);
+  }
+}
+
+function clearStaleCustomAnswers(route) {
+  const currentTurnId = getCurrentTurnId(route);
+  const now = Date.now();
+  for (const [key, pending] of pendingCustomAnswers.entries()) {
+    if (pending.sessionKey !== route.sessionKey) continue;
+    if (pending.expiresAt <= now || pending.turnId !== currentTurnId) pendingCustomAnswers.delete(key);
+  }
+}
+
+function setPendingCustomAnswer(route, user, turnId) {
+  if (!route?.binding) return;
+  pendingCustomAnswers.set(getCustomAnswerKey(route, user.id), {
+    sessionKey: route.sessionKey,
+    chatId: route.binding.chatId,
+    userId: user.id,
+    turnId,
+    expiresAt: Date.now() + CUSTOM_ANSWER_EXPIRY_MS,
+  });
+}
+
+function takePendingCustomAnswer(route, user) {
+  if (!route?.binding) return undefined;
+  const key = getCustomAnswerKey(route, user.id);
+  const pending = pendingCustomAnswers.get(key);
+  if (!pending) return undefined;
+  pendingCustomAnswers.delete(key);
+  return pending;
 }
 
 async function deliverAnswerInjection(route, message, text) {
@@ -706,6 +783,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'disconnect': {
       clearAnswerFlow(route);
+      clearCustomAnswersForRoute(route);
       clearActivityIndicator(route);
       route.binding = undefined;
       await revokeBinding(route.sessionKey);
@@ -727,6 +805,22 @@ async function handleAuthorizedText(message, route) {
   }
   if (route.binding.paused) {
     await sendPlainText(message.chat.id, 'The tunnel is paused. Use /resume first.');
+    return;
+  }
+  const pendingCustom = takePendingCustomAnswer(route, message.user);
+  if (pendingCustom) {
+    if (isGuidedAnswerCancel(message.text)) {
+      await sendPlainText(message.chat.id, 'Custom answer cancelled.');
+      return;
+    }
+    const currentTurnId = getCurrentTurnId(route);
+    const metadata = hasAnswerableLatestOutput(route) ? route?.notification?.structuredAnswer : undefined;
+    if (pendingCustom.expiresAt <= Date.now() || pendingCustom.turnId !== currentTurnId || !metadata || metadata.kind !== 'choice') {
+      await sendPlainText(message.chat.id, 'That custom answer request is no longer current. Use the latest buttons or send a normal prompt.');
+      return;
+    }
+    await deliverAnswerInjection(route, message, buildFreeTextChoiceInjection(metadata, message.text));
+    await sendPlainText(message.chat.id, 'Sent your custom answer to Pi.');
     return;
   }
   if (await handleAnswerFlowReply(message, route)) {
@@ -786,6 +880,93 @@ async function processInbound(message) {
   await handleAuthorizedText(message, route);
 }
 
+async function processCallback(callback) {
+  const action = parseTelegramActionCallbackData(callback.data);
+  if (!action) {
+    await answerCallbackQuery(callback.callbackQueryId, 'Unknown action.');
+    return;
+  }
+
+  const live = getLiveRoutesForChat(callback.chat.id, callback.user.id);
+  const route = live.find((candidate) => getCurrentTurnId(candidate) === action.turnId)
+    || live.find((candidate) => candidate.sessionKey === activeSessionByChatId.get(String(callback.chat.id)));
+
+  if (!route) {
+    const persisted = await getPersistedBindingsForChat(callback.chat.id, callback.user.id);
+    await answerCallbackQuery(callback.callbackQueryId, persisted.length > 0 ? 'Pi session is offline.' : 'This chat is not paired.');
+    if (persisted.length > 0) {
+      await sendPlainText(callback.chat.id, 'The selected Pi session is currently offline. Resume it locally, then try again.');
+    }
+    return;
+  }
+
+  if (!routeIsAuthorized(route, callback.user)) {
+    await answerCallbackQuery(callback.callbackQueryId, 'Unauthorized.');
+    return;
+  }
+
+  if (route.binding?.paused) {
+    await answerCallbackQuery(callback.callbackQueryId, 'Tunnel paused.');
+    return;
+  }
+
+  const currentTurnId = getCurrentTurnId(route);
+  if (!currentTurnId || action.turnId !== currentTurnId) {
+    await answerCallbackQuery(callback.callbackQueryId, 'This action is no longer current.');
+    await sendPlainText(callback.chat.id, 'That Telegram action belongs to an older Pi output. Use the latest buttons or /full.');
+    return;
+  }
+
+  switch (action.kind) {
+    case 'answer-option': {
+      const metadata = hasAnswerableLatestOutput(route) ? route.notification?.structuredAnswer : undefined;
+      const option = metadata?.kind === 'choice' ? matchChoiceOption(metadata, action.optionId) : undefined;
+      if (!metadata || !option) {
+        await answerCallbackQuery(callback.callbackQueryId, 'No matching option.');
+        return;
+      }
+      clearAnswerFlow(route);
+      takePendingCustomAnswer(route, callback.user);
+      await deliverAnswerInjection(route, callback, buildChoiceInjection(metadata, option));
+      await answerCallbackQuery(callback.callbackQueryId, `Selected ${option.id}`);
+      return;
+    }
+    case 'answer-custom': {
+      const metadata = hasAnswerableLatestOutput(route) ? route.notification?.structuredAnswer : undefined;
+      if (!metadata || metadata.kind !== 'choice') {
+        await answerCallbackQuery(callback.callbackQueryId, 'No custom answer is available.');
+        return;
+      }
+      setPendingCustomAnswer(route, callback.user, action.turnId);
+      await answerCallbackQuery(callback.callbackQueryId, 'Send your custom answer.');
+      await sendPlainText(callback.chat.id, "Send your custom answer as the next message, or send 'cancel' to stop.");
+      return;
+    }
+    case 'full-chat': {
+      const text = route.notification?.lastAssistantText;
+      await answerCallbackQuery(callback.callbackQueryId, text ? 'Sending full output.' : 'No output available.');
+      await sendPlainText(callback.chat.id, text || 'No completed assistant output is available yet for this session.');
+      return;
+    }
+    case 'full-markdown': {
+      const text = route.notification?.lastAssistantText;
+      if (!text) {
+        await answerCallbackQuery(callback.callbackQueryId, 'No output available.');
+        await sendPlainText(callback.chat.id, 'No completed assistant output is available yet for this session.');
+        return;
+      }
+      await answerCallbackQuery(callback.callbackQueryId, 'Sending Markdown file.');
+      await sendMarkdownDocument(
+        callback.chat.id,
+        safeFilename(`pi-output-${route.sessionId}-${currentTurnId}`, 'md'),
+        text,
+        'Latest assistant output',
+      );
+      return;
+    }
+  }
+}
+
 async function pollLoop() {
   while (!shuttingDown) {
     try {
@@ -793,28 +974,52 @@ async function pollLoop() {
       const updates = await api.getUpdates({
         offset: updateOffset,
         timeout: config.pollingTimeoutSeconds || 20,
-        allowed_updates: ['message'],
+        allowed_updates: ['message', 'callback_query'],
       });
       for (const update of updates) {
         const message = update.message;
+        const callback = update.callback_query;
         updateOffset = update.update_id + 1;
-        if (!message?.text || !message.from || !message.chat) continue;
-        await processInbound({
-          updateId: update.update_id,
-          messageId: message.message_id,
-          text: message.text,
-          chat: {
-            id: message.chat.id,
-            type: message.chat.type,
-            title: 'title' in message.chat ? message.chat.title : undefined,
-          },
-          user: {
-            id: message.from.id,
-            username: message.from.username,
-            firstName: message.from.first_name,
-            lastName: message.from.last_name,
-          },
-        });
+        if (message?.text && message.from && message.chat) {
+          await processInbound({
+            updateId: update.update_id,
+            messageId: message.message_id,
+            text: message.text,
+            chat: {
+              id: message.chat.id,
+              type: message.chat.type,
+              title: 'title' in message.chat ? message.chat.title : undefined,
+            },
+            user: {
+              id: message.from.id,
+              username: message.from.username,
+              firstName: message.from.first_name,
+              lastName: message.from.last_name,
+            },
+          });
+          continue;
+        }
+        const callbackMessage = callback?.message;
+        const callbackChat = callbackMessage?.chat;
+        if (callback?.data && callback.from && callbackChat) {
+          await processCallback({
+            updateId: update.update_id,
+            callbackQueryId: callback.id,
+            messageId: callbackMessage.message_id,
+            data: callback.data,
+            chat: {
+              id: callbackChat.id,
+              type: callbackChat.type,
+              title: 'title' in callbackChat ? callbackChat.title : undefined,
+            },
+            user: {
+              id: callback.from.id,
+              username: callback.from.username,
+              firstName: callback.from.first_name,
+              lastName: callback.from.last_name,
+            },
+          });
+        }
       }
     } catch {
       await sleep(1500);
@@ -829,6 +1034,7 @@ function removeClient(socket) {
     const existing = routes.get(sessionKey);
     if (existing) {
       clearAnswerFlow(existing);
+      clearCustomAnswersForRoute(existing);
       clearActivityIndicator(existing);
     }
     routes.delete(sessionKey);
@@ -869,6 +1075,7 @@ async function handleClientRequest(socket, message) {
         if (!route.notification?.structuredAnswer && previousRoute) {
           clearAnswerFlow(previousRoute);
         }
+        clearStaleCustomAnswers(nextRoute);
         syncActivityIndicator(nextRoute);
         if (nextRoute.binding) {
           await upsertBinding(nextRoute.binding);
@@ -883,6 +1090,7 @@ async function handleClientRequest(socket, message) {
         const existing = routes.get(message.sessionKey);
         if (existing) {
           clearAnswerFlow(existing);
+          clearCustomAnswersForRoute(existing);
           clearActivityIndicator(existing);
         }
         routes.delete(message.sessionKey);
@@ -896,9 +1104,13 @@ async function handleClientRequest(socket, message) {
           return;
         }
         syncActivityIndicator(route);
-        await sendPlainText(route.binding.chatId, message.text);
+        await sendPlainText(route.binding.chatId, message.text, fullOutputKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
-          await sendPlainText(route.binding.chatId, summarizeTailForTelegram(route.notification.structuredAnswer));
+          await sendPlainText(
+            route.binding.chatId,
+            summarizeTailForTelegram(route.notification.structuredAnswer),
+            buildAnswerActionKeyboard(route.notification.structuredAnswer),
+          );
         }
         respond(true, true);
         return;
