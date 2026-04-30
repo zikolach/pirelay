@@ -1,13 +1,15 @@
 # PiRelay
 
+![PiRelay logo](docs/logo.png)
+
 **PiRelay** is a Telegram bridge for Pi sessions.
 
 It pairs a private Telegram chat to the exact Pi session you are using, then lets you:
 
 - watch Pi progress from your phone
 - receive completion, failure, and abort notifications
-- send prompts back into the same live Pi session
-- inspect summaries or full output
+- send prompts and screenshots/photos back into the same live Pi session
+- inspect summaries, full output, or latest image artifacts
 - answer structured follow-up questions from Telegram
 - manage multiple paired Pi sessions through one bot
 
@@ -39,8 +41,9 @@ That means Telegram becomes a **mobile companion** for the current session, not 
 
 ### Remote prompting and control
 - plain Telegram text becomes a Pi prompt when the session is idle
-- while Pi is busy, Telegram text is queued as a follow-up by default
-- `/steer <text>` and `/followup <text>` provide explicit delivery control
+- Telegram photos and supported image documents become Pi image prompts when the current model supports image input
+- while Pi is busy, Telegram text or image prompts are queued as a follow-up by default
+- `/steer <text>` and `/followup <text>` provide explicit delivery control, including when used as image captions
 - `/abort`, `/compact`, `/pause`, `/resume`, `/status`, `/summary`, `/full`, and `/disconnect` are supported directly from Telegram
 
 ### Telegram-native activity feedback
@@ -59,6 +62,15 @@ That means Telegram becomes a **mobile companion** for the current session, not 
 - reformats Markdown tables into mobile-friendly code-style blocks for Telegram chat
 - supports an explicit Telegram answer draft via `answer`
 - supports `cancel` to leave the active answer flow
+
+### Image bridge
+- accepts Telegram photos and image documents (`image/jpeg`, `image/png`, `image/webp` by default) after chat/user authorization
+- uses the Telegram caption as the prompt text, or a safe image-inspection fallback for image-only messages
+- rejects image prompts when the selected Pi model does not advertise image input support instead of silently dropping the image
+- exposes latest tool-result image outputs and safe latest-turn workspace image file references with `/images` or inline image buttons
+- supports `/send-image <relative-path>` for explicit delivery of a validated workspace PNG/JPEG/WebP file
+- sends outbound images as Telegram documents to avoid recompression
+- does not automatically echo local/remote input images or browse arbitrary workspace files
 
 ### Security and resilience
 - bot token is loaded from environment or local config, never from session history
@@ -183,6 +195,8 @@ Once paired, the Telegram bot supports:
 | `/use <session>` | switch the active session for this chat |
 | `/summary` | show the latest concise summary |
 | `/full` | show the latest assistant output in Telegram-sized chunks |
+| `/images` | download latest captured image outputs or safe image files referenced by the latest completed turn |
+| `/send-image <path>` | send a validated workspace PNG/JPEG/WebP file by relative path |
 | `/steer <text>` | queue steering text while Pi is running |
 | `/followup <text>` | queue an explicit follow-up |
 | `/abort` | request cancellation of the current run |
@@ -194,14 +208,14 @@ Once paired, the Telegram bot supports:
 ## Prompt routing behavior
 
 ### When Pi is idle
-A normal Telegram text message is delivered as a standard Pi prompt.
+A normal Telegram text message is delivered as a standard Pi prompt. A Telegram photo or supported image document is delivered as an image prompt when the selected Pi model supports image input.
 
 Expected Telegram behavior:
 - the bot shows `typing...` while Pi starts working
 - no noisy delivery acknowledgement is sent unless Telegram chat actions fail
 
 ### When Pi is busy
-A normal Telegram text message is delivered using the configured busy mode.
+A normal Telegram text message, photo, or supported image document is delivered using the configured busy mode.
 
 Default:
 - `followUp`
@@ -216,6 +230,8 @@ Use these when you want to override the default:
 
 - `/steer <text>`
 - `/followup <text>`
+
+When sending a photo or image document, put `/steer ...` or `/followup ...` in the Telegram caption to choose the delivery mode explicitly.
 
 ## Guided answer flow
 
@@ -308,6 +324,10 @@ Supported configuration keys include:
   "sendRetryCount": 3,
   "sendRetryBaseMs": 800,
   "pollingTimeoutSeconds": 20,
+  "maxInboundImageBytes": 10485760,
+  "maxOutboundImageBytes": 10485760,
+  "maxLatestImages": 4,
+  "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"],
   "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
 }
 ```
@@ -325,6 +345,10 @@ Environment variables:
 - `PI_TELEGRAM_TUNNEL_SEND_RETRY_COUNT`
 - `PI_TELEGRAM_TUNNEL_SEND_RETRY_BASE_MS`
 - `PI_TELEGRAM_TUNNEL_POLLING_TIMEOUT_SECONDS`
+- `PI_TELEGRAM_TUNNEL_MAX_INBOUND_IMAGE_BYTES`
+- `PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES`
+- `PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES`
+- `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES`
 
 For more detail, see [docs/config.md](docs/config.md).
 
@@ -340,7 +364,9 @@ Important points:
 - exported/shared Pi sessions only contain non-secret tunnel metadata
 - pairing links are single-use and expire quickly
 - `allowUserIds` can restrict which Telegram users may control the tunnel
-- redaction patterns can scrub common secret shapes before Telegram delivery
+- redaction patterns can scrub common secret shapes before Telegram text/document delivery
+- image files can contain visual secrets; PiRelay requires explicit `/images`, image button, or `/send-image <relative-path>` action before sending latest image outputs/files back to Telegram
+- `/send-image` accepts only relative workspace PNG/JPEG/WebP paths after containment, symlink, MIME, and size validation; it is not a file browser
 
 ## Troubleshooting
 
@@ -407,6 +433,9 @@ Real Telegram regression checks, manual smoke-test steps, and release notes live
 - no Telegram group-chat support
 - no end-to-end encryption beyond Telegram Bot API transport
 - answer workflow depends on conservative structured-output detection
+- image prompts require a Pi model that supports image input
+- image transfer is bounded by configured size and MIME-type limits
+- `/images` only considers captured image outputs and obvious image file paths mentioned in the latest Pi turn
 - one active OpenSpec implementation task still remains for broader integration-style coexistence/reconnect tests
 
 ## Related files

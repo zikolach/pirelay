@@ -19,25 +19,33 @@ import {
 import {
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
+  buildLatestImagesKeyboard,
   parseTelegramActionCallbackData,
   shouldOfferFullOutputActions,
 } from "./telegram-actions.js";
 import type {
+  LatestTurnImage,
   SessionRoute,
   SessionStatusSnapshot,
   SetupCache,
   TelegramBindingMetadata,
+  TelegramDownloadedImage,
   TelegramInboundCallback,
+  TelegramInboundImageReference,
   TelegramInboundMessage,
   TelegramInboundUpdate,
+  TelegramPromptContent,
   TelegramTunnelConfig,
   TunnelRuntime,
   TelegramUserSummary,
 } from "./types.js";
 import {
+  buildImagePromptContent,
   createTurnId,
   formatModelId,
   getTelegramUserLabel,
+  isAllowedImageMimeType,
+  modelSupportsImages,
   parseTelegramCommand,
   safeTelegramFilename,
   statusLineForBinding,
@@ -51,6 +59,8 @@ const HELP_TEXT = [
   "/status - session and tunnel status",
   "/summary - latest summary/excerpt",
   "/full - latest full assistant output",
+  "/images - download latest image outputs or generated image files",
+  "/send-image <path> - send a validated workspace image file",
   "/steer <text> - steer the active run",
   "/followup <text> - queue a follow-up",
   "/abort - abort the active run",
@@ -196,7 +206,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
-    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, text, this.completionFullOutputKeyboardForRoute(route));
+    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, text, this.completionActionKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
@@ -226,8 +236,22 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return route.notification.lastAssistantText && turnId ? buildFullOutputKeyboard(turnId) : undefined;
   }
 
-  private completionFullOutputKeyboardForRoute(route: SessionRoute) {
-    return route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
+  private latestImagesKeyboardForRoute(route: SessionRoute) {
+    const latestImages = route.notification.latestImages;
+    if (!latestImages || latestImages.count <= 0) return undefined;
+    return buildLatestImagesKeyboard(latestImages.turnId, latestImages.count);
+  }
+
+  private combineKeyboards(...keyboards: Array<ReturnType<typeof buildFullOutputKeyboard> | undefined>) {
+    const rows = keyboards.flatMap((keyboard) => keyboard ?? []);
+    return rows.length > 0 ? rows : undefined;
+  }
+
+  private completionActionKeyboardForRoute(route: SessionRoute) {
+    return this.combineKeyboards(
+      route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route),
+      this.latestImagesKeyboardForRoute(route),
+    );
   }
 
   private shouldOfferFullOutputActionsForRoute(route: SessionRoute): boolean {
@@ -239,6 +263,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const keyboard = buildAnswerActionKeyboard(route.notification.structuredAnswer, {
       includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
     });
+    const imageKeyboard = this.latestImagesKeyboardForRoute(route);
+    if (imageKeyboard) keyboard.push(...imageKeyboard);
     return keyboard.length > 0 ? keyboard : undefined;
   }
 
@@ -442,7 +468,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    await this.handleAuthorizedText(route, message);
+    await this.handleAuthorizedMessage(route, message);
   }
 
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
@@ -478,7 +504,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const currentTurnId = this.currentTurnId(route);
     if (!currentTurnId || action.turnId !== currentTurnId) {
       await this.api.answerCallbackQuery(callback.callbackQueryId, "This action is no longer current.");
-      await this.api.sendPlainText(callback.chat.id, "That Telegram action belongs to an older Pi output. Use the latest buttons or /full.");
+      await this.api.sendPlainText(
+        callback.chat.id,
+        action.kind === "latest-images"
+          ? "That image action belongs to an older Pi output. Use the latest buttons or /images."
+          : "That Telegram action belongs to an older Pi output. Use the latest buttons or /full.",
+      );
       return;
     }
 
@@ -531,6 +562,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           text,
           "Latest assistant output",
         );
+        return;
+      }
+      case "latest-images": {
+        const latest = route.notification.latestImages;
+        if (!latest || latest.turnId !== action.turnId) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "No current images.");
+          await this.api.sendPlainText(callback.chat.id, "That image action is no longer current. Use the latest buttons or /images.");
+          return;
+        }
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending image outputs.");
+        await this.sendLatestImages(route, callback.chat.id);
         return;
       }
     }
@@ -599,6 +641,141 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return true;
   }
 
+  private acceptedImageFormatsText(): string {
+    return this.config.allowedImageMimeTypes.join(", ");
+  }
+
+  private messageImages(message: TelegramInboundMessage): TelegramInboundImageReference[] {
+    return message.images ?? [];
+  }
+
+  private hasImageAttachments(message: TelegramInboundMessage): boolean {
+    return this.messageImages(message).length > 0;
+  }
+
+  private promptTextForMessage(message: TelegramInboundMessage, fallback = "Please inspect the attached image."): string {
+    const text = message.text.trim();
+    return text || fallback;
+  }
+
+  private async downloadAuthorizedImages(route: SessionRoute, message: TelegramInboundMessage): Promise<TelegramDownloadedImage[] | undefined> {
+    const references = this.messageImages(message);
+    if (references.length === 0) return [];
+
+    const unsupported = references.filter((reference) => !reference.supported);
+    if (unsupported.length > 0) {
+      await this.api.sendPlainText(
+        message.chat.id,
+        `Unsupported image attachment. Accepted image formats: ${this.acceptedImageFormatsText()}.`,
+      );
+      return undefined;
+    }
+
+    if (!modelSupportsImages(route.actions.getModel())) {
+      await this.api.sendPlainText(
+        message.chat.id,
+        "The current Pi model does not support image input. Switch to an image-capable model or resend text only.",
+      );
+      return undefined;
+    }
+
+    const downloaded: TelegramDownloadedImage[] = [];
+    try {
+      for (const reference of references) {
+        downloaded.push(await this.api.downloadImage(reference));
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.api.sendPlainText(message.chat.id, `Could not fetch the Telegram image: ${detail}`);
+      return undefined;
+    }
+    return downloaded;
+  }
+
+  private async deliverAuthorizedPrompt(
+    route: SessionRoute,
+    message: TelegramInboundMessage,
+    text: string,
+    options: { deliverAs?: "followUp" | "steer"; auditMessage: string; busyAck?: string; idleAck?: string },
+  ): Promise<void> {
+    const downloadedImages = await this.downloadAuthorizedImages(route, message);
+    if (!downloadedImages) return;
+    const hasImages = downloadedImages.length > 0;
+    const content: TelegramPromptContent = hasImages
+      ? buildImagePromptContent(text || "Please inspect the attached image.", downloadedImages.map((image) => image.image))
+      : text;
+    const activityStarted = await this.startActivityIndicator(route);
+    route.actions.sendUserMessage(content, options.deliverAs ? { deliverAs: options.deliverAs } : undefined);
+    route.actions.appendAudit(options.auditMessage);
+    if (options.busyAck) {
+      await this.api.sendPlainText(message.chat.id, options.busyAck);
+      return;
+    }
+    if (options.idleAck) {
+      await this.api.sendPlainText(message.chat.id, options.idleAck);
+      return;
+    }
+    if (!activityStarted) {
+      await this.api.sendPlainText(message.chat.id, "Prompt delivered to Pi.");
+    }
+  }
+
+  private emptyImagesMessage(hasCandidates = false): string {
+    if (hasCandidates) {
+      return "The latest Pi output mentioned image-like file paths, but none could be sent. They may be missing, outside the workspace, hidden, unsupported, or too large. Try /send-image <relative-path> for a specific workspace PNG/JPEG/WebP file, or ask Pi to regenerate the image.";
+    }
+    return "No image outputs are available for the latest completed Pi turn. /images can send captured image outputs or safe workspace image files mentioned in the latest Pi reply. If Pi saved an image file, use /send-image <relative-path>.";
+  }
+
+  private async sendImageByPath(route: SessionRoute, chatId: number, relativePath: string): Promise<void> {
+    const loaded = await route.actions.getImageByPath(relativePath);
+    if (!loaded.ok) {
+      await this.api.sendPlainText(chatId, loaded.error);
+      return;
+    }
+    if (!isAllowedImageMimeType(loaded.image.mimeType, this.config.allowedImageMimeTypes) || loaded.image.byteSize > this.config.maxOutboundImageBytes) {
+      await this.api.sendPlainText(chatId, "Image file is too large or unsupported for Telegram delivery.");
+      return;
+    }
+    await this.api.sendImageDocument(chatId, loaded.image, "Pi image file");
+  }
+
+  private async sendLatestImages(route: SessionRoute, chatId: number): Promise<void> {
+    const latest = route.notification.latestImages;
+    const images = await route.actions.getLatestImages();
+    if (!latest || latest.count <= 0) {
+      await this.api.sendPlainText(chatId, this.emptyImagesMessage(false));
+      return;
+    }
+    if (images.length === 0) {
+      await this.api.sendPlainText(chatId, this.emptyImagesMessage(Boolean(latest.fileCount && latest.fileCount > 0)));
+      return;
+    }
+
+    let sent = 0;
+    let skipped = latest.skipped;
+    for (const image of images) {
+      if (!isAllowedImageMimeType(image.mimeType, this.config.allowedImageMimeTypes) || image.byteSize > this.config.maxOutboundImageBytes) {
+        skipped += 1;
+        continue;
+      }
+      await this.api.sendImageDocument(
+        chatId,
+        image,
+        images.length === 1 ? "Latest Pi image output" : `Latest Pi image output ${sent + 1}/${images.length}`,
+      );
+      sent += 1;
+    }
+
+    if (sent === 0) {
+      await this.api.sendPlainText(chatId, "Latest image outputs are too large or unsupported for Telegram delivery.");
+      return;
+    }
+    if (skipped > 0) {
+      await this.api.sendPlainText(chatId, `Skipped ${skipped} image output(s) because they were too large or unsupported.`);
+    }
+  }
+
   private async handleAuthorizedCommand(
     route: SessionRoute,
     message: TelegramInboundMessage,
@@ -648,26 +825,45 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         );
         return;
       }
-      case "steer": {
+      case "images": {
+        await this.sendLatestImages(route, message.chat.id);
+        return;
+      }
+      case "send-image":
+      case "sendimage": {
         if (!args) {
+          await this.api.sendPlainText(message.chat.id, "Usage: /send-image <relative-image-path>");
+          return;
+        }
+        await this.sendImageByPath(route, message.chat.id, args);
+        return;
+      }
+      case "steer": {
+        if (!args && !this.hasImageAttachments(message)) {
           await this.api.sendPlainText(message.chat.id, "Usage: /steer <text>");
           return;
         }
-        await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(args, { deliverAs: isEffectivelyIdle(route) ? undefined : "steer" });
-        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a steering instruction.`);
-        await this.api.sendPlainText(message.chat.id, isEffectivelyIdle(route) ? "Sent as a prompt." : "Steering queued.");
+        const idle = isEffectivelyIdle(route);
+        await this.deliverAuthorizedPrompt(route, message, args || "Please inspect the attached image.", {
+          deliverAs: idle ? undefined : "steer",
+          auditMessage: `Telegram ${getTelegramUserLabel(message.user)} sent a steering instruction.`,
+          idleAck: idle ? "Sent as a prompt." : undefined,
+          busyAck: idle ? undefined : "Steering queued.",
+        });
         return;
       }
       case "followup": {
-        if (!args) {
+        if (!args && !this.hasImageAttachments(message)) {
           await this.api.sendPlainText(message.chat.id, "Usage: /followup <text>");
           return;
         }
-        await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(args, { deliverAs: isEffectivelyIdle(route) ? undefined : "followUp" });
-        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} queued a follow-up.`);
-        await this.api.sendPlainText(message.chat.id, isEffectivelyIdle(route) ? "Sent as a prompt." : "Follow-up queued.");
+        const idle = isEffectivelyIdle(route);
+        await this.deliverAuthorizedPrompt(route, message, args || "Please inspect the attached image.", {
+          deliverAs: idle ? undefined : "followUp",
+          auditMessage: `Telegram ${getTelegramUserLabel(message.user)} queued a follow-up.`,
+          idleAck: idle ? "Sent as a prompt." : undefined,
+          busyAck: idle ? undefined : "Follow-up queued.",
+        });
         return;
       }
       case "abort": {
@@ -715,11 +911,25 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
-  private async handleAuthorizedText(route: SessionRoute, message: TelegramInboundMessage): Promise<void> {
+  private async handleAuthorizedMessage(route: SessionRoute, message: TelegramInboundMessage): Promise<void> {
     const binding = route.binding;
     if (!binding) return;
     if (binding.paused) {
       await this.api.sendPlainText(message.chat.id, "The tunnel is paused. Use /resume first.");
+      return;
+    }
+
+    if (this.hasImageAttachments(message)) {
+      this.takePendingCustomAnswer(route, message.user);
+      const idle = isEffectivelyIdle(route);
+      const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
+      await this.deliverAuthorizedPrompt(route, message, this.promptTextForMessage(message), {
+        deliverAs,
+        auditMessage: idle
+          ? `Telegram ${getTelegramUserLabel(message.user)} sent an image prompt.`
+          : `Telegram ${getTelegramUserLabel(message.user)} queued an image ${deliverAs} message.`,
+        busyAck: idle ? undefined : `Pi is busy; your message was queued as ${deliverAs}.`,
+      });
       return;
     }
 
@@ -846,12 +1056,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (status === "completed" && notification.lastAssistantText) {
       const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
       notification.lastSummary = summary;
-      const fullOutputKeyboard = this.completionFullOutputKeyboardForRoute(route);
+      const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
+      const actionKeyboard = this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
       const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
+      const imageHint = notification.latestImages?.count
+        ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
+        : "";
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
-        `✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}`,
-        fullOutputKeyboard,
+        `✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
+        actionKeyboard,
       );
       if (notification.structuredAnswer) {
         await this.api.sendPlainTextWithKeyboard(
@@ -916,5 +1130,8 @@ export async function sendSessionNotification(
   const fallback = status === "completed"
     ? route.notification.lastSummary ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
     : route.notification.lastFailure ?? `Pi task ${status}.`;
-  await runtime.sendToBoundChat(route.sessionKey, fallback);
+  const imageHint = status === "completed" && route.notification.latestImages?.count
+    ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
+    : "";
+  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${imageHint}`);
 }

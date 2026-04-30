@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
 
 const tempDirs: string[] = [];
 
@@ -31,11 +31,15 @@ async function createRuntimeConfig(): Promise<TelegramTunnelConfig> {
     sendRetryBaseMs: 1,
     pollingTimeoutSeconds: 1,
     redactionPatterns: [],
+    maxInboundImageBytes: 10 * 1024 * 1024,
+    maxOutboundImageBytes: 10 * 1024 * 1024,
+    maxLatestImages: 4,
+    allowedImageMimeTypes: ["image/jpeg", "image/png", "image/webp"],
   };
 }
 
 function createRoute(binding: TelegramBindingMetadata, idle = true) {
-  const deliveries: Array<{ text: string; deliverAs?: "followUp" | "steer" }> = [];
+  const deliveries: Array<{ text: TelegramPromptContent; deliverAs?: "followUp" | "steer" }> = [];
   const outbound: string[] = [];
   let currentIdle = idle;
 
@@ -89,6 +93,8 @@ function createRoute(binding: TelegramBindingMetadata, idle = true) {
       sendUserMessage: (text, options) => {
         deliveries.push({ text, deliverAs: options?.deliverAs });
       },
+      getLatestImages: async () => [],
+      getImageByPath: async () => ({ ok: false, error: "Image file not found." }),
       appendAudit: (message) => outbound.push(`audit:${message}`),
       persistBinding: () => undefined,
       promptLocalConfirmation: async () => true,
@@ -221,6 +227,132 @@ describe("InProcessTunnelRuntime", () => {
     expect(deliveries).toEqual([{ text: "continue with the test cleanup", deliverAs: "followUp" }]);
     expect(actions).toEqual(["typing"]);
     expect(sent).toEqual(["Pi is busy; your message was queued as followUp."]);
+  });
+
+  it("routes authorized Telegram images as multimodal Pi prompts after authorization", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-image:/tmp/session-image.jsonl",
+      sessionId: "session-image",
+      sessionFile: "/tmp/session-image.jsonl",
+      sessionLabel: "session-image.jsonl",
+      chatId: 881,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const image = { type: "image" as const, data: Buffer.from("img").toString("base64"), mimeType: "image/jpeg" };
+    const downloads: string[] = [];
+    (runtime as any).api = {
+      downloadImage: async (reference: any) => {
+        downloads.push(reference.fileId);
+        return { image, fileName: "photo.jpg", fileSize: 3, source: reference };
+      },
+      sendPlainText: async () => undefined,
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 21,
+      messageId: 21,
+      text: "what is broken here?",
+      images: [{ kind: "photo", fileId: "photo-1", mimeType: "image/jpeg", supported: true }],
+      chat: { id: 881, type: "private" },
+      user: { id: 31, username: "owner" },
+    });
+
+    expect(downloads).toEqual(["photo-1"]);
+    expect(deliveries).toEqual([{ text: [{ type: "text", text: "what is broken here?" }, image], deliverAs: undefined }]);
+  });
+
+  it("does not download unauthorized Telegram images", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-image-auth:/tmp/session-image-auth.jsonl",
+      sessionId: "session-image-auth",
+      sessionFile: "/tmp/session-image-auth.jsonl",
+      sessionLabel: "session-image-auth.jsonl",
+      chatId: 882,
+      userId: 32,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    const downloadImage = vi.fn(async () => undefined);
+    (runtime as any).api = {
+      downloadImage,
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 22,
+      messageId: 22,
+      text: "",
+      images: [{ kind: "photo", fileId: "photo-unauthorized", mimeType: "image/jpeg", supported: true }],
+      chat: { id: 882, type: "private" },
+      user: { id: 999, username: "intruder" },
+    });
+
+    expect(downloadImage).not.toHaveBeenCalled();
+    expect(deliveries).toEqual([]);
+    expect(sent[0]).toContain("Unauthorized");
+  });
+
+  it("rejects image prompts when the current model is not image-capable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-image-model:/tmp/session-image-model.jsonl",
+      sessionId: "session-image-model",
+      sessionFile: "/tmp/session-image-model.jsonl",
+      sessionLabel: "session-image-model.jsonl",
+      chatId: 883,
+      userId: 33,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getModel = () => ({ input: ["text"] }) as never;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    const downloadImage = vi.fn(async () => undefined);
+    (runtime as any).api = {
+      downloadImage,
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 23,
+      messageId: 23,
+      text: "caption only should not be injected",
+      images: [{ kind: "photo", fileId: "photo-model", mimeType: "image/jpeg", supported: true }],
+      chat: { id: 883, type: "private" },
+      user: { id: 33, username: "owner" },
+    });
+
+    expect(downloadImage).not.toHaveBeenCalled();
+    expect(deliveries).toEqual([]);
+    expect(sent[0]).toContain("does not support image input");
   });
 
   it("falls back to a textual acknowledgement when typing activity fails", async () => {
@@ -748,5 +880,138 @@ describe("InProcessTunnelRuntime", () => {
     expect(documents[0]?.filename).toContain("pi-output-session-full-callback-turn-full.md");
     expect(documents[0]?.text).toBe("Full assistant output");
     expect(deliveries).toEqual([]);
+  });
+
+  it("sends latest image outputs via command and rejects stale image callbacks", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-images-callback:/tmp/session-images-callback.jsonl",
+      sessionId: "session-images-callback",
+      sessionFile: "/tmp/session-images-callback.jsonl",
+      sessionLabel: "session-images-callback.jsonl",
+      chatId: 1005,
+      userId: 25,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route } = createRoute(binding, true);
+    const latestImage = {
+      id: "turn-images-1",
+      turnId: "turn-images",
+      fileName: "preview.png",
+      mimeType: "image/png",
+      data: Buffer.from([1, 2, 3]).toString("base64"),
+      byteSize: 3,
+    };
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-images";
+    route.notification.lastAssistantText = "Generated image.";
+    route.notification.latestImages = { turnId: "turn-images", count: 1, skipped: 0 };
+    route.actions.getLatestImages = async () => [latestImage];
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const callbacks: string[] = [];
+    const sent: string[] = [];
+    const images: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendImageDocument: async (_chatId: number, image: { fileName: string }) => images.push(image.fileName),
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 19,
+      messageId: 19,
+      text: "/images",
+      chat: { id: 1005, type: "private" },
+      user: { id: 25, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 20,
+      callbackQueryId: "cb-images-stale",
+      data: buildLatestImagesCallbackData("older-turn"),
+      chat: { id: 1005, type: "private" },
+      user: { id: 25, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 21,
+      callbackQueryId: "cb-images-current",
+      data: buildLatestImagesCallbackData("turn-images"),
+      chat: { id: 1005, type: "private" },
+      user: { id: 25, username: "owner" },
+    });
+
+    expect(images).toEqual(["preview.png", "preview.png"]);
+    expect(callbacks).toEqual(["This action is no longer current.", "Sending image outputs."]);
+    expect(sent).toContain("That image action belongs to an older Pi output. Use the latest buttons or /images.");
+  });
+
+  it("sends explicit workspace image paths and explains empty latest image states", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-send-image:/tmp/session-send-image.jsonl",
+      sessionId: "session-send-image",
+      sessionFile: "/tmp/session-send-image.jsonl",
+      sessionLabel: "session-send-image.jsonl",
+      chatId: 1006,
+      userId: 26,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    const image = {
+      id: "turn-file-1",
+      turnId: "turn-file",
+      fileName: "render.png",
+      mimeType: "image/png",
+      data: Buffer.from([1, 2, 3]).toString("base64"),
+      byteSize: 3,
+    };
+    route.actions.getImageByPath = async (path) => path === "outputs/render.png"
+      ? { ok: true, image }
+      : { ok: false, error: "Image file not found: missing.png" };
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    const images: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendImageDocument: async (_chatId: number, sentImage: { fileName: string }) => images.push(sentImage.fileName),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 22,
+      messageId: 22,
+      text: "/images",
+      chat: { id: 1006, type: "private" },
+      user: { id: 26, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 23,
+      messageId: 23,
+      text: "/send-image outputs/render.png",
+      chat: { id: 1006, type: "private" },
+      user: { id: 26, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 24,
+      messageId: 24,
+      text: "/send-image missing.png",
+      chat: { id: 1006, type: "private" },
+      user: { id: 26, username: "owner" },
+    });
+
+    expect(sent[0]).toContain("safe workspace image files mentioned");
+    expect(images).toEqual(["render.png"]);
+    expect(sent).toContain("Image file not found: missing.png");
   });
 });

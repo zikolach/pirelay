@@ -1,8 +1,18 @@
 import { Api, GrammyError, HttpError, InputFile } from "grammy";
 import type { User } from "grammy/types";
-import type { TelegramTunnelConfig, TelegramInboundCallback, TelegramInboundMessage, TelegramInboundUpdate, TelegramInlineKeyboard, TelegramOutboundChunk } from "./types.js";
+import type {
+  LatestTurnImage,
+  TelegramDownloadedImage,
+  TelegramInboundCallback,
+  TelegramInboundImageReference,
+  TelegramInboundMessage,
+  TelegramInboundUpdate,
+  TelegramInlineKeyboard,
+  TelegramOutboundChunk,
+  TelegramTunnelConfig,
+} from "./types.js";
 import { formatTelegramChatText } from "./telegram-format.js";
-import { chunkTelegramText, redactSecret, sleep } from "./utils.js";
+import { chunkTelegramText, isAllowedImageMimeType, normalizeImageMimeType, redactSecret, safeTelegramImageFilename, sleep } from "./utils.js";
 
 export class TelegramApiClient {
   private readonly api: Api;
@@ -25,12 +35,18 @@ export class TelegramApiClient {
     const inbound: TelegramInboundUpdate[] = [];
     for (const update of updates) {
       const message = update.message;
-      if (message?.text && message.from && message.chat) {
+      if (message && message.from && message.chat) {
+        const text = message.text ?? message.caption ?? "";
+        const images = this.extractImageReferences(message);
+        if (!text && images.length === 0) {
+          // Ignore unsupported non-text/non-image messages.
+        } else {
         inbound.push({
           kind: "message",
           updateId: update.update_id,
           messageId: message.message_id,
-          text: message.text,
+          text,
+          images: images.length > 0 ? images : undefined,
           chat: {
             id: message.chat.id,
             type: message.chat.type,
@@ -44,6 +60,7 @@ export class TelegramApiClient {
           },
         } satisfies TelegramInboundMessage);
         continue;
+        }
       }
 
       const callback = update.callback_query;
@@ -97,12 +114,108 @@ export class TelegramApiClient {
     ));
   }
 
+  async downloadImage(reference: TelegramInboundImageReference): Promise<TelegramDownloadedImage> {
+    if (!reference.supported) {
+      throw new Error(reference.unsupportedReason || "Unsupported image attachment.");
+    }
+    if (reference.fileSize && reference.fileSize > this.config.maxInboundImageBytes) {
+      throw new Error(`Image is too large (${reference.fileSize} bytes). Limit: ${this.config.maxInboundImageBytes} bytes.`);
+    }
+
+    const telegramFile = await this.withRetry(() => this.api.getFile(reference.fileId));
+    const remoteSize = telegramFile.file_size ?? reference.fileSize;
+    if (remoteSize && remoteSize > this.config.maxInboundImageBytes) {
+      throw new Error(`Image is too large (${remoteSize} bytes). Limit: ${this.config.maxInboundImageBytes} bytes.`);
+    }
+    if (!telegramFile.file_path) {
+      throw new Error("Telegram did not return a downloadable file path for this image.");
+    }
+
+    const response = await fetch(`https://api.telegram.org/file/bot${this.config.botToken}/${telegramFile.file_path}`);
+    if (!response.ok) {
+      throw new Error(`Telegram file download failed with HTTP ${response.status}.`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > this.config.maxInboundImageBytes) {
+      throw new Error(`Image is too large (${buffer.byteLength} bytes). Limit: ${this.config.maxInboundImageBytes} bytes.`);
+    }
+
+    const mimeType = normalizeImageMimeType(reference.mimeType) ?? reference.mimeType;
+    if (!isAllowedImageMimeType(mimeType, this.config.allowedImageMimeTypes)) {
+      throw new Error(`Unsupported image type: ${mimeType}.`);
+    }
+
+    return {
+      image: { type: "image", data: buffer.toString("base64"), mimeType },
+      fileName: safeTelegramImageFilename(reference.fileName, mimeType, reference.kind === "photo" ? "telegram-photo" : "telegram-image"),
+      fileSize: buffer.byteLength,
+      source: reference,
+    };
+  }
+
+  async sendImageDocument(chatId: number, image: LatestTurnImage, caption?: string): Promise<void> {
+    const bytes = Buffer.from(image.data, "base64");
+    const redactedCaption = caption ? redactSecret(caption, this.config.redactionPatterns) : undefined;
+    await this.withRetry(() => this.api.sendDocument(
+      chatId,
+      new InputFile(bytes, safeTelegramImageFilename(image.fileName, image.mimeType)),
+      redactedCaption ? { caption: redactedCaption } : undefined,
+    ));
+  }
+
   async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
     await this.withRetry(() => this.api.answerCallbackQuery(callbackQueryId, text ? { text } : undefined));
   }
 
   async sendChatAction(chatId: number, action: "typing" = "typing"): Promise<void> {
     await this.withRetry(() => this.api.sendChatAction(chatId, action));
+  }
+
+  private extractImageReferences(message: Record<string, any>): TelegramInboundImageReference[] {
+    const references: TelegramInboundImageReference[] = [];
+    const photo = Array.isArray(message.photo) ? this.selectBestPhotoSize(message.photo) : undefined;
+    if (photo?.file_id) {
+      references.push({
+        kind: "photo",
+        fileId: photo.file_id,
+        fileUniqueId: photo.file_unique_id,
+        mimeType: "image/jpeg",
+        fileSize: typeof photo.file_size === "number" ? photo.file_size : undefined,
+        width: typeof photo.width === "number" ? photo.width : undefined,
+        height: typeof photo.height === "number" ? photo.height : undefined,
+        supported: true,
+      });
+    }
+
+    const document = message.document;
+    if (document?.file_id) {
+      const mimeType = normalizeImageMimeType(document.mime_type) ?? "application/octet-stream";
+      const supported = isAllowedImageMimeType(mimeType, this.config.allowedImageMimeTypes);
+      references.push({
+        kind: "document",
+        fileId: document.file_id,
+        fileUniqueId: document.file_unique_id,
+        fileName: typeof document.file_name === "string" ? document.file_name : undefined,
+        mimeType,
+        fileSize: typeof document.file_size === "number" ? document.file_size : undefined,
+        supported,
+        unsupportedReason: supported ? undefined : `Unsupported image document type: ${mimeType}.`,
+      });
+    }
+
+    return references;
+  }
+
+  private selectBestPhotoSize(photoSizes: Array<Record<string, any>>): Record<string, any> | undefined {
+    const sorted = [...photoSizes]
+      .filter((photo) => typeof photo.file_id === "string")
+      .sort((left, right) => {
+        const leftArea = Number(left.width ?? 0) * Number(left.height ?? 0);
+        const rightArea = Number(right.width ?? 0) * Number(right.height ?? 0);
+        return rightArea - leftArea;
+      });
+    return sorted.find((photo) => typeof photo.file_size !== "number" || photo.file_size <= this.config.maxInboundImageBytes) ?? sorted[0];
   }
 
   private async sendChunk(chatId: number, chunk: TelegramOutboundChunk, keyboard?: TelegramInlineKeyboard): Promise<void> {

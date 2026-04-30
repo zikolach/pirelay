@@ -19,6 +19,10 @@ interface ConfigFileShape {
   sendRetryBaseMs?: number;
   pollingTimeoutSeconds?: number;
   redactionPatterns?: string[];
+  maxInboundImageBytes?: number;
+  maxOutboundImageBytes?: number;
+  maxLatestImages?: number;
+  allowedImageMimeTypes?: string[];
 }
 
 export class ConfigError extends Error {}
@@ -39,6 +43,14 @@ function parseAllowUserIds(value: string | undefined): number[] | undefined {
     .split(",")
     .map((part) => Number(part.trim()))
     .filter((part) => Number.isInteger(part) && part > 0);
+}
+
+function parseStringList(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 async function readConfigFile(configPath: string): Promise<ConfigFileShape | undefined> {
@@ -117,6 +129,21 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     process.env.PI_TELEGRAM_TUNNEL_POLLING_TIMEOUT_SECONDS,
     fileConfig?.pollingTimeoutSeconds ?? 20,
   );
+  const maxInboundImageBytes = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_MAX_INBOUND_IMAGE_BYTES,
+    fileConfig?.maxInboundImageBytes ?? 10 * 1024 * 1024,
+  );
+  const maxOutboundImageBytes = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES,
+    fileConfig?.maxOutboundImageBytes ?? 10 * 1024 * 1024,
+  );
+  const maxLatestImages = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES,
+    fileConfig?.maxLatestImages ?? 4,
+  );
+  const allowedImageMimeTypes = parseStringList(process.env.PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES)
+    ?? fileConfig?.allowedImageMimeTypes
+    ?? ["image/jpeg", "image/png", "image/webp"];
 
   if (pairingExpiryMs < 30_000) {
     throw new ConfigError("pairingExpiryMs must be at least 30000.");
@@ -126,6 +153,15 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   }
   if (pollingTimeoutSeconds < 1 || pollingTimeoutSeconds > 50) {
     throw new ConfigError("pollingTimeoutSeconds must be between 1 and 50 seconds.");
+  }
+  if (maxInboundImageBytes < 1 || maxOutboundImageBytes < 1) {
+    throw new ConfigError("Image byte limits must be positive.");
+  }
+  if (maxLatestImages < 1 || maxLatestImages > 20) {
+    throw new ConfigError("maxLatestImages must be between 1 and 20.");
+  }
+  if (allowedImageMimeTypes.length === 0) {
+    throw new ConfigError("allowedImageMimeTypes must include at least one MIME type.");
   }
 
   const config: TelegramTunnelConfig = {
@@ -141,6 +177,10 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     sendRetryBaseMs,
     pollingTimeoutSeconds,
     redactionPatterns: fileConfig?.redactionPatterns ?? getDefaultRedactionPatterns(),
+    maxInboundImageBytes,
+    maxOutboundImageBytes,
+    maxLatestImages,
+    allowedImageMimeTypes,
   };
 
   return { config, warnings };

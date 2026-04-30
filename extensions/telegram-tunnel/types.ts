@@ -1,4 +1,4 @@
-import type { Model } from "@mariozechner/pi-ai";
+import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { StructuredAnswerMetadata } from "./answer-workflow.js";
 
@@ -18,6 +18,10 @@ export interface TelegramTunnelConfig {
   sendRetryBaseMs: number;
   pollingTimeoutSeconds: number;
   redactionPatterns: string[];
+  maxInboundImageBytes: number;
+  maxOutboundImageBytes: number;
+  maxLatestImages: number;
+  allowedImageMimeTypes: string[];
 }
 
 export interface ConfigLoadResult {
@@ -103,12 +107,64 @@ export interface SessionNotificationState {
   lastStatus?: "idle" | "running" | "completed" | "failed" | "aborted";
   abortRequested?: boolean;
   structuredAnswer?: StructuredAnswerMetadata;
+  latestImages?: LatestTurnImageMetadata;
+}
+
+export type TelegramPromptContent = string | (TextContent | ImageContent)[];
+
+export interface TelegramInboundImageReference {
+  kind: "photo" | "document";
+  fileId: string;
+  fileUniqueId?: string;
+  fileName?: string;
+  mimeType: string;
+  fileSize?: number;
+  width?: number;
+  height?: number;
+  supported: boolean;
+  unsupportedReason?: string;
+}
+
+export interface TelegramDownloadedImage {
+  image: ImageContent;
+  fileName: string;
+  fileSize: number;
+  source: TelegramInboundImageReference;
+}
+
+export interface LatestTurnImage {
+  id: string;
+  turnId: string;
+  fileName: string;
+  mimeType: string;
+  data: string;
+  byteSize: number;
+}
+
+export interface LatestTurnImageFileCandidate {
+  id: string;
+  turnId: string;
+  path: string;
+}
+
+export type ImageFileLoadResult =
+  | { ok: true; image: LatestTurnImage }
+  | { ok: false; error: string };
+
+export interface LatestTurnImageMetadata {
+  turnId: string;
+  count: number;
+  skipped: number;
+  contentCount?: number;
+  fileCount?: number;
 }
 
 export interface SessionRouteActions {
   context: ExtensionContext;
   getModel(): Model<any> | undefined;
-  sendUserMessage(text: string, options?: { deliverAs?: DeliveryMode }): void;
+  sendUserMessage(content: TelegramPromptContent, options?: { deliverAs?: DeliveryMode }): void;
+  getLatestImages(): Promise<LatestTurnImage[]>;
+  getImageByPath(relativePath: string): Promise<ImageFileLoadResult>;
   appendAudit(message: string): void;
   persistBinding(binding: TelegramBindingMetadata | null, revoked?: boolean): void;
   promptLocalConfirmation(identity: TelegramUserSummary): Promise<boolean>;
@@ -145,6 +201,7 @@ export interface TelegramInboundMessage {
   updateId: number;
   messageId: number;
   text: string;
+  images?: TelegramInboundImageReference[];
   chat: TelegramChatSummary;
   user: TelegramUserSummary;
 }

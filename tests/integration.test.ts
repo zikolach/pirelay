@@ -1,12 +1,12 @@
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrokerTunnelRuntime } from "../extensions/telegram-tunnel/broker-runtime.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../extensions/telegram-tunnel/types.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/telegram-tunnel/types.js";
 
 const tempDirs: string[] = [];
 
@@ -26,6 +26,10 @@ async function createRuntimeConfig(prefix = "pi-telegram-integration-"): Promise
     sendRetryBaseMs: 1,
     pollingTimeoutSeconds: 1,
     redactionPatterns: [],
+    maxInboundImageBytes: 10 * 1024 * 1024,
+    maxOutboundImageBytes: 10 * 1024 * 1024,
+    maxLatestImages: 4,
+    allowedImageMimeTypes: ["image/jpeg", "image/png", "image/webp"],
   };
 }
 
@@ -52,7 +56,7 @@ function createBinding(id: string, chatId = 555, userId = 42): TelegramBindingMe
 }
 
 function createRoute(binding: TelegramBindingMetadata, idle = true) {
-  const deliveries: Array<{ text: string; deliverAs?: "followUp" | "steer" }> = [];
+  const deliveries: Array<{ text: TelegramPromptContent; deliverAs?: "followUp" | "steer" }> = [];
   const audits: string[] = [];
   const persisted: Array<{ binding: TelegramBindingMetadata | null; revoked?: boolean }> = [];
   let currentIdle = idle;
@@ -108,6 +112,8 @@ function createRoute(binding: TelegramBindingMetadata, idle = true) {
       sendUserMessage: (text, options) => {
         deliveries.push({ text, deliverAs: options?.deliverAs });
       },
+      getLatestImages: async () => [],
+      getImageByPath: async () => ({ ok: false, error: "Image file not found." }),
       appendAudit: (message) => audits.push(message),
       persistBinding: (nextBinding, revoked) => persisted.push({ binding: nextBinding, revoked }),
       promptLocalConfirmation: async () => true,
@@ -335,6 +341,125 @@ describe("Telegram tunnel integration behavior", () => {
     expect(pi.sentMessages.map((message) => message.customType)).toContain("telegram-tunnel-audit");
   });
 
+  it("tracks latest tool-result images without echoing input images", async () => {
+    const config = await createRuntimeConfig("pi-telegram-extension-images-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("local-image-tracking");
+    telegramTunnelExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_end", {
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "input" }, { type: "image", data: Buffer.from("input").toString("base64"), mimeType: "image/png" }],
+      },
+    }, context);
+    await pi.emit("message_end", {
+      message: {
+        role: "toolResult",
+        content: [{ type: "image", data: Buffer.from("output").toString("base64"), mimeType: "image/png" }],
+      },
+    }, context);
+    await pi.emit("agent_end", {
+      messages: [{
+        role: "assistant",
+        content: [{ type: "text", text: "Generated an image." }],
+      }],
+    }, context);
+
+    expect(route.notification.latestImages).toMatchObject({ count: 1, skipped: 0 });
+    const images = await route.actions.getLatestImages();
+    expect(images).toHaveLength(1);
+    expect(images[0]?.data).toBe(Buffer.from("output").toString("base64"));
+  });
+
+  it("stages latest assistant image file references and loads them on demand", async () => {
+    const config = await createRuntimeConfig("pi-telegram-extension-file-images-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const workspace = await mkdtemp(join(tmpdir(), "pi-telegram-workspace-images-"));
+    tempDirs.push(workspace);
+    await writeFile(join(workspace, "render.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]));
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("local-file-image-tracking");
+    context.cwd = workspace;
+    telegramTunnelExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("agent_end", {
+      messages: [{
+        role: "assistant",
+        content: [{ type: "text", text: "Saved image at `render.png`." }],
+      }],
+    }, context);
+
+    expect(route.notification.latestImages).toMatchObject({ count: 1, fileCount: 1, contentCount: 0 });
+    const images = await route.actions.getLatestImages();
+    expect(images).toHaveLength(1);
+    expect(images[0]?.fileName).toBe("render.png");
+    await expect(route.actions.getImageByPath("../secret.png")).resolves.toMatchObject({ ok: false });
+  });
+
   it("synchronizes route state through the broker and handles broker-delivered prompts", async () => {
     const config = await createRuntimeConfig("pi-telegram-broker-");
     const runtime = new BrokerTunnelRuntime(config);
@@ -413,6 +538,55 @@ describe("Telegram tunnel integration behavior", () => {
       expect(clientResponses.find((message) => message.requestId === "broker-deliver-1")?.ok).toBe(true);
       expect(deliveries).toEqual([{ text: "remote follow-up from broker", deliverAs: "followUp" }]);
       expect(audits).toEqual(["Telegram @owner queued a follow-up."]);
+
+      const multimodalContent = [
+        { type: "text", text: "look at this" },
+        { type: "image", data: Buffer.from("img").toString("base64"), mimeType: "image/png" },
+      ];
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-deliver-image",
+        action: "deliverPrompt",
+        sessionKey: route.sessionKey,
+        content: multimodalContent,
+        deliverAs: "steer",
+        auditMessage: "Telegram @owner sent an image prompt.",
+      })}\n`);
+
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-deliver-image"));
+      expect(clientResponses.find((message) => message.requestId === "broker-deliver-image")?.ok).toBe(true);
+      expect(deliveries.at(-1)).toEqual({ text: multimodalContent, deliverAs: "steer" });
+      expect(audits.at(-1)).toBe("Telegram @owner sent an image prompt.");
+
+      const latestImage = {
+        id: "turn-1-1",
+        turnId: "turn-1",
+        fileName: "preview.png",
+        mimeType: "image/png",
+        data: Buffer.from([1]).toString("base64"),
+        byteSize: 1,
+      };
+      route.actions.getLatestImages = async () => [latestImage];
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-images-1",
+        action: "getLatestImages",
+        sessionKey: route.sessionKey,
+      })}\n`);
+
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-images-1"));
+      expect(clientResponses.find((message) => message.requestId === "broker-images-1")?.result).toEqual([latestImage]);
+
+      route.actions.getImageByPath = async (path) => ({ ok: false, error: `blocked:${path}` });
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-image-path-1",
+        action: "getImageByPath",
+        sessionKey: route.sessionKey,
+        path: "../secret.png",
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-image-path-1"));
+      expect(clientResponses.find((message) => message.requestId === "broker-image-path-1")?.result).toEqual({ ok: false, error: "blocked:../secret.png" });
 
       await runtime.unregisterRoute(route.sessionKey);
       expect(brokerMessages.some((message) => message.action === "unregisterRoute" && message.sessionKey === route.sessionKey)).toBe(true);

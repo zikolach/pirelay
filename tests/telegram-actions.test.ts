@@ -7,6 +7,8 @@ import {
   buildFullChatCallbackData,
   buildFullMarkdownCallbackData,
   buildFullOutputKeyboard,
+  buildLatestImagesCallbackData,
+  buildLatestImagesKeyboard,
   parseTelegramActionCallbackData,
   shouldOfferFullOutputActions,
 } from "../extensions/telegram-tunnel/telegram-actions.js";
@@ -30,6 +32,10 @@ describe("telegram action callbacks", () => {
       kind: "full-markdown",
       turnId: "turn-1",
     });
+    expect(parseTelegramActionCallbackData(buildLatestImagesCallbackData("turn-1"))).toEqual({
+      kind: "latest-images",
+      turnId: "turn-1",
+    });
     expect(parseTelegramActionCallbackData("ans:turn-1:wat")).toBeUndefined();
   });
 
@@ -51,6 +57,7 @@ describe("telegram action callbacks", () => {
       ],
     ]);
     expect(buildFullOutputKeyboard("abc123")).toEqual([[{"callbackData":"full:abc123:chat","text":"📄 Show in chat"},{"callbackData":"full:abc123:md","text":"⬇️ Download .md"}]]);
+    expect(buildLatestImagesKeyboard("abc123", 2)).toEqual([[{ text: "🖼 Download 2 images", callbackData: "imgs:abc123" }]]);
     expect(buildAnswerActionKeyboard(metadata!, { includeFullOutputActions: false })).toEqual([
       [{ text: "A. Sync specs now", callbackData: "ans:abc123:opt:A" }],
       [{ text: "B. Archive without syncing", callbackData: "ans:abc123:opt:B" }],

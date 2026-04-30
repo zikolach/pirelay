@@ -1,13 +1,14 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { ImageContent } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { loadTelegramTunnelConfig, ConfigError } from "./config.js";
 import { renderQrLines } from "./qr.js";
 import { getOrCreateTunnelRuntime, sendSessionNotification } from "./runtime.js";
 import { TunnelStateStore } from "./state-store.js";
-import type { BindingEntryData, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
+import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { extractStructuredAnswerMetadata } from "./answer-workflow.js";
-import { createTurnId, extractFinalAssistantText, extractTextContent, getTelegramUserLabel, sessionKeyOf, sessionLabelOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
+import { createTurnId, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, sessionLabelOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
 
 const BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
 const AUDIT_MESSAGE_TYPE = "telegram-tunnel-audit";
@@ -107,6 +108,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let currentRoute: SessionRoute | undefined;
   let latestContext: ExtensionContext | undefined;
   let closeConnectQrScreen: (() => void) | undefined;
+  let activeTurnImages: ImageContent[] = [];
+  let activeTurnImagePathTexts: string[] = [];
+  let latestTurnImages: LatestTurnImage[] = [];
+  let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
 
   async function ensureConfig(ctx?: ExtensionContext, interactiveNotice = false): Promise<TelegramTunnelConfig> {
     if (configCache) return configCache;
@@ -128,6 +133,30 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   function appendAudit(message: string): void {
     const safe = summarizeTextDeterministically(message, 280);
     pi.sendMessage({ customType: AUDIT_MESSAGE_TYPE, content: safe, display: true });
+  }
+
+  async function loadImagePathForTelegram(ctx: ExtensionContext, relativePath: string, turnId: string, index: number): Promise<ImageFileLoadResult> {
+    const config = await ensureConfig();
+    return loadWorkspaceImageFile(relativePath, {
+      workspaceRoot: ctx.cwd,
+      turnId,
+      index,
+      maxBytes: config.maxOutboundImageBytes,
+      allowedMimeTypes: config.allowedImageMimeTypes,
+    });
+  }
+
+  async function getLatestImagesForTelegram(): Promise<LatestTurnImage[]> {
+    const ctx = latestContext;
+    const images = [...latestTurnImages];
+    if (!ctx) return images;
+    const config = await ensureConfig();
+    for (const candidate of latestTurnImageFileCandidates) {
+      if (images.length >= config.maxLatestImages) break;
+      const loaded = await loadImagePathForTelegram(ctx, candidate.path, candidate.turnId, images.length);
+      if (loaded.ok) images.push(loaded.image);
+    }
+    return images;
   }
 
   function persistBinding(binding: TelegramBindingMetadata | null, revoked = false): void {
@@ -156,6 +185,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         context: ctx,
         getModel: () => latestContext?.model,
         sendUserMessage: (text, options) => pi.sendUserMessage(text, options),
+        getLatestImages: getLatestImagesForTelegram,
+        getImageByPath: async (relativePath) => {
+          const turnId = currentRoute?.notification.lastTurnId ?? createTurnId();
+          return loadImagePathForTelegram(latestContext ?? ctx, relativePath, turnId, 0);
+        },
         appendAudit,
         persistBinding,
         promptLocalConfirmation: async (identity) => {
@@ -397,6 +431,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
+    activeTurnImages = [];
+    activeTurnImagePathTexts = [];
+    latestTurnImages = [];
+    latestTurnImageFileCandidates = [];
     currentRoute.actions.context = ctx;
     currentRoute.notification.startedAt = Date.now();
     currentRoute.notification.lastTurnId = undefined;
@@ -405,6 +443,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.notification.lastStatus = "running";
     currentRoute.notification.abortRequested = false;
     currentRoute.notification.structuredAnswer = undefined;
+    currentRoute.notification.latestImages = undefined;
     currentRoute.lastActivityAt = Date.now();
     publishRouteStateSoon();
   });
@@ -428,6 +467,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       currentRoute.lastActivityAt = Date.now();
       publishRouteStateSoon();
     }
+    if (event.message.role === "toolResult") {
+      activeTurnImages.push(...extractImageContent(event.message.content));
+      const toolText = extractTextContent(event.message.content as never);
+      if (toolText) activeTurnImagePathTexts.push(toolText);
+    }
   });
 
   pi.on("tool_execution_end", async (event, ctx) => {
@@ -449,6 +493,39 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const finalText = extractFinalAssistantText(event.messages as AgentMessage[]);
     const turnId = createTurnId();
     currentRoute.notification.lastTurnId = turnId;
+    const config = configCache;
+    latestTurnImages = [];
+    latestTurnImageFileCandidates = [];
+    let skippedImages = 0;
+    if (config && activeTurnImages.length > 0) {
+      for (const image of activeTurnImages) {
+        const latestImage = latestImageFromContent(image, { turnId, index: latestTurnImages.length });
+        if (
+          latestTurnImages.length >= config.maxLatestImages
+          || !isAllowedImageMimeType(latestImage.mimeType, config.allowedImageMimeTypes)
+          || latestImage.byteSize > config.maxOutboundImageBytes
+        ) {
+          skippedImages += 1;
+          continue;
+        }
+        latestTurnImages.push(latestImage);
+      }
+    }
+    if (config) {
+      const imagePathTexts = finalText ? [...activeTurnImagePathTexts, finalText] : activeTurnImagePathTexts;
+      const remaining = Math.max(0, config.maxLatestImages - latestTurnImages.length);
+      latestTurnImageFileCandidates = latestImageFileCandidatesFromText(imagePathTexts, { turnId, maxCount: remaining });
+    }
+    const latestImageCount = latestTurnImages.length + latestTurnImageFileCandidates.length;
+    currentRoute.notification.latestImages = latestImageCount > 0
+      ? {
+        turnId,
+        count: latestImageCount,
+        skipped: skippedImages,
+        contentCount: latestTurnImages.length,
+        fileCount: latestTurnImageFileCandidates.length,
+      }
+      : undefined;
     if (finalText) {
       currentRoute.notification.lastAssistantText = finalText;
       currentRoute.notification.structuredAnswer = extractStructuredAnswerMetadata(finalText, { turnId });

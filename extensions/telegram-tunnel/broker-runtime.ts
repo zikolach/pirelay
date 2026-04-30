@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SessionRoute, SessionStatusSnapshot, SetupCache, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
+import type { ImageFileLoadResult, LatestTurnImage, SessionRoute, SessionStatusSnapshot, SetupCache, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { ensureStateDir } from "./paths.js";
 import { formatModelId, sha256 } from "./utils.js";
 
@@ -15,6 +15,7 @@ interface BrokerRouteState {
   binding?: TelegramBindingMetadata;
   busy: boolean;
   modelId?: string;
+  imageInputSupported?: boolean;
   lastActivityAt?: number;
   notification: SessionRoute["notification"];
 }
@@ -117,6 +118,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       binding: route.binding,
       busy: !route.actions.context.isIdle(),
       modelId: formatModelId(route.actions.getModel()),
+      imageInputSupported: Boolean(route.actions.getModel()?.input?.includes("image")),
       lastActivityAt: route.lastActivityAt,
       notification: route.notification,
     };
@@ -237,13 +239,25 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "deliverPrompt": {
-          const text = String(request.text ?? "");
+          const content = Array.isArray(request.content)
+            ? request.content as TelegramPromptContent
+            : String(request.text ?? "");
           const deliverAs = request.deliverAs as "steer" | "followUp" | undefined;
-          route.actions.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
+          route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }
           await respond({ ok: true });
+          return;
+        }
+        case "getLatestImages": {
+          const images: LatestTurnImage[] = await route.actions.getLatestImages();
+          await respond({ ok: true, result: images });
+          return;
+        }
+        case "getImageByPath": {
+          const result: ImageFileLoadResult = await route.actions.getImageByPath(String(request.path ?? ""));
+          await respond({ ok: true, result });
           return;
         }
         case "abort": {

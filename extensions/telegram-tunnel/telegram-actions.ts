@@ -5,7 +5,8 @@ export type TelegramActionCallback =
   | { kind: "answer-option"; turnId: string; optionId: string }
   | { kind: "answer-custom"; turnId: string }
   | { kind: "full-chat"; turnId: string }
-  | { kind: "full-markdown"; turnId: string };
+  | { kind: "full-markdown"; turnId: string }
+  | { kind: "latest-images"; turnId: string };
 
 const MAX_BUTTON_LABEL = 56;
 const FULL_OUTPUT_ACTION_MIN_CHARS = 320;
@@ -45,6 +46,10 @@ export function buildFullMarkdownCallbackData(turnId: string): string {
   return `full:${encodePart(turnId)}:md`;
 }
 
+export function buildLatestImagesCallbackData(turnId: string): string {
+  return `imgs:${encodePart(turnId)}`;
+}
+
 export function parseTelegramActionCallbackData(data: string): TelegramActionCallback | undefined {
   const parts = data.split(":");
   if (parts[0] === "ans" && parts.length >= 3) {
@@ -66,6 +71,12 @@ export function parseTelegramActionCallbackData(data: string): TelegramActionCal
     if (parts[2] === "md") return { kind: "full-markdown", turnId };
   }
 
+  if (parts[0] === "imgs" && parts.length === 2) {
+    const turnId = decodePart(parts[1]);
+    if (!turnId) return undefined;
+    return { kind: "latest-images", turnId };
+  }
+
   return undefined;
 }
 
@@ -74,6 +85,11 @@ export function buildFullOutputKeyboard(turnId: string): TelegramInlineKeyboard 
     { text: "📄 Show in chat", callbackData: buildFullChatCallbackData(turnId) },
     { text: "⬇️ Download .md", callbackData: buildFullMarkdownCallbackData(turnId) },
   ]];
+}
+
+export function buildLatestImagesKeyboard(turnId: string, count?: number): TelegramInlineKeyboard {
+  const label = count && count > 1 ? `🖼 Download ${count} images` : "🖼 Download image";
+  return [[{ text: label, callbackData: buildLatestImagesCallbackData(turnId) }]];
 }
 
 export function shouldOfferFullOutputActions(text: string | undefined): boolean {

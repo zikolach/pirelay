@@ -15,10 +15,18 @@ import {
 import {
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
+  buildLatestImagesKeyboard,
   parseTelegramActionCallbackData,
   shouldOfferFullOutputActions,
 } from './telegram-actions.ts';
 import { formatTelegramChatText } from './telegram-format.ts';
+import {
+  base64ByteLength,
+  buildImagePromptContent,
+  isAllowedImageMimeType,
+  normalizeImageMimeType,
+  safeTelegramImageFilename,
+} from './utils.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
@@ -46,6 +54,8 @@ const HELP_TEXT = [
   '/use <session> - select an active session',
   '/summary - latest summary/excerpt',
   '/full - latest full assistant output',
+  '/images - download latest image outputs or generated image files',
+  '/send-image <path> - send a validated workspace image file',
   '/steer <text> - steer the active run',
   '/followup <text> - queue a follow-up',
   '/abort - abort the active run',
@@ -60,6 +70,21 @@ const TELEGRAM_ACTIVITY_ACTION = 'typing';
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60 * 1000;
+const DEFAULT_ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+function allowedImageMimeTypes() {
+  return Array.isArray(config.allowedImageMimeTypes) && config.allowedImageMimeTypes.length > 0
+    ? config.allowedImageMimeTypes
+    : DEFAULT_ALLOWED_IMAGE_MIME_TYPES;
+}
+
+function maxInboundImageBytes() {
+  return Number(config.maxInboundImageBytes) > 0 ? Number(config.maxInboundImageBytes) : 10 * 1024 * 1024;
+}
+
+function maxOutboundImageBytes() {
+  return Number(config.maxOutboundImageBytes) > 0 ? Number(config.maxOutboundImageBytes) : 10 * 1024 * 1024;
+}
 
 function unrefTimer(timer) {
   if (timer && typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
@@ -181,6 +206,82 @@ async function sendPlainText(chatId, text, keyboard) {
 async function sendMarkdownDocument(chatId, filename, text, caption) {
   const redacted = redact(text);
   await withRetry(() => api.sendDocument(chatId, new InputFile(Buffer.from(redacted, 'utf8'), filename), caption ? { caption } : undefined));
+}
+
+async function sendImageDocument(chatId, image, caption) {
+  const bytes = Buffer.from(image.data, 'base64');
+  await withRetry(() => api.sendDocument(
+    chatId,
+    new InputFile(bytes, safeTelegramImageFilename(image.fileName, image.mimeType)),
+    caption ? { caption: redact(caption) } : undefined,
+  ));
+}
+
+function selectBestPhotoSize(photoSizes) {
+  const sorted = [...(photoSizes || [])]
+    .filter((photo) => typeof photo.file_id === 'string')
+    .sort((left, right) => Number(right.width || 0) * Number(right.height || 0) - Number(left.width || 0) * Number(left.height || 0));
+  return sorted.find((photo) => typeof photo.file_size !== 'number' || photo.file_size <= maxInboundImageBytes()) || sorted[0];
+}
+
+function extractImageReferences(message) {
+  const references = [];
+  const photo = Array.isArray(message.photo) ? selectBestPhotoSize(message.photo) : undefined;
+  if (photo?.file_id) {
+    references.push({
+      kind: 'photo',
+      fileId: photo.file_id,
+      fileUniqueId: photo.file_unique_id,
+      mimeType: 'image/jpeg',
+      fileSize: typeof photo.file_size === 'number' ? photo.file_size : undefined,
+      width: typeof photo.width === 'number' ? photo.width : undefined,
+      height: typeof photo.height === 'number' ? photo.height : undefined,
+      supported: true,
+    });
+  }
+  const document = message.document;
+  if (document?.file_id) {
+    const mimeType = normalizeImageMimeType(document.mime_type) || 'application/octet-stream';
+    const supported = isAllowedImageMimeType(mimeType, allowedImageMimeTypes());
+    references.push({
+      kind: 'document',
+      fileId: document.file_id,
+      fileUniqueId: document.file_unique_id,
+      fileName: typeof document.file_name === 'string' ? document.file_name : undefined,
+      mimeType,
+      fileSize: typeof document.file_size === 'number' ? document.file_size : undefined,
+      supported,
+      unsupportedReason: supported ? undefined : `Unsupported image document type: ${mimeType}.`,
+    });
+  }
+  return references;
+}
+
+async function downloadImage(reference) {
+  if (!reference.supported) throw new Error(reference.unsupportedReason || 'Unsupported image attachment.');
+  if (reference.fileSize && reference.fileSize > maxInboundImageBytes()) {
+    throw new Error(`Image is too large (${reference.fileSize} bytes). Limit: ${maxInboundImageBytes()} bytes.`);
+  }
+  const telegramFile = await withRetry(() => api.getFile(reference.fileId));
+  const remoteSize = telegramFile.file_size || reference.fileSize;
+  if (remoteSize && remoteSize > maxInboundImageBytes()) {
+    throw new Error(`Image is too large (${remoteSize} bytes). Limit: ${maxInboundImageBytes()} bytes.`);
+  }
+  if (!telegramFile.file_path) throw new Error('Telegram did not return a downloadable file path for this image.');
+  const response = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${telegramFile.file_path}`);
+  if (!response.ok) throw new Error(`Telegram file download failed with HTTP ${response.status}.`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength > maxInboundImageBytes()) {
+    throw new Error(`Image is too large (${buffer.byteLength} bytes). Limit: ${maxInboundImageBytes()} bytes.`);
+  }
+  const mimeType = normalizeImageMimeType(reference.mimeType) || reference.mimeType;
+  if (!isAllowedImageMimeType(mimeType, allowedImageMimeTypes())) throw new Error(`Unsupported image type: ${mimeType}.`);
+  return {
+    image: { type: 'image', data: buffer.toString('base64'), mimeType },
+    fileName: safeTelegramImageFilename(reference.fileName, mimeType, reference.kind === 'photo' ? 'telegram-photo' : 'telegram-image'),
+    fileSize: buffer.byteLength,
+    source: reference,
+  };
 }
 
 async function answerCallbackQuery(callbackQueryId, text) {
@@ -337,8 +438,22 @@ function fullOutputKeyboardForRoute(route) {
   return route?.notification?.lastAssistantText && turnId ? buildFullOutputKeyboard(turnId) : undefined;
 }
 
-function completionFullOutputKeyboardForRoute(route) {
-  return route?.notification?.structuredAnswer ? undefined : fullOutputKeyboardForRoute(route);
+function latestImagesKeyboardForRoute(route) {
+  const latestImages = route?.notification?.latestImages;
+  if (!latestImages || latestImages.count <= 0) return undefined;
+  return buildLatestImagesKeyboard(latestImages.turnId, latestImages.count);
+}
+
+function combineKeyboards(...keyboards) {
+  const rows = keyboards.flatMap((keyboard) => keyboard || []);
+  return rows.length > 0 ? rows : undefined;
+}
+
+function completionActionKeyboardForRoute(route) {
+  return combineKeyboards(
+    route?.notification?.structuredAnswer ? undefined : fullOutputKeyboardForRoute(route),
+    latestImagesKeyboardForRoute(route),
+  );
 }
 
 function shouldOfferFullOutputActionsForRoute(route) {
@@ -350,6 +465,8 @@ function answerActionKeyboardForRoute(route) {
   const keyboard = buildAnswerActionKeyboard(route.notification.structuredAnswer, {
     includeFullOutputActions: shouldOfferFullOutputActionsForRoute(route),
   });
+  const imageKeyboard = latestImagesKeyboardForRoute(route);
+  if (imageKeyboard) keyboard.push(...imageKeyboard);
   return keyboard.length > 0 ? keyboard : undefined;
 }
 
@@ -691,6 +808,127 @@ async function handleDirectStructuredAnswer(message, route) {
   return true;
 }
 
+function messageImages(message) {
+  return message.images || [];
+}
+
+function hasImageAttachments(message) {
+  return messageImages(message).length > 0;
+}
+
+function promptTextForMessage(message, fallback = 'Please inspect the attached image.') {
+  return String(message.text || '').trim() || fallback;
+}
+
+async function downloadAuthorizedImages(message, route) {
+  const references = messageImages(message);
+  if (references.length === 0) return [];
+  const unsupported = references.filter((reference) => !reference.supported);
+  if (unsupported.length > 0) {
+    await sendPlainText(message.chat.id, `Unsupported image attachment. Accepted image formats: ${allowedImageMimeTypes().join(', ')}.`);
+    return undefined;
+  }
+  if (!route?.imageInputSupported) {
+    await sendPlainText(message.chat.id, 'The current Pi model does not support image input. Switch to an image-capable model or resend text only.');
+    return undefined;
+  }
+  const downloaded = [];
+  try {
+    for (const reference of references) downloaded.push(await downloadImage(reference));
+  } catch (error) {
+    await sendPlainText(message.chat.id, `Could not fetch the Telegram image: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+  return downloaded;
+}
+
+async function deliverAuthorizedPrompt(message, route, text, { deliverAs, auditMessage, busyAck, idleAck } = {}) {
+  const downloadedImages = await downloadAuthorizedImages(message, route);
+  if (!downloadedImages) return;
+  const content = downloadedImages.length > 0
+    ? buildImagePromptContent(text || 'Please inspect the attached image.', downloadedImages.map((image) => image.image))
+    : text;
+  const activityStarted = await startActivityIndicator(route);
+  const payload = Array.isArray(content) ? { content } : { text: content };
+  await requestClient(route, 'deliverPrompt', {
+    ...payload,
+    deliverAs,
+    auditMessage,
+  });
+  if (busyAck) {
+    await sendPlainText(message.chat.id, busyAck);
+    return;
+  }
+  if (idleAck) {
+    await sendPlainText(message.chat.id, idleAck);
+    return;
+  }
+  if (!activityStarted) await sendPlainText(message.chat.id, 'Prompt delivered to Pi.');
+}
+
+async function getLatestImages(route) {
+  return await requestClient(route, 'getLatestImages');
+}
+
+async function getImageByPath(route, path) {
+  return await requestClient(route, 'getImageByPath', { path });
+}
+
+function emptyImagesMessage(hasCandidates = false) {
+  if (hasCandidates) {
+    return 'The latest Pi output mentioned image-like file paths, but none could be sent. They may be missing, outside the workspace, hidden, unsupported, or too large. Try /send-image <relative-path> for a specific workspace PNG/JPEG/WebP file, or ask Pi to regenerate the image.';
+  }
+  return 'No image outputs are available for the latest completed Pi turn. /images can send captured image outputs or safe workspace image files mentioned in the latest Pi reply. If Pi saved an image file, use /send-image <relative-path>.';
+}
+
+async function sendImageByPath(message, route, path) {
+  const loaded = await getImageByPath(route, path);
+  if (!loaded?.ok) {
+    await sendPlainText(message.chat.id, loaded?.error || 'Could not load that image file.');
+    return;
+  }
+  const image = loaded.image;
+  const byteSize = image.byteSize || base64ByteLength(image.data || '');
+  if (!isAllowedImageMimeType(image.mimeType, allowedImageMimeTypes()) || byteSize > maxOutboundImageBytes()) {
+    await sendPlainText(message.chat.id, 'Image file is too large or unsupported for Telegram delivery.');
+    return;
+  }
+  await sendImageDocument(message.chat.id, image, 'Pi image file');
+}
+
+async function sendLatestImages(message, route) {
+  const latest = route?.notification?.latestImages;
+  const images = route ? await getLatestImages(route) : [];
+  if (!latest || latest.count <= 0) {
+    await sendPlainText(message.chat.id, emptyImagesMessage(false));
+    return;
+  }
+  if (images.length === 0) {
+    await sendPlainText(message.chat.id, emptyImagesMessage(Boolean(latest.fileCount > 0)));
+    return;
+  }
+  let sent = 0;
+  let skipped = latest.skipped || 0;
+  for (const image of images) {
+    const byteSize = image.byteSize || base64ByteLength(image.data || '');
+    if (!isAllowedImageMimeType(image.mimeType, allowedImageMimeTypes()) || byteSize > maxOutboundImageBytes()) {
+      skipped += 1;
+      continue;
+    }
+    await sendImageDocument(
+      message.chat.id,
+      image,
+      images.length === 1 ? 'Latest Pi image output' : `Latest Pi image output ${sent + 1}/${images.length}`,
+    );
+    sent += 1;
+  }
+  if (sent === 0) {
+    await sendPlainText(message.chat.id, 'Latest image outputs are too large or unsupported for Telegram delivery.');
+    return;
+  }
+  if (skipped > 0) await sendPlainText(message.chat.id, `Skipped ${skipped} image output(s) because they were too large or unsupported.`);
+}
+
 async function handleAuthorizedCommand(message, route, command, args) {
   const binding = route?.binding;
   if (command === 'help') {
@@ -741,32 +979,45 @@ async function handleAuthorizedCommand(message, route, command, args) {
       await sendPlainText(message.chat.id, route.notification?.lastAssistantText || 'No completed assistant output is available yet for this session.');
       return;
     }
-    case 'steer': {
+    case 'images': {
+      await sendLatestImages(message, route);
+      return;
+    }
+    case 'send-image':
+    case 'sendimage': {
       if (!args) {
+        await sendPlainText(message.chat.id, 'Usage: /send-image <relative-image-path>');
+        return;
+      }
+      await sendImageByPath(message, route, args);
+      return;
+    }
+    case 'steer': {
+      if (!args && !hasImageAttachments(message)) {
         await sendPlainText(message.chat.id, 'Usage: /steer <text>');
         return;
       }
-      await startActivityIndicator(route);
-      await requestClient(route, 'deliverPrompt', {
-        text: args,
-        deliverAs: isEffectivelyBusy(route) ? 'steer' : undefined,
+      const busy = isEffectivelyBusy(route);
+      await deliverAuthorizedPrompt(message, route, args || 'Please inspect the attached image.', {
+        deliverAs: busy ? 'steer' : undefined,
         auditMessage: `Telegram ${getUserLabel(message.user)} sent a steering instruction.`,
+        busyAck: busy ? 'Steering queued.' : undefined,
+        idleAck: busy ? undefined : 'Sent as a prompt.',
       });
-      await sendPlainText(message.chat.id, isEffectivelyBusy(route) ? 'Steering queued.' : 'Sent as a prompt.');
       return;
     }
     case 'followup': {
-      if (!args) {
+      if (!args && !hasImageAttachments(message)) {
         await sendPlainText(message.chat.id, 'Usage: /followup <text>');
         return;
       }
-      await startActivityIndicator(route);
-      await requestClient(route, 'deliverPrompt', {
-        text: args,
-        deliverAs: isEffectivelyBusy(route) ? 'followUp' : undefined,
+      const busy = isEffectivelyBusy(route);
+      await deliverAuthorizedPrompt(message, route, args || 'Please inspect the attached image.', {
+        deliverAs: busy ? 'followUp' : undefined,
         auditMessage: `Telegram ${getUserLabel(message.user)} queued a follow-up.`,
+        busyAck: busy ? 'Follow-up queued.' : undefined,
+        idleAck: busy ? undefined : 'Sent as a prompt.',
       });
-      await sendPlainText(message.chat.id, isEffectivelyBusy(route) ? 'Follow-up queued.' : 'Sent as a prompt.');
       return;
     }
     case 'abort': {
@@ -825,6 +1076,21 @@ async function handleAuthorizedText(message, route) {
     await sendPlainText(message.chat.id, 'The tunnel is paused. Use /resume first.');
     return;
   }
+
+  if (hasImageAttachments(message)) {
+    takePendingCustomAnswer(route, message.user);
+    const busy = isEffectivelyBusy(route);
+    const deliverAs = busy ? config.busyDeliveryMode : undefined;
+    await deliverAuthorizedPrompt(message, route, promptTextForMessage(message), {
+      deliverAs,
+      auditMessage: busy
+        ? `Telegram ${getUserLabel(message.user)} queued an image ${deliverAs} message.`
+        : `Telegram ${getUserLabel(message.user)} sent an image prompt.`,
+      busyAck: busy ? `Pi is busy; your message was queued as ${deliverAs}.` : undefined,
+    });
+    return;
+  }
+
   const pendingCustom = takePendingCustomAnswer(route, message.user);
   if (pendingCustom) {
     if (isGuidedAnswerCancel(message.text)) {
@@ -851,22 +1117,15 @@ async function handleAuthorizedText(message, route) {
   if (await handleDirectStructuredAnswer(message, route)) {
     return;
   }
-  const deliverAs = isEffectivelyBusy(route) ? config.busyDeliveryMode : undefined;
-  const activityStarted = await startActivityIndicator(route);
-  await requestClient(route, 'deliverPrompt', {
-    text: message.text,
+  const busy = isEffectivelyBusy(route);
+  const deliverAs = busy ? config.busyDeliveryMode : undefined;
+  await deliverAuthorizedPrompt(message, route, message.text, {
     deliverAs,
-    auditMessage: isEffectivelyBusy(route)
+    auditMessage: busy
       ? `Telegram ${getUserLabel(message.user)} queued a ${deliverAs} message.`
       : `Telegram ${getUserLabel(message.user)} sent a prompt.`,
+    busyAck: busy ? `Pi is busy; your message was queued as ${deliverAs}.` : undefined,
   });
-  if (isEffectivelyBusy(route)) {
-    await sendPlainText(message.chat.id, `Pi is busy; your message was queued as ${deliverAs}.`);
-    return;
-  }
-  if (!activityStarted) {
-    await sendPlainText(message.chat.id, 'Prompt delivered to Pi.');
-  }
 }
 
 async function processInbound(message) {
@@ -931,7 +1190,12 @@ async function processCallback(callback) {
   const currentTurnId = getCurrentTurnId(route);
   if (!currentTurnId || action.turnId !== currentTurnId) {
     await answerCallbackQuery(callback.callbackQueryId, 'This action is no longer current.');
-    await sendPlainText(callback.chat.id, 'That Telegram action belongs to an older Pi output. Use the latest buttons or /full.');
+    await sendPlainText(
+      callback.chat.id,
+      action.kind === 'latest-images'
+        ? 'That image action belongs to an older Pi output. Use the latest buttons or /images.'
+        : 'That Telegram action belongs to an older Pi output. Use the latest buttons or /full.',
+    );
     return;
   }
 
@@ -982,6 +1246,17 @@ async function processCallback(callback) {
       );
       return;
     }
+    case 'latest-images': {
+      const latest = route.notification?.latestImages;
+      if (!latest || latest.turnId !== action.turnId) {
+        await answerCallbackQuery(callback.callbackQueryId, 'No current images.');
+        await sendPlainText(callback.chat.id, 'That image action is no longer current. Use the latest buttons or /images.');
+        return;
+      }
+      await answerCallbackQuery(callback.callbackQueryId, 'Sending image outputs.');
+      await sendLatestImages(callback, route);
+      return;
+    }
   }
 }
 
@@ -998,11 +1273,15 @@ async function pollLoop() {
         const message = update.message;
         const callback = update.callback_query;
         updateOffset = update.update_id + 1;
-        if (message?.text && message.from && message.chat) {
+        if (message && message.from && message.chat) {
+          const text = message.text || message.caption || '';
+          const images = extractImageReferences(message);
+          if (!text && images.length === 0) continue;
           await processInbound({
             updateId: update.update_id,
             messageId: message.message_id,
-            text: message.text,
+            text,
+            images: images.length > 0 ? images : undefined,
             chat: {
               id: message.chat.id,
               type: message.chat.type,
@@ -1122,7 +1401,7 @@ async function handleClientRequest(socket, message) {
           return;
         }
         syncActivityIndicator(route);
-        await sendPlainText(route.binding.chatId, message.text, completionFullOutputKeyboardForRoute(route));
+        await sendPlainText(route.binding.chatId, message.text, completionActionKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(
             route.binding.chatId,

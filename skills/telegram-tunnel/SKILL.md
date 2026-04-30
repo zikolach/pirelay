@@ -29,6 +29,8 @@ Use the extension command for all runtime actions:
 - `/use <session>`
 - `/summary`
 - `/full`
+- `/images`
+- `/send-image <relative-path>`
 - `/steer <text>`
 - `/followup <text>`
 - `/abort`
@@ -37,7 +39,7 @@ Use the extension command for all runtime actions:
 - `/resume`
 - `/disconnect`
 
-Plain text messages are delivered as normal Pi prompts when idle and as follow-up/steer messages when busy. Accepted idle prompts show Telegram's `typing...` activity while Pi works instead of a noisy "Prompt delivered to Pi" acknowledgement; busy follow-up/steer messages keep their queued acknowledgement and continue the activity indicator.
+Plain text messages are delivered as normal Pi prompts when idle and as follow-up/steer messages when busy. Telegram photos and supported image documents are delivered as image prompts when the current Pi model supports image input; captions become the prompt text. Accepted idle prompts show Telegram's `typing...` activity while Pi works instead of a noisy "Prompt delivered to Pi" acknowledgement; busy follow-up/steer messages keep their queued acknowledgement and continue the activity indicator.
 
 If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list them and `/use <session>` to switch the active one.
 
@@ -58,6 +60,8 @@ Completion or decision messages also expose full-output buttons when the latest 
 
 Markdown tables shown in chat are reformatted into mobile-friendly code-style blocks because Telegram does not render Markdown tables. The downloaded `.md` keeps the original Markdown table format aside from configured redaction.
 
+If the latest completed turn produced image outputs from tools or mentioned a safe workspace image path such as `outputs/result.png`, use `/images` or the inline image button to download those outputs as Telegram documents. Use `/send-image <relative-path>` to explicitly send a validated workspace PNG/JPEG/WebP file. PiRelay does not automatically echo input images back to Telegram or browse arbitrary workspace files.
+
 This helps when the important decision prompt appears near the end of a long assistant response.
 
 ## Security reminders
@@ -66,3 +70,4 @@ This helps when the important decision prompt appears near the end of a long ass
 - Telegram Bot API is not end-to-end encrypted
 - pairing links are single-use and expire quickly
 - only non-secret binding metadata is stored in Pi session history
+- images can contain visual secrets; outbound image delivery requires explicit `/images`, button, or `/send-image <relative-path>` action

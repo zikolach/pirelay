@@ -80,7 +80,21 @@ Check:
 5. Verify the remaining session still works
 6. Reconnect the disconnected session and verify local prompts still work there too
 
-## 5. Regression notes to capture
+## 5. Image bridge behavior
+
+1. Switch Pi to a model that supports image input.
+2. Send a Telegram photo with a normal caption and verify Pi receives a multimodal prompt.
+3. Send a Telegram image document (`png`, `jpg`, or `webp`) with no caption and verify Pi receives the image-inspection fallback prompt.
+4. While Pi is busy, send a photo captioned `/steer inspect this screenshot` and verify it queues as steering.
+5. Send an unsupported document such as a PDF and verify PiRelay rejects it without injecting a prompt.
+6. Switch Pi to a text-only model, send a photo, and verify PiRelay rejects it without injecting the caption as text-only.
+7. Run a tool or test fixture that emits an image result, then use `/images` and the inline image button to download the latest image output.
+8. Generate or save a workspace image file and have Pi mention its relative path (for example `outputs/example.png`); verify `/images` sends it without needing the agent to re-open/read the file.
+9. Use `/send-image outputs/example.png` and verify Telegram receives the validated image document.
+10. Try `/send-image ../secret.png`, an absolute path, a hidden path, an oversized image, and a renamed non-image; verify each is rejected with an actionable message.
+11. Verify input images are not echoed back by `/images` unless a tool emitted them separately as output.
+
+## 6. Regression notes to capture
 
 When a test fails, record:
 - Telegram client and platform
