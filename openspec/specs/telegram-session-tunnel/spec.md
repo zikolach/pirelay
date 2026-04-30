@@ -190,11 +190,16 @@ The system SHALL let the authorized Telegram user choose a custom-answer action 
 - **THEN** the system clears or rejects the pending custom-answer state and does not inject stale custom text into Pi
 
 ### Requirement: One-click latest assistant output retrieval
-The system SHALL attach inline full-output actions to Telegram completion and decision messages so the authorized user can retrieve the latest completed assistant message without typing `/full`.
+The system SHALL attach inline full-output actions to Telegram completion and decision messages when the inline notification is too short to contain the whole latest assistant message, so the authorized user can retrieve longer completed output without typing `/full`.
 
 #### Scenario: Full output buttons are sent with a completion summary
-- **WHEN** the system sends a Telegram completion notification and latest assistant output is available
+- **WHEN** the system sends a Telegram completion notification and the latest assistant output is longer than the inline preview
 - **THEN** the message includes inline actions to show the latest assistant output in chat and to download it as a Markdown document
+
+#### Scenario: Short completion output avoids redundant buttons
+- **WHEN** the system sends a Telegram completion notification whose preview already contains the small latest assistant message
+- **THEN** the message does not include redundant full-output buttons
+- **AND** `/full` remains available as a command fallback
 
 #### Scenario: User chooses show in chat
 - **WHEN** the authorized Telegram user taps `Show in chat` for the latest assistant turn

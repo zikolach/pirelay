@@ -16,6 +16,7 @@ import {
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   parseTelegramActionCallbackData,
+  shouldOfferFullOutputActions,
 } from './telegram-actions.ts';
 import { formatTelegramChatText } from './telegram-format.ts';
 
@@ -331,8 +332,25 @@ function getCurrentTurnId(route) {
 }
 
 function fullOutputKeyboardForRoute(route) {
+  if (!shouldOfferFullOutputActionsForRoute(route)) return undefined;
   const turnId = getCurrentTurnId(route);
   return route?.notification?.lastAssistantText && turnId ? buildFullOutputKeyboard(turnId) : undefined;
+}
+
+function completionFullOutputKeyboardForRoute(route) {
+  return route?.notification?.structuredAnswer ? undefined : fullOutputKeyboardForRoute(route);
+}
+
+function shouldOfferFullOutputActionsForRoute(route) {
+  return shouldOfferFullOutputActions(route?.notification?.lastAssistantText);
+}
+
+function answerActionKeyboardForRoute(route) {
+  if (!route?.notification?.structuredAnswer) return undefined;
+  const keyboard = buildAnswerActionKeyboard(route.notification.structuredAnswer, {
+    includeFullOutputActions: shouldOfferFullOutputActionsForRoute(route),
+  });
+  return keyboard.length > 0 ? keyboard : undefined;
 }
 
 function safeFilename(baseName, extension) {
@@ -1104,12 +1122,14 @@ async function handleClientRequest(socket, message) {
           return;
         }
         syncActivityIndicator(route);
-        await sendPlainText(route.binding.chatId, message.text, fullOutputKeyboardForRoute(route));
+        await sendPlainText(route.binding.chatId, message.text, completionFullOutputKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(
             route.binding.chatId,
-            summarizeTailForTelegram(route.notification.structuredAnswer),
-            buildAnswerActionKeyboard(route.notification.structuredAnswer),
+            summarizeTailForTelegram(route.notification.structuredAnswer, {
+              includeFullOutputActions: shouldOfferFullOutputActionsForRoute(route),
+            }),
+            answerActionKeyboardForRoute(route),
           );
         }
         respond(true, true);

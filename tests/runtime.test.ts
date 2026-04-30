@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard } from "../extensions/telegram-tunnel/telegram-actions.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
@@ -456,6 +456,66 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(deliveries).toEqual([]);
     expect(sent[0]).toContain("could not build a structured answer draft");
+  });
+
+  it("only attaches full-output buttons when the completion preview is truncated", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-button-threshold:/tmp/session-button-threshold.jsonl",
+      sessionId: "session-button-threshold",
+      sessionFile: "/tmp/session-button-threshold.jsonl",
+      sessionLabel: "session-button-threshold.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route } = createRoute(binding, true);
+    route.notification.lastTurnId = "turn-short";
+    route.notification.lastAssistantText = "Hey! Morning — ready when you are.";
+    const sends: Array<{ text: string; keyboard?: unknown }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string, keyboard?: unknown) => sends.push({ text, keyboard }),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sends[0]?.text).toContain("Hey! Morning — ready when you are.");
+    expect(sends[0]?.text).not.toContain("Use /full");
+    expect(sends[0]?.keyboard).toBeUndefined();
+
+    sends.length = 0;
+    route.notification.lastTurnId = "turn-long";
+    route.notification.lastAssistantText = "Long output ".repeat(40);
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sends[0]?.text).toContain("Use /full");
+    expect(sends[0]?.keyboard).toEqual(buildFullOutputKeyboard("turn-long"));
+
+    sends.length = 0;
+    const decisionText = [
+      `${"Long decision output ".repeat(30)}`,
+      "",
+      "Choose:",
+      "1. Review the current diff.",
+      "2. Commit the current changes.",
+    ].join("\n");
+    route.notification.lastTurnId = "turn-decision";
+    route.notification.lastAssistantText = decisionText;
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(decisionText);
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sends).toHaveLength(2);
+    expect(sends[0]?.text).not.toContain("Use /full");
+    expect(sends[0]?.keyboard).toBeUndefined();
+    expect(sends[1]?.text).toContain("Use /full or the full-output buttons");
+    expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildFullOutputKeyboard(route.notification.structuredAnswer!.turnId)));
   });
 
   it("treats terminal notification state as idle even if stale busy context remains", async () => {

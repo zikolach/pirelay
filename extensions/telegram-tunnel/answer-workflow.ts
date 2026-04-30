@@ -375,14 +375,20 @@ export function extractStructuredAnswerMetadata(text: string, options?: ExtractO
   return findChoiceMetadata(lines, text, options) ?? findQuestionMetadata(lines, text, options);
 }
 
-export function summarizeTailForTelegram(metadata: StructuredAnswerMetadata): string {
+export function summarizeTailForTelegram(
+  metadata: StructuredAnswerMetadata,
+  options: { includeFullOutputActions?: boolean } = {},
+): string {
+  const fullOutputHint = options.includeFullOutputActions === false
+    ? "Use /full for the full output."
+    : "Use /full or the full-output buttons for the full output.";
   if (metadata.kind === "choice") {
     return [
       metadata.prompt,
       ...(metadata.options ?? []).map((option) => `${option.id}. ${option.label}`),
       "",
       "Tap an option button, reply with an option directly, or send 'answer' to open an answer draft.",
-      "Use /full or the full-output buttons for the full output.",
+      fullOutputHint,
     ].join("\n");
   }
 
@@ -390,7 +396,7 @@ export function summarizeTailForTelegram(metadata: StructuredAnswerMetadata): st
     metadata.prompt,
     ...(metadata.questions ?? []).map((question, index) => `${index + 1}. ${question}`),
     "",
-    "Send 'answer' to open an answer draft, or /full for the full output.",
+    `Send 'answer' to open an answer draft. ${fullOutputHint}`,
   ].join("\n");
 }
 

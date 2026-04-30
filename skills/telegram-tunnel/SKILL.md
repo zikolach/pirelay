@@ -51,7 +51,7 @@ If the latest Pi output contains numbered options or explicit questions, Telegra
 - send `answer` to step through a guided answer flow
 - send `cancel` to leave the guided answer flow
 
-Completion and decision messages also expose full-output buttons when the latest assistant output is available:
+Completion or decision messages also expose full-output buttons when the latest assistant output is longer than the inline preview. If a decision/options message follows a completion summary, only the decision message gets those buttons:
 
 - **Show in chat** sends Telegram-sized chunks
 - **Download .md** sends a Markdown attachment

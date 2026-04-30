@@ -20,6 +20,7 @@ import {
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   parseTelegramActionCallbackData,
+  shouldOfferFullOutputActions,
 } from "./telegram-actions.js";
 import type {
   SessionRoute,
@@ -195,12 +196,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
-    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, text, this.fullOutputKeyboardForRoute(route));
+    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, text, this.completionFullOutputKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
-        summarizeTailForTelegram(route.notification.structuredAnswer),
-        buildAnswerActionKeyboard(route.notification.structuredAnswer),
+        summarizeTailForTelegram(route.notification.structuredAnswer, {
+          includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
+        }),
+        this.answerActionKeyboardForRoute(route),
       );
     }
   }
@@ -218,8 +221,25 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private fullOutputKeyboardForRoute(route: SessionRoute) {
+    if (!this.shouldOfferFullOutputActionsForRoute(route)) return undefined;
     const turnId = this.currentTurnId(route);
     return route.notification.lastAssistantText && turnId ? buildFullOutputKeyboard(turnId) : undefined;
+  }
+
+  private completionFullOutputKeyboardForRoute(route: SessionRoute) {
+    return route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
+  }
+
+  private shouldOfferFullOutputActionsForRoute(route: SessionRoute): boolean {
+    return shouldOfferFullOutputActions(route.notification.lastAssistantText);
+  }
+
+  private answerActionKeyboardForRoute(route: SessionRoute) {
+    if (!route.notification.structuredAnswer) return undefined;
+    const keyboard = buildAnswerActionKeyboard(route.notification.structuredAnswer, {
+      includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
+    });
+    return keyboard.length > 0 ? keyboard : undefined;
   }
 
   private clearCustomAnswersForRoute(route: SessionRoute): void {
@@ -826,16 +846,20 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (status === "completed" && notification.lastAssistantText) {
       const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
       notification.lastSummary = summary;
+      const fullOutputKeyboard = this.completionFullOutputKeyboardForRoute(route);
+      const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
-        `✅ Pi task completed in ${durationLabel}\n\n${summary}\n\nUse /full for the full assistant output.`,
-        this.fullOutputKeyboardForRoute(route),
+        `✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}`,
+        fullOutputKeyboard,
       );
       if (notification.structuredAnswer) {
         await this.api.sendPlainTextWithKeyboard(
           route.binding.chatId,
-          summarizeTailForTelegram(notification.structuredAnswer),
-          buildAnswerActionKeyboard(notification.structuredAnswer),
+          summarizeTailForTelegram(notification.structuredAnswer, {
+            includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
+          }),
+          this.answerActionKeyboardForRoute(route),
         );
       }
       return;

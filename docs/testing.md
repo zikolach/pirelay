@@ -61,6 +61,9 @@ Check:
 - replying `1` or `2` works directly
 - sending `answer` starts guided mode
 - sending `cancel` exits guided mode safely
+- long completions expose `Show in chat` and `Download .md` buttons
+- long structured decision completions show those buttons only on the decision/options message, not both messages
+- short completions avoid redundant full-output buttons
 - tapping `Show in chat` sends the latest assistant output as chunks
 - tapping `Download .md` sends a Markdown file containing the latest assistant output
 - Markdown tables in chat are converted to readable aligned code-style blocks

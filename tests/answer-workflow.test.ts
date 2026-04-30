@@ -132,6 +132,7 @@ describe("answer workflow", () => {
 
     expect(summarizeTailForTelegram(metadata!)).toContain("reply with an option directly");
     expect(summarizeTailForTelegram(metadata!)).toContain("Use /full");
+    expect(summarizeTailForTelegram(metadata!, { includeFullOutputActions: false })).not.toContain("full-output buttons");
   });
 
   it("numbers bullet options in forward order", () => {

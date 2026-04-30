@@ -55,7 +55,7 @@ That means Telegram becomes a **mobile companion** for the current session, not 
 - shows recognized choices as Telegram inline buttons when available
 - supports direct option replies when choices are recognized
 - supports a **Custom answer** button that captures your next Telegram message
-- adds one-click **Show in chat** and **Download .md** buttons for the latest assistant output
+- adds one-click **Show in chat** and **Download .md** buttons when the latest assistant output is longer than the inline preview, without duplicating them across summary and decision messages
 - reformats Markdown tables into mobile-friendly code-style blocks for Telegram chat
 - supports an explicit Telegram answer draft via `answer`
 - supports `cancel` to leave the active answer flow
@@ -261,12 +261,12 @@ cancel
 ```
 
 ### One-click full output
-Completion and decision messages include inline full-output actions when the latest assistant message is available:
+Completion or decision messages include inline full-output actions when the latest assistant message is longer than the inline preview:
 
 - **Show in chat** sends the latest assistant message as Telegram-sized chunks
 - **Download .md** sends the latest assistant message as a Markdown attachment
 
-Both actions use only the latest assistant message, not tool logs or the full session transcript. `/full` remains available as a text-command fallback.
+PiRelay shows those actions only once per completed turn. If a structured decision/options message follows the completion summary, the decision message owns the buttons and the summary stays lightweight. Short completions that already fit in the preview avoid redundant buttons. Both actions use only the latest assistant message, not tool logs or the full session transcript. `/full` remains available as a text-command fallback.
 
 When the chat view contains Markdown tables, PiRelay reformats them into aligned code-style blocks because Telegram does not render Markdown tables natively. The **Download .md** action keeps the original Markdown table formatting, aside from configured secret redaction.
 

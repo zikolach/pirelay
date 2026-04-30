@@ -8,6 +8,7 @@ export type TelegramActionCallback =
   | { kind: "full-markdown"; turnId: string };
 
 const MAX_BUTTON_LABEL = 56;
+const FULL_OUTPUT_ACTION_MIN_CHARS = 320;
 
 function encodePart(value: string): string {
   return encodeURIComponent(value);
@@ -75,7 +76,15 @@ export function buildFullOutputKeyboard(turnId: string): TelegramInlineKeyboard 
   ]];
 }
 
-export function buildAnswerActionKeyboard(metadata: StructuredAnswerMetadata): TelegramInlineKeyboard {
+export function shouldOfferFullOutputActions(text: string | undefined): boolean {
+  const normalized = (text ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > FULL_OUTPUT_ACTION_MIN_CHARS;
+}
+
+export function buildAnswerActionKeyboard(
+  metadata: StructuredAnswerMetadata,
+  options: { includeFullOutputActions?: boolean } = {},
+): TelegramInlineKeyboard {
   const turnId = metadata.turnId;
   const rows: TelegramInlineKeyboard = [];
 
@@ -89,6 +98,8 @@ export function buildAnswerActionKeyboard(metadata: StructuredAnswerMetadata): T
     rows.push([{ text: "✍️ Custom answer", callbackData: buildAnswerCustomCallbackData(turnId) }]);
   }
 
-  rows.push(...buildFullOutputKeyboard(turnId));
+  if (options.includeFullOutputActions !== false) {
+    rows.push(...buildFullOutputKeyboard(turnId));
+  }
   return rows;
 }

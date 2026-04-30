@@ -8,6 +8,7 @@ import {
   buildFullMarkdownCallbackData,
   buildFullOutputKeyboard,
   parseTelegramActionCallbackData,
+  shouldOfferFullOutputActions,
 } from "../extensions/telegram-tunnel/telegram-actions.js";
 
 describe("telegram action callbacks", () => {
@@ -50,5 +51,16 @@ describe("telegram action callbacks", () => {
       ],
     ]);
     expect(buildFullOutputKeyboard("abc123")).toEqual([[{"callbackData":"full:abc123:chat","text":"📄 Show in chat"},{"callbackData":"full:abc123:md","text":"⬇️ Download .md"}]]);
+    expect(buildAnswerActionKeyboard(metadata!, { includeFullOutputActions: false })).toEqual([
+      [{ text: "A. Sync specs now", callbackData: "ans:abc123:opt:A" }],
+      [{ text: "B. Archive without syncing", callbackData: "ans:abc123:opt:B" }],
+      [{ text: "✍️ Custom answer", callbackData: "ans:abc123:custom" }],
+    ]);
+  });
+
+  it("only offers full-output actions when the inline summary is truncated", () => {
+    expect(shouldOfferFullOutputActions("Hey! Morning — ready when you are.")).toBe(false);
+    expect(shouldOfferFullOutputActions(`${"x".repeat(320)}`)).toBe(false);
+    expect(shouldOfferFullOutputActions(`${"x".repeat(321)}`)).toBe(true);
   });
 });
