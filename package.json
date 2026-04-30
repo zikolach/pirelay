@@ -1,20 +1,39 @@
 {
-  "name": "pi-telegram-session-tunnel",
+  "name": "pirelay",
   "version": "0.1.0",
-  "private": true,
   "description": "Pi package that pairs a Telegram chat to the active Pi session for notifications and remote control.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zikolach/pirelay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zikolach/pirelay/issues"
+  },
+  "homepage": "https://github.com/zikolach/pirelay#readme",
   "keywords": [
     "pi-package",
     "pi",
+    "pi-extension",
+    "pirelay",
     "telegram",
+    "telegram-bot",
     "bot",
     "remote-control"
+  ],
+  "files": [
+    "README.md",
+    "LICENSE",
+    "docs",
+    "extensions",
+    "skills"
   ],
   "scripts": {
     "build": "echo 'No build step required for JITI-loaded TypeScript'",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "pi": {
     "extensions": [
@@ -27,7 +46,8 @@
   "peerDependencies": {
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*"
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
   },
   "dependencies": {
     "grammy": "^1.38.3",

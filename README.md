@@ -11,7 +11,7 @@ It pairs a private Telegram chat to the exact Pi session you are using, then let
 - answer structured follow-up questions from Telegram
 - manage multiple paired Pi sessions through one bot
 
-Under the hood, this package is still installed as `pi-telegram-session-tunnel` and uses the `/telegram-tunnel ...` command family, but **PiRelay** is the intended product-style name.
+The npm package is `pirelay`. The Pi command family remains `/telegram-tunnel ...` for compatibility with the existing extension internals.
 
 ## What PiRelay does
 
@@ -76,10 +76,22 @@ That means Telegram becomes a **mobile companion** for the current session, not 
 
 ## Installation
 
-Install from a local checkout:
+Install from npm after the package is published:
 
 ```bash
-pi install /absolute/path/to/pi-telegram-session-tunnel
+pi install npm:pirelay
+```
+
+For a one-off run without adding it to settings:
+
+```bash
+pi -e npm:pirelay
+```
+
+Install from a local checkout during development:
+
+```bash
+pi install /absolute/path/to/pirelay
 ```
 
 Or add the package to your Pi package/settings configuration.
@@ -384,9 +396,10 @@ npm run typecheck
 npm test
 ```
 
-Real Telegram regression checks and manual smoke-test steps live in:
+Real Telegram regression checks, manual smoke-test steps, and release notes live in:
 
 - [docs/testing.md](docs/testing.md)
+- [docs/releasing.md](docs/releasing.md)
 
 ## Current limitations
 
