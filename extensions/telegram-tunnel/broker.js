@@ -61,6 +61,7 @@ const HELP_TEXT = [
   '/status - session and tunnel status',
   '/sessions - list available paired sessions',
   '/use <session> - select an active session',
+  '/forget <session> - remove an offline session from the list',
   '/to <session> <prompt> - send one prompt without switching sessions',
   '/summary - latest summary/excerpt',
   '/full - latest full assistant output',
@@ -749,6 +750,17 @@ async function revokeBinding(sessionKey) {
   return revoked;
 }
 
+async function revokeBindingForChat(sessionKey, chatId, userId) {
+  let revoked;
+  await updateState((state) => {
+    const existing = state.bindings[sessionKey];
+    if (!existing || existing.chatId !== chatId || existing.userId !== userId || existing.status === 'revoked') return;
+    revoked = { ...existing, revokedAt: nowIso(), lastSeenAt: nowIso(), status: 'revoked' };
+    state.bindings[sessionKey] = revoked;
+  });
+  return revoked;
+}
+
 async function handlePairStart(message, nonce) {
   if (!nonce) {
     await sendPlainText(message.chat.id, 'Missing pairing payload. Re-run /telegram-tunnel connect in Pi and scan the new QR code.');
@@ -841,6 +853,47 @@ async function handleUseCommand(message, args) {
 
   activeSessionByChatId.set(String(message.chat.id), route.sessionKey);
   await sendPlainText(message.chat.id, `Active session set to ${route.sessionLabel}.`);
+}
+
+async function handleForgetCommand(message, args) {
+  const usageText = 'Usage: /forget <number|label>. Use /sessions to list available sessions.';
+  const selector = String(args || '').trim();
+  if (!selector) {
+    await sendPlainText(message.chat.id, usageText);
+    return;
+  }
+
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+  const result = resolveSessionSelector(entries, selector);
+  switch (result.kind) {
+    case 'empty':
+      await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
+      return;
+    case 'missing':
+      await sendPlainText(message.chat.id, usageText);
+      return;
+    case 'no-match':
+      await sendPlainText(message.chat.id, 'No matching session found. Use /sessions to list available sessions.');
+      return;
+    case 'ambiguous':
+      await sendPlainText(message.chat.id, 'That session label is ambiguous. Use /sessions and choose by number.');
+      return;
+    case 'matched':
+      await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is online. Use /use ${result.index + 1} then /disconnect to revoke an active session.`);
+      return;
+    case 'offline': {
+      const revoked = await revokeBindingForChat(result.entry.sessionKey, message.chat.id, message.user.id);
+      if (!revoked) {
+        await sendPlainText(message.chat.id, 'No matching offline session found. Use /sessions to list available sessions.');
+        return;
+      }
+      if (activeSessionByChatId.get(String(message.chat.id)) === result.entry.sessionKey) activeSessionByChatId.delete(String(message.chat.id));
+      await sendPlainText(message.chat.id, `Forgot offline Pi session ${result.entry.sessionLabel}.`);
+      return;
+    }
+    default:
+      await sendPlainText(message.chat.id, 'No matching session found. Use /sessions to list available sessions.');
+  }
 }
 
 async function handleToCommand(message, args) {
@@ -1135,6 +1188,10 @@ async function handleAuthorizedCommand(message, route, command, args) {
     await handleUseCommand(message, args);
     return;
   }
+  if (command === 'forget') {
+    await handleForgetCommand(message, args);
+    return;
+  }
   if (command === 'to') {
     await handleToCommand(message, args);
     return;
@@ -1148,7 +1205,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     return;
   }
-  if (binding.paused && !['resume', 'status', 'help', 'disconnect', 'sessions', 'use'].includes(command)) {
+  if (binding.paused && !['resume', 'status', 'help', 'disconnect', 'sessions', 'use', 'forget'].includes(command)) {
     await sendPlainText(message.chat.id, 'The tunnel is currently paused. Use /resume or disconnect locally.');
     return;
   }
@@ -1363,7 +1420,7 @@ async function processInbound(message) {
     await sendPlainText(message.chat.id, 'Unauthorized Telegram identity for this Pi session.');
     return;
   }
-  if (ambiguous && command?.command !== 'sessions' && command?.command !== 'use' && command?.command !== 'to') {
+  if (ambiguous && command?.command !== 'sessions' && command?.command !== 'use' && command?.command !== 'forget' && command?.command !== 'to') {
     await sendPlainText(message.chat.id, 'Multiple Pi sessions are paired to this chat. Use /sessions then /use <session> first.');
     return;
   }

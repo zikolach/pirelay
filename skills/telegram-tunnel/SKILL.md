@@ -27,6 +27,7 @@ Use the extension command for all runtime actions:
 - `/status`
 - `/sessions`
 - `/use <session>`
+- `/forget <session>`
 - `/to <session> <prompt>`
 - `/summary`
 - `/full`
@@ -42,7 +43,7 @@ Use the extension command for all runtime actions:
 
 Plain text messages are delivered as normal Pi prompts when idle and as follow-up/steer messages when busy. Telegram photos and supported image documents are delivered as image prompts when the current Pi model supports image input; captions become the prompt text. Accepted idle prompts show Telegram's `typing...` activity while Pi works instead of a noisy "Prompt delivered to Pi" acknowledgement; busy follow-up/steer messages keep their queued acknowledgement and continue the activity indicator.
 
-If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list numbered sessions with stable visual markers, labels, online/offline state, active marker, and idle/busy state. Multi-session notifications include the same marker + label so source sessions are easier to distinguish. Use `/use <number|label>` to switch the active one, or `/to <session> <prompt>` to send a one-shot prompt without changing the active session. Quote `/to` labels that contain spaces, for example `/to "docs team" run tests`. Pair with `/telegram-tunnel connect docs` or another short label when you want friendlier names; otherwise PiRelay falls back to the Pi session name, project folder name, session file basename, then a short session id.
+If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list numbered sessions with stable visual markers, labels, online/offline state, active marker, and idle/busy state. Multi-session notifications include the same marker + label so source sessions are easier to distinguish. Use `/use <number|label>` to switch the active one, `/forget <number|label>` to remove an offline paired session from the list, or `/to <session> <prompt>` to send a one-shot prompt without changing the active session. Quote `/to` labels that contain spaces, for example `/to "docs team" run tests`. Pair with `/telegram-tunnel connect docs` or another short label when you want friendlier names; otherwise PiRelay falls back to the Pi session name, project folder name, session file basename, then a short session id.
 
 One bot token has one authoritative local broker. Multiple same-machine Pi sessions can share it, but multiple independent brokers on different machines must not poll the same bot token concurrently; cross-machine hub mode is future work.
 

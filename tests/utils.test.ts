@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
 
 const tempDirs: string[] = [];
 
@@ -42,10 +42,12 @@ describe("telegram utils", () => {
       { sessionKey: "c:/tmp/c", sessionId: "cdefab333333", sessionLabel: "docs", online: false },
     ];
 
+    const markers = sessionMarkersFor(entries);
     const list = formatSessionList(entries, entries[0]!.sessionKey);
-    expect(list).toContain(`1. ${sessionMarkerFor(entries[0]!)} api [abcdef11] — online — idle — active`);
-    expect(list).toContain(`2. ${sessionMarkerFor(entries[1]!)} api [bcdefa22] — online — busy`);
-    expect(list).toContain(`3. ${sessionMarkerFor(entries[2]!)} docs — offline`);
+    expect(list).toContain(`1. ${markers.get(entries[0]!.sessionKey)} api [abcdef11] — online — idle — active`);
+    expect(list).toContain(`2. ${markers.get(entries[1]!.sessionKey)} api [bcdefa22] — online — busy`);
+    expect(list).toContain(`3. ${markers.get(entries[2]!.sessionKey)} docs — offline`);
+    expect(list).toContain("/forget <session>");
 
     expect(resolveSessionSelector(entries, "1")).toMatchObject({ kind: "matched", index: 0 });
     expect(resolveSessionSelector(entries, "docs")).toMatchObject({ kind: "offline", index: 2 });
@@ -61,13 +63,27 @@ describe("telegram utils", () => {
     expect(sessionMarkerFor(entry)).toMatch(/^./u);
   });
 
+  it("deduplicates session markers within a session list", () => {
+    const entries = [
+      { sessionKey: "s9", sessionId: "s9", sessionLabel: "api", online: true },
+      { sessionKey: "s12", sessionId: "s12", sessionLabel: "docs", online: true },
+    ];
+    expect(sessionMarkerFor(entries[0]!)).toBe(sessionMarkerFor(entries[1]!));
+
+    const markers = sessionMarkersFor(entries);
+    expect(markers.get(entries[0]!.sessionKey)).toBe(sessionMarkerFor(entries[0]!));
+    expect(markers.get(entries[1]!.sessionKey)).not.toBe(sessionMarkerFor(entries[0]!));
+    expect(formatSessionList(entries)).toContain(`2. ${markers.get(entries[1]!.sessionKey)} docs — online — idle`);
+    expect(sessionMarkersFor([...entries].reverse())).toEqual(markers);
+  });
+
   it("builds a source prefix only when multiple live sessions share a chat", () => {
     const first: BoundSessionIdentity = { sessionKey: "a", sessionId: "a", sessionLabel: "api", binding: { chatId: 1, userId: 2 } };
     const second: BoundSessionIdentity = { sessionKey: "b", sessionId: "b", sessionLabel: "docs", binding: { chatId: 1, userId: 2 } };
     const otherChat: BoundSessionIdentity = { sessionKey: "c", sessionId: "c", sessionLabel: "cloud", binding: { chatId: 9, userId: 2 } };
 
     expect(sessionSourcePrefixForRoute(first, [first, otherChat])).toBe("");
-    expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkerFor(first)} api\n\n`);
+    expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkersFor([first, second]).get(first.sessionKey)} api\n\n`);
   });
 
   it("distinguishes missing and unmatched session selectors", () => {
