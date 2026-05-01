@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "./paths.js";
 import { summarizeForTelegram } from "./summary.js";
+import { statusSnapshotForRoute } from "./relay-core.js";
 import { BrokerTunnelRuntime } from "./broker-runtime.js";
 import { TunnelStateStore } from "./state-store.js";
 import { TelegramApiClient } from "./telegram-api.js";
@@ -45,7 +46,6 @@ import { sessionSourcePrefixForRoute } from "./session-multiplexing.js";
 import {
   buildImagePromptContent,
   createTurnId,
-  formatModelId,
   getTelegramUserLabel,
   isAllowedImageMimeType,
   modelSupportsImages,
@@ -1204,18 +1204,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {
-    return {
-      sessionKey: route.sessionKey,
-      sessionLabel: route.sessionLabel,
-      sessionId: route.sessionId,
-      sessionFile: route.sessionFile,
-      online,
-      busy: !isEffectivelyIdle(route),
-      modelId: formatModelId(route.actions.getModel()),
-      lastActivityAt: route.lastActivityAt,
-      binding: route.binding,
-      notification: route.notification,
-    };
+    return statusSnapshotForRoute(route, { online, busy: !isEffectivelyIdle(route) });
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {

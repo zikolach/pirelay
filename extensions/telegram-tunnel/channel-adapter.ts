@@ -242,3 +242,18 @@ export function canSendFile(adapter: Pick<ChannelAdapterMetadata, "capabilities"
 export function requiresTextChunking(adapter: Pick<ChannelAdapterMetadata, "capabilities">, text: string): boolean {
   return text.length > adapter.capabilities.maxTextChars;
 }
+
+export function channelTextChunks(adapter: Pick<ChannelAdapterMetadata, "capabilities">, text: string): string[] {
+  const maxChars = Math.max(1, adapter.capabilities.maxTextChars);
+  if (text.length <= maxChars) return [text];
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += maxChars) {
+    chunks.push(text.slice(index, index + maxChars));
+  }
+  return chunks;
+}
+
+export function buttonsFallbackText(buttons: ChannelButtonLayout): string {
+  const labels = buttons.flat().map((button, index) => `${index + 1}. ${button.label}`);
+  return ["Actions:", ...labels].join("\n");
+}

@@ -462,7 +462,7 @@ function requestClient(route, action, payload = {}) {
         reject(error);
       },
     });
-    write(route.socket, { type: 'request', requestId, action, sessionKey: route.sessionKey, ...payload });
+    write(route.socket, { type: 'request', requestId, protocolVersion: 1, channel: route.channel || 'telegram', action, sessionKey: route.sessionKey, ...payload });
   });
 }
 

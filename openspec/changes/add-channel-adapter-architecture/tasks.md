@@ -13,9 +13,9 @@
 
 ## 3. Broker/runtime refactor
 
-- [ ] 3.1 Extract shared relay core from in-process runtime.
-- [ ] 3.2 Update broker runtime and broker process to route channel-neutral IPC payloads.
-- [ ] 3.3 Add adapter capability fallback behavior for buttons, files, activity, and message limits.
+- [x] 3.1 Extract shared relay core from in-process runtime.
+- [x] 3.2 Update broker runtime and broker process to route channel-neutral IPC payloads.
+- [x] 3.3 Add adapter capability fallback behavior for buttons, files, activity, and message limits.
 
 ## 4. Generic commands and docs
 
@@ -25,6 +25,6 @@
 
 ## 5. Tests and validation
 
-- [ ] 5.1 Add characterization tests to prove Telegram behavior is unchanged.
+- [x] 5.1 Add characterization tests to prove Telegram behavior is unchanged.
 - [x] 5.2 Add adapter interface/unit tests for capability fallback behavior.
-- [ ] 5.3 Run typecheck and the full test suite.
+- [x] 5.3 Run typecheck and the full test suite.

@@ -269,6 +269,48 @@ function createMockPi() {
 }
 
 describe("Telegram tunnel integration behavior", () => {
+  it("keeps Telegram local commands compatible while exposing relay aliases", async () => {
+    const config = await createRuntimeConfig("pi-telegram-relay-alias-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("relay-alias-session");
+    telegramTunnelExtension(pi.api as any);
+
+    expect(pi.commands.has("telegram-tunnel")).toBe(true);
+    expect(pi.commands.has("relay")).toBe(true);
+
+    await pi.runCommand("telegram-tunnel", "setup", context);
+    await pi.runCommand("relay", "setup", context);
+
+    expect(fakeRuntime.ensureSetup).toHaveBeenCalledTimes(2);
+    expect(fakeRuntime.start).toHaveBeenCalledTimes(2);
+    expect(notifications.filter((entry) => entry.message.includes("Telegram bot ready"))).toHaveLength(2);
+  });
+
   it("keeps local prompts and skill commands usable after connect, pairing, and route sync", async () => {
     const config = await createRuntimeConfig("pi-telegram-extension-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
@@ -601,7 +643,9 @@ describe("Telegram tunnel integration behavior", () => {
 
       await runtime.registerRoute(route);
       const firstRegistration = brokerMessages.find((message) => message.action === "registerRoute");
+      expect(firstRegistration).toMatchObject({ protocolVersion: 1, channel: "telegram" });
       expect(firstRegistration?.route).toMatchObject({
+        channel: "telegram",
         sessionKey: route.sessionKey,
         binding,
         busy: false,
@@ -614,6 +658,7 @@ describe("Telegram tunnel integration behavior", () => {
       await runtime.registerRoute(route);
       const registrations = brokerMessages.filter((message) => message.action === "registerRoute");
       expect(registrations.at(-1)?.route).toMatchObject({
+        channel: "telegram",
         sessionKey: route.sessionKey,
         busy: true,
         notification: { lastStatus: "running" },
@@ -622,6 +667,8 @@ describe("Telegram tunnel integration behavior", () => {
       sockets[0]!.write(`${JSON.stringify({
         type: "request",
         requestId: "broker-deliver-1",
+        protocolVersion: 1,
+        channel: "telegram",
         action: "deliverPrompt",
         sessionKey: route.sessionKey,
         text: "remote follow-up from broker",

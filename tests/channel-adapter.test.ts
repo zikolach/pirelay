@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendFile, requiresTextChunking, supportsButtons, type ChannelCapabilities } from "../extensions/telegram-tunnel/channel-adapter.js";
+import { buttonsFallbackText, canSendFile, channelTextChunks, requiresTextChunking, supportsButtons, type ChannelCapabilities } from "../extensions/telegram-tunnel/channel-adapter.js";
 
 const baseCapabilities: ChannelCapabilities = {
   inlineButtons: true,
@@ -34,5 +34,14 @@ describe("channel adapter boundaries", () => {
     expect(canSendFile({ capabilities: baseCapabilities }, { byteSize: 101 }, "document")).toBe(false);
     expect(canSendFile({ capabilities: { ...baseCapabilities, maxDocumentBytes: undefined } }, { byteSize: 101 }, "document")).toBe(true);
     expect(canSendFile({ capabilities: baseCapabilities }, {}, "document")).toBe(true);
+  });
+
+  it("formats text fallbacks for adapters without button support", () => {
+    const buttons = [[{ label: "Show full", actionData: "full" }], [{ label: "Cancel", actionData: "cancel" }]];
+    expect(buttonsFallbackText(buttons)).toBe("Actions:\n1. Show full\n2. Cancel");
+  });
+
+  it("chunks text according to adapter limits", () => {
+    expect(channelTextChunks({ capabilities: baseCapabilities }, "12345678901")).toEqual(["1234567890", "1"]);
   });
 });
