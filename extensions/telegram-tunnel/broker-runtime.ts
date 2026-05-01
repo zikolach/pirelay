@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ImageFileLoadResult, LatestTurnImage, SessionRoute, SessionStatusSnapshot, SetupCache, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { ensureStateDir } from "./paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "./relay-core.js";
+import { relayPipelineProtocolVersion } from "./relay-middleware.js";
 import { sha256 } from "./utils.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
@@ -28,6 +29,20 @@ interface BrokerProtocolResponse {
   ok: boolean;
   result?: unknown;
   error?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function relayPipelineProtocolError(pipeline: unknown): string | undefined {
+  if (pipeline === undefined) return undefined;
+  if (!isRecord(pipeline) || typeof pipeline.protocolVersion !== "number") {
+    return "Invalid relay pipeline protocol version.";
+  }
+  return pipeline.protocolVersion === relayPipelineProtocolVersion
+    ? undefined
+    : `Unsupported relay pipeline protocol version: ${pipeline.protocolVersion}`;
 }
 
 export class BrokerTunnelRuntime implements TunnelRuntime {
@@ -184,6 +199,20 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     };
 
     try {
+      if ("protocolVersion" in request && typeof request.protocolVersion !== "number") {
+        await respond({ ok: false, error: "Invalid broker protocol version." });
+        return;
+      }
+      if (typeof request.protocolVersion === "number" && request.protocolVersion !== BROKER_PROTOCOL_VERSION) {
+        await respond({ ok: false, error: `Unsupported broker protocol version: ${request.protocolVersion}` });
+        return;
+      }
+      const pipelineProtocolError = relayPipelineProtocolError(request.pipeline);
+      if (pipelineProtocolError) {
+        await respond({ ok: false, error: pipelineProtocolError });
+        return;
+      }
+
       const sessionKey = String(request.sessionKey ?? "");
       const route = this.routes.get(sessionKey);
       if (!route) {
@@ -274,7 +303,15 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }
 
     const requestId = randomUUID();
-    const message: BrokerProtocolRequest = { ...payload, type: "request", requestId, protocolVersion: BROKER_PROTOCOL_VERSION, channel: BROKER_CHANNEL, action };
+    const message: BrokerProtocolRequest = {
+      ...payload,
+      type: "request",
+      requestId,
+      protocolVersion: BROKER_PROTOCOL_VERSION,
+      channel: BROKER_CHANNEL,
+      action,
+      pipeline: { protocolVersion: relayPipelineProtocolVersion, channel: BROKER_CHANNEL, action },
+    };
     const result = new Promise<unknown>((resolvePromise, rejectPromise) => {
       this.pending.set(requestId, { resolve: resolvePromise, reject: rejectPromise });
     });

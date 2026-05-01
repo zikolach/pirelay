@@ -29,6 +29,27 @@ Telegram remains the first adapter and keeps existing behavior:
 - existing config keys, state directory, binding metadata, and pairing flow are unchanged
 - `/relay` is available as a local command alias for the same setup/connect/disconnect/status workflow
 
+## Middleware layer
+
+Between adapters and relay core, PiRelay uses an interaction middleware pipeline for reusable channel-neutral behavior. Middleware receives normalized relay events, runs in deterministic phases, and can produce prompts, channel-only responses, internal relay actions, blocked outcomes, or safe errors.
+
+Pipeline phases are:
+
+1. inbound preprocessing, such as media normalization or future speech transcription
+2. intent/action resolution, such as commands, guided answers, approval decisions, or repeat/read-last actions
+3. delivery hooks, such as prompt shaping, busy-mode selection, or confirmation requirements
+4. outbound post-processing, such as redaction, chunking, documents, progress shaping, or future spoken-output rendering
+
+Middleware declares capabilities, ordering constraints, recoverable/fatal failure behavior, and safety classification. Authorization is an explicit pipeline boundary: middleware that downloads media, transcribes audio, extracts documents, invokes callbacks, or injects prompts must not run before the identity and route are authorized.
+
+Example future accessible audio flow:
+
+1. the adapter receives an authorized voice message and exposes it as audio media
+2. audio middleware downloads/transcribes it only after authorization
+3. the transcript becomes a normal prompt or a guided-answer/action intent
+4. outbound middleware can request spoken output only from content classified as safe for speech and after configured redaction
+5. sensitive actions use `requires-confirmation` before Pi delivery or control actions
+
 ## Future adapters
 
 A new adapter should implement the channel adapter interface, declare capabilities honestly, and avoid duplicating relay semantics. Authorization must happen before media download, transcription, prompt injection, callbacks, or control actions.

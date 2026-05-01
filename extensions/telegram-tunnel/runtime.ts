@@ -43,6 +43,7 @@ import type {
   TelegramUserSummary,
 } from "./types.js";
 import { sessionSourcePrefixForRoute } from "./session-multiplexing.js";
+import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./relay-telegram-middleware.js";
 import {
   buildImagePromptContent,
   createTurnId,
@@ -493,7 +494,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const command = parseTelegramCommand(message.text);
+    const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config: this.config });
+    const command = commandIntentFromPipeline(initialPipeline.result) ?? parseTelegramCommand(message.text);
     if (command?.command === "start") {
       await this.handleStart(message, command.args);
       return;
@@ -532,8 +534,21 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     route.binding.lastSeenAt = toIsoNow();
     await this.store.upsertBinding(route.binding);
 
-    if (command) {
-      await this.handleAuthorizedCommand(route, message, command.command, command.args);
+    const authorizedPipeline = await runTelegramIngressPipeline(message, {
+      authorized: true,
+      config: this.config,
+      route: {
+        sessionKey: route.sessionKey,
+        sessionLabel: route.sessionLabel,
+        online: true,
+        busy: !isEffectivelyIdle(route),
+        paused: Boolean(route.binding.paused),
+      },
+    });
+    const authorizedCommand = commandIntentFromPipeline(authorizedPipeline.result) ?? command;
+
+    if (authorizedCommand) {
+      await this.handleAuthorizedCommand(route, message, authorizedCommand.command, authorizedCommand.args);
       return;
     }
 
@@ -541,7 +556,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
-    const action = parseTelegramActionCallbackData(callback.data);
+    const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config: this.config });
+    const action = telegramActionFromPipelineResult(initialPipeline.result) ?? parseTelegramActionCallbackData(callback.data);
     if (!action) {
       await this.api.answerCallbackQuery(callback.callbackQueryId, "Unknown action.");
       return;

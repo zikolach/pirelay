@@ -35,12 +35,20 @@ import {
   resolveSessionTargetArgs,
   sessionSourcePrefixForRoute,
 } from './session-multiplexing.ts';
+import {
+  commandIntentFromPipeline,
+  runTelegramIngressPipeline,
+  telegramActionFromPipelineResult,
+} from './relay-telegram-middleware.ts';
+import { relayPipelineProtocolVersion } from './relay-middleware.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
 }
+
+const BROKER_PROTOCOL_VERSION = 1;
 
 const api = new Api(config.botToken);
 const clients = new Map();
@@ -462,7 +470,17 @@ function requestClient(route, action, payload = {}) {
         reject(error);
       },
     });
-    write(route.socket, { ...payload, type: 'request', requestId, protocolVersion: 1, channel: route.channel || 'telegram', action, sessionKey: route.sessionKey });
+    const channel = route.channel || 'telegram';
+    write(route.socket, {
+      ...payload,
+      type: 'request',
+      requestId,
+      protocolVersion: BROKER_PROTOCOL_VERSION,
+      channel,
+      action,
+      sessionKey: route.sessionKey,
+      pipeline: { protocolVersion: relayPipelineProtocolVersion, channel, action },
+    });
   });
 }
 
@@ -1409,7 +1427,8 @@ async function handleAuthorizedText(message, route) {
 }
 
 async function processInbound(message) {
-  const command = parseCommand(message.text);
+  const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config });
+  const command = commandIntentFromPipeline(initialPipeline.result) || parseCommand(message.text);
   if (command?.command === 'start') {
     await handlePairStart(message, command.args);
     return;
@@ -1429,8 +1448,21 @@ async function processInbound(message) {
     await upsertBinding(route.binding);
   }
 
-  if (command) {
-    await handleAuthorizedCommand(message, route, command.command, command.args);
+  const authorizedPipeline = route ? await runTelegramIngressPipeline(message, {
+    authorized: Boolean(route?.binding && routeIsAuthorized(route, message.user)),
+    config,
+    route: {
+      sessionKey: route.sessionKey,
+      sessionLabel: route.sessionLabel,
+      online: true,
+      busy: isEffectivelyBusy(route),
+      paused: Boolean(route.binding?.paused),
+    },
+  }) : undefined;
+  const authorizedCommand = (authorizedPipeline && commandIntentFromPipeline(authorizedPipeline.result)) || command;
+
+  if (authorizedCommand) {
+    await handleAuthorizedCommand(message, route, authorizedCommand.command, authorizedCommand.args);
     return;
   }
 
@@ -1438,7 +1470,8 @@ async function processInbound(message) {
 }
 
 async function processCallback(callback) {
-  const action = parseTelegramActionCallbackData(callback.data);
+  const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config });
+  const action = telegramActionFromPipelineResult(initialPipeline.result) || parseTelegramActionCallbackData(callback.data);
   if (!action) {
     await answerCallbackQuery(callback.callbackQueryId, 'Unknown action.');
     return;

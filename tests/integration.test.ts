@@ -643,7 +643,7 @@ describe("Telegram tunnel integration behavior", () => {
 
       await runtime.registerRoute(route);
       const firstRegistration = brokerMessages.find((message) => message.action === "registerRoute");
-      expect(firstRegistration).toMatchObject({ protocolVersion: 1, channel: "telegram" });
+      expect(firstRegistration).toMatchObject({ protocolVersion: 1, channel: "telegram", pipeline: { protocolVersion: 1, channel: "telegram", action: "registerRoute" } });
       expect(firstRegistration?.route).toMatchObject({
         channel: "telegram",
         sessionKey: route.sessionKey,
@@ -669,6 +669,7 @@ describe("Telegram tunnel integration behavior", () => {
         requestId: "broker-deliver-1",
         protocolVersion: 1,
         channel: "telegram",
+        pipeline: { protocolVersion: 1, channel: "telegram", action: "deliverPrompt" },
         action: "deliverPrompt",
         sessionKey: route.sessionKey,
         text: "remote follow-up from broker",
@@ -680,6 +681,44 @@ describe("Telegram tunnel integration behavior", () => {
       expect(clientResponses.find((message) => message.requestId === "broker-deliver-1")?.ok).toBe(true);
       expect(deliveries).toEqual([{ text: "remote follow-up from broker", deliverAs: "followUp" }]);
       expect(audits).toEqual(["Telegram @owner queued a follow-up."]);
+
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-invalid-version",
+        protocolVersion: "1",
+        channel: "telegram",
+        action: "deliverPrompt",
+        sessionKey: route.sessionKey,
+        text: "should be rejected",
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-invalid-version"));
+      expect(clientResponses.find((message) => message.requestId === "broker-invalid-version")).toMatchObject({ ok: false, error: "Invalid broker protocol version." });
+
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-invalid-pipeline",
+        protocolVersion: 1,
+        channel: "telegram",
+        pipeline: "1",
+        action: "deliverPrompt",
+        sessionKey: route.sessionKey,
+        text: "should be rejected",
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-invalid-pipeline"));
+      expect(clientResponses.find((message) => message.requestId === "broker-invalid-pipeline")).toMatchObject({ ok: false, error: "Invalid relay pipeline protocol version." });
+
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-missing-pipeline-version",
+        protocolVersion: 1,
+        channel: "telegram",
+        pipeline: {},
+        action: "deliverPrompt",
+        sessionKey: route.sessionKey,
+        text: "should be rejected",
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-missing-pipeline-version"));
+      expect(clientResponses.find((message) => message.requestId === "broker-missing-pipeline-version")).toMatchObject({ ok: false, error: "Invalid relay pipeline protocol version." });
 
       const multimodalContent = [
         { type: "text", text: "look at this" },
