@@ -804,75 +804,64 @@ async function handleSessionsCommand(message) {
   await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))));
 }
 
+function splitSelectorAndPrompt(args) {
+  const trimmed = String(args || '').trim();
+  if (!trimmed) return { selector: '', prompt: '' };
+  const [selector, ...promptParts] = trimmed.split(/\s+/);
+  return { selector: selector || '', prompt: promptParts.join(' ').trim() };
+}
+
+async function sendSelectorResolutionError(message, result, usageText, noMatchText = 'No matching session found. Use /sessions to list available sessions.') {
+  switch (result.kind) {
+    case 'empty':
+      await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
+      return true;
+    case 'missing':
+      await sendPlainText(message.chat.id, usageText);
+      return true;
+    case 'no-match':
+      await sendPlainText(message.chat.id, noMatchText);
+      return true;
+    case 'ambiguous':
+      await sendPlainText(message.chat.id, 'That session label is ambiguous. Use /sessions and choose by number.');
+      return true;
+    case 'offline':
+      await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
+      return true;
+    default:
+      return false;
+  }
+}
+
 async function handleUseCommand(message, args) {
+  const usageText = 'Usage: /use <number|label>. Use /sessions to list available sessions.';
   const selector = String(args || '').trim();
   if (!selector) {
-    await sendPlainText(message.chat.id, 'Usage: /use <number|label>. Use /sessions to list available sessions.');
+    await sendPlainText(message.chat.id, usageText);
     return;
   }
+
   const { result, route } = await resolveRouteSelectorForChat(message.chat.id, message.user.id, selector);
-  if (result.kind === 'empty') {
-    await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
-    return;
-  }
-  if (result.kind === 'missing') {
-    await sendPlainText(message.chat.id, 'Usage: /use <number|label>. Use /sessions to list available sessions.');
-    return;
-  }
-  if (result.kind === 'no-match') {
-    await sendPlainText(message.chat.id, 'No matching session found. Use /sessions to list available sessions.');
-    return;
-  }
-  if (result.kind === 'ambiguous') {
-    await sendPlainText(message.chat.id, 'That session label is ambiguous. Use /sessions and choose by number.');
-    return;
-  }
-  if (result.kind === 'offline') {
-    await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
-    return;
-  }
+  if (await sendSelectorResolutionError(message, result, usageText)) return;
   if (!route) {
     await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
     return;
   }
+
   activeSessionByChatId.set(String(message.chat.id), route.sessionKey);
   await sendPlainText(message.chat.id, `Active session set to ${route.sessionLabel}.`);
 }
 
 async function handleToCommand(message, args) {
-  const trimmed = String(args || '').trim();
-  if (!trimmed) {
-    await sendPlainText(message.chat.id, 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.');
-    return;
-  }
-  const [selector, ...promptParts] = trimmed.split(/\s+/);
-  const prompt = promptParts.join(' ').trim();
+  const usageText = 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.';
+  const { selector, prompt } = splitSelectorAndPrompt(args);
   if (!selector || (!prompt && !hasImageAttachments(message))) {
-    await sendPlainText(message.chat.id, 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.');
+    await sendPlainText(message.chat.id, usageText);
     return;
   }
 
   const { result, route } = await resolveRouteSelectorForChat(message.chat.id, message.user.id, selector);
-  if (result.kind === 'empty') {
-    await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
-    return;
-  }
-  if (result.kind === 'missing') {
-    await sendPlainText(message.chat.id, 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.');
-    return;
-  }
-  if (result.kind === 'no-match') {
-    await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
-    return;
-  }
-  if (result.kind === 'ambiguous') {
-    await sendPlainText(message.chat.id, 'That session label is ambiguous. Use /sessions and choose by number.');
-    return;
-  }
-  if (result.kind === 'offline') {
-    await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
-    return;
-  }
+  if (await sendSelectorResolutionError(message, result, usageText, 'No matching online session. Use /sessions to list available sessions.')) return;
   if (!route || !route.binding) {
     await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
     return;
