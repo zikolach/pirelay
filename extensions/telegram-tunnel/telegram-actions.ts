@@ -4,6 +4,7 @@ import type { TelegramInlineKeyboard } from "./types.js";
 export type TelegramActionCallback =
   | { kind: "answer-option"; turnId: string; optionId: string }
   | { kind: "answer-custom"; turnId: string }
+  | { kind: "answer-ambiguity"; turnId: string; token: string; resolution: "prompt" | "answer" | "cancel" }
   | { kind: "full-chat"; turnId: string }
   | { kind: "full-markdown"; turnId: string }
   | { kind: "latest-images"; turnId: string };
@@ -38,6 +39,10 @@ export function buildAnswerCustomCallbackData(turnId: string): string {
   return `ans:${encodePart(turnId)}:custom`;
 }
 
+export function buildAnswerAmbiguityCallbackData(turnId: string, token: string, resolution: "prompt" | "answer" | "cancel"): string {
+  return `ans:${encodePart(turnId)}:amb:${encodePart(token)}:${resolution}`;
+}
+
 export function buildFullChatCallbackData(turnId: string): string {
   return `full:${encodePart(turnId)}:chat`;
 }
@@ -56,6 +61,12 @@ export function parseTelegramActionCallbackData(data: string): TelegramActionCal
     const turnId = decodePart(parts[1]);
     if (!turnId) return undefined;
     if (parts[2] === "custom" && parts.length === 3) return { kind: "answer-custom", turnId };
+    if (parts[2] === "amb" && parts.length === 5) {
+      const token = decodePart(parts[3]);
+      const resolution = parts[4];
+      if (!token || (resolution !== "prompt" && resolution !== "answer" && resolution !== "cancel")) return undefined;
+      return { kind: "answer-ambiguity", turnId, token, resolution };
+    }
     if (parts[2] === "opt" && parts.length === 4) {
       const optionId = decodePart(parts[3]);
       if (!optionId) return undefined;
@@ -78,6 +89,15 @@ export function parseTelegramActionCallbackData(data: string): TelegramActionCal
   }
 
   return undefined;
+}
+
+export function buildAnswerAmbiguityKeyboard(turnId: string, token: string): TelegramInlineKeyboard {
+  return [[
+    { text: "➡️ Send as prompt", callbackData: buildAnswerAmbiguityCallbackData(turnId, token, "prompt") },
+    { text: "✅ Answer previous", callbackData: buildAnswerAmbiguityCallbackData(turnId, token, "answer") },
+  ], [
+    { text: "Cancel", callbackData: buildAnswerAmbiguityCallbackData(turnId, token, "cancel") },
+  ]];
 }
 
 export function buildFullOutputKeyboard(turnId: string): TelegramInlineKeyboard {

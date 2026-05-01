@@ -514,7 +514,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (config) {
       const imagePathTexts = finalText ? [...activeTurnImagePathTexts, finalText] : activeTurnImagePathTexts;
       const remaining = Math.max(0, config.maxLatestImages - latestTurnImages.length);
-      latestTurnImageFileCandidates = latestImageFileCandidatesFromText(imagePathTexts, { turnId, maxCount: remaining });
+      const fileCandidates = latestImageFileCandidatesFromText(imagePathTexts, { turnId, maxCount: remaining });
+      const verifiedFileCandidates: LatestTurnImageFileCandidate[] = [];
+      for (const candidate of fileCandidates) {
+        const loaded = await loadImagePathForTelegram(ctx, candidate.path, candidate.turnId, latestTurnImages.length + verifiedFileCandidates.length);
+        if (loaded.ok) verifiedFileCandidates.push(candidate);
+      }
+      latestTurnImageFileCandidates = verifiedFileCandidates;
     }
     const latestImageCount = latestTurnImages.length + latestTurnImageFileCandidates.length;
     currentRoute.notification.latestImages = latestImageCount > 0

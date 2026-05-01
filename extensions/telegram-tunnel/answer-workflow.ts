@@ -28,6 +28,14 @@ export interface GuidedAnswerResult {
   injectionText?: string;
 }
 
+export type AnswerIntentClassification =
+  | { kind: "cancel" }
+  | { kind: "start-flow" }
+  | { kind: "explicit-answer"; option?: StructuredChoiceOption; text: string }
+  | { kind: "bare-option"; option: StructuredChoiceOption }
+  | { kind: "ambiguous"; reason: string }
+  | { kind: "prompt"; promptLike: boolean; reason?: string };
+
 interface ExtractOptions {
   turnId?: string;
 }
@@ -62,6 +70,10 @@ const CHOICE_PROMPT_HINT = /\b(choose|choice|select|pick|option|answer|decide|de
 const QUESTION_PROMPT_HINT = /\b(answer|question|questions|reply|respond|clarify|let me know|tell me)\b/i;
 const NON_CHOICE_PROMPT_HINT = /\b(implemented|completed|changed|summary|tasks?|todos?|done|fixed|files?|tests?|steps taken|notes?)\b/i;
 const CODE_LIKE_LINE = /^\s*(```|import\s|export\s|const\s|let\s|var\s|function\s|class\s|if\s*\(|for\s*\(|while\s*\(|return\b|[{};]\s*$)/;
+const ANSWER_PREFIX = /^\s*(?:answer|option|choose|select|pick)\s+(.+)$/i;
+const PROMPT_INSTRUCTION_HINT = /\b(openspec|proposal|propose|implement|apply|explore|create|update|fix|debug|investigate|explain|how can|what about|let'?s|we need|can we|could we|should we|please|generate|write|add|remove|refactor|commit|push)\b/i;
+const QUESTION_LIKE = /(^|\s)(?:how|what|why|when|where|which|can|could|should|would|do|does|did|is|are)\b.*\?/i;
+const MARKDOWN_LIKE = /^\s*(#{1,6}\s|[-*]\s+|\d+[.)]\s+|```|>\s+)/m;
 
 function splitLines(text: string): string[] {
   return text.replace(/\r\n/g, "\n").split("\n");
@@ -408,6 +420,72 @@ export function isGuidedAnswerStart(text: string): boolean {
 export function isGuidedAnswerCancel(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   return normalized === "cancel" || normalized === "stop" || normalized === "never mind";
+}
+
+export function isPromptLikeAnswerText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (trimmed.length > 220) return true;
+  if (/\n\s*\n/.test(trimmed)) return true;
+  if (splitLines(trimmed).length >= 4) return true;
+  if (QUESTION_LIKE.test(trimmed)) return true;
+  if (MARKDOWN_LIKE.test(trimmed)) return true;
+  if (CODE_LIKE_LINE.test(trimmed)) return true;
+  if (PROMPT_INSTRUCTION_HINT.test(trimmed)) return true;
+  return false;
+}
+
+export function explicitAnswerText(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  if (/^A\d+\s*:/im.test(trimmed)) return trimmed;
+  const prefixed = trimmed.match(ANSWER_PREFIX);
+  return prefixed?.[1]?.trim() || undefined;
+}
+
+function isBareAnswerCandidate(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes("\n") || trimmed.length > 120) return false;
+  if (/[?]/.test(trimmed)) return false;
+  return true;
+}
+
+function optionMentionedInPromptishText(metadata: StructuredAnswerMetadata, text: string): boolean {
+  if (metadata.kind !== "choice") return false;
+  const normalized = text.trim().toLowerCase();
+  if (!normalized || normalized.length > 240) return false;
+  return (metadata.options ?? []).some((option) => {
+    const id = option.id.toLowerCase();
+    const label = option.label.toLowerCase();
+    return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(normalized)
+      || (label.length >= 4 && normalized.includes(label));
+  });
+}
+
+export function classifyAnswerIntent(metadata: StructuredAnswerMetadata | undefined, text: string): AnswerIntentClassification {
+  const trimmed = text.trim();
+  if (isGuidedAnswerCancel(trimmed)) return { kind: "cancel" };
+  if (isGuidedAnswerStart(trimmed)) return { kind: "start-flow" };
+
+  const promptLike = isPromptLikeAnswerText(trimmed);
+  const explicit = explicitAnswerText(trimmed);
+  if (explicit) {
+    const option = metadata ? matchChoiceOption(metadata, explicit) : undefined;
+    return { kind: "explicit-answer", option, text: explicit };
+  }
+
+  if (!metadata) return { kind: "prompt", promptLike, reason: "no-metadata" };
+
+  if (!promptLike && isBareAnswerCandidate(trimmed)) {
+    const option = matchChoiceOption(metadata, trimmed);
+    if (option) return { kind: "bare-option", option };
+  }
+
+  if (!promptLike && optionMentionedInPromptishText(metadata, trimmed)) {
+    return { kind: "ambiguous", reason: "mentions-option" };
+  }
+
+  return { kind: "prompt", promptLike, reason: promptLike ? "prompt-like" : "not-answer" };
 }
 
 export function matchChoiceOption(metadata: StructuredAnswerMetadata, text: string): StructuredChoiceOption | undefined {

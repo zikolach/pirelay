@@ -58,7 +58,10 @@ Check:
 - recognized choices appear as inline buttons
 - tapping a choice button injects that answer into Pi without typing the number
 - tapping `Custom answer` prompts for custom text, captures the next non-command message, and `cancel` exits without injection
-- replying `1` or `2` works directly
+- replying `1` or `2` works directly when the choice is unambiguous
+- explicit phrases such as `option 1`, `choose B`, or `answer 2` work as answers
+- a new question/instruction such as `How can we improve this architecture?` is routed as a normal prompt, not as an answer
+- short ambiguous answer-like text triggers a prompt-vs-answer confirmation instead of being guessed
 - sending `answer` starts guided mode
 - sending `cancel` exits guided mode safely
 - long completions expose `Show in chat` and `Download .md` buttons

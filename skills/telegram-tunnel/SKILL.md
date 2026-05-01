@@ -49,9 +49,12 @@ If the latest Pi output contains numbered options or explicit questions, Telegra
 
 - tap an inline option button when choices are recognized
 - tap **Custom answer** and send a free-form answer as the next message
-- reply with an option number for direct choice selection
+- reply with a short unambiguous option number for direct choice selection
+- reply with an explicit phrase such as `option 1`, `choose B`, or `answer 2`
 - send `answer` to step through a guided answer flow
 - send `cancel` to leave the guided answer flow
+
+Normal prompt-like messages (long text, new questions, Markdown/code, or implementation/exploration instructions) are not treated as guided answers unless the user explicitly entered answer mode or used an explicit answer phrase. If a short reply is ambiguous, PiRelay asks whether to send it as a prompt, answer the previous question, or cancel.
 
 Completion or decision messages also expose full-output buttons when the latest assistant output is longer than the inline preview. If a decision/options message follows a completion summary, only the decision message gets those buttons:
 

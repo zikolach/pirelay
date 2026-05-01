@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceGuidedAnswerFlow,
+  classifyAnswerIntent,
+  explicitAnswerText,
   extractStructuredAnswerMetadata,
   isGuidedAnswerCancel,
   isGuidedAnswerStart,
@@ -214,6 +216,21 @@ describe("answer workflow", () => {
   it("does not enable guided answers for a generic single friendly question", () => {
     const metadata = extractStructuredAnswerMetadata("Hello! 👋 How can I help?");
     expect(metadata).toBeUndefined();
+  });
+
+  it("classifies answer intent conservatively", () => {
+    const metadata = extractStructuredAnswerMetadata([
+      "Choose:",
+      "1. sync specs now",
+      "2. archive without syncing",
+    ].join("\n"));
+
+    expect(classifyAnswerIntent(metadata, "1")).toMatchObject({ kind: "bare-option", option: { id: "1" } });
+    expect(classifyAnswerIntent(metadata, "option 2")).toMatchObject({ kind: "explicit-answer", option: { id: "2" } });
+    expect(explicitAnswerText("choose 1")).toBe("1");
+    expect(classifyAnswerIntent(metadata, "How can messenger interaction be adjusted to be audio-first?")).toMatchObject({ kind: "prompt", promptLike: true });
+    expect(classifyAnswerIntent(metadata, "## Another topic\n\nLet's explore architecture")).toMatchObject({ kind: "prompt", promptLike: true });
+    expect(classifyAnswerIntent(metadata, "I think sync specs now sounds safer")).toMatchObject({ kind: "ambiguous" });
   });
 
   it("supports cancel and restart semantics for guided answers", () => {

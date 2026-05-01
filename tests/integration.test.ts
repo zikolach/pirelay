@@ -460,6 +460,58 @@ describe("Telegram tunnel integration behavior", () => {
     await expect(route.actions.getImageByPath("../secret.png")).resolves.toMatchObject({ ok: false });
   });
 
+  it("does not offer latest-image actions for missing assistant image path references", async () => {
+    const config = await createRuntimeConfig("pi-telegram-extension-missing-file-images-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const workspace = await mkdtemp(join(tmpdir(), "pi-telegram-workspace-missing-images-"));
+    tempDirs.push(workspace);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("local-missing-file-image-tracking");
+    context.cwd = workspace;
+    telegramTunnelExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("agent_end", {
+      messages: [{
+        role: "assistant",
+        content: [{ type: "text", text: "Saved image at `missing.png`." }],
+      }],
+    }, context);
+
+    expect(route.notification.latestImages).toBeUndefined();
+    await expect(route.actions.getLatestImages()).resolves.toEqual([]);
+  });
+
   it("synchronizes route state through the broker and handles broker-delivered prompts", async () => {
     const config = await createRuntimeConfig("pi-telegram-broker-");
     const runtime = new BrokerTunnelRuntime(config);

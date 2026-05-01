@@ -101,7 +101,7 @@ describe("TelegramApiClient button and document payloads", () => {
     expect(raw).not.toContain("```");
   });
 
-  it("parses Telegram photos, image documents, and unsupported document metadata", async () => {
+  it("parses Telegram photos, image documents, unsupported document metadata, and media albums", async () => {
     const config = await createRuntimeConfig();
     config.maxInboundImageBytes = 600;
     const client = new TelegramApiClient(config);
@@ -136,6 +136,25 @@ describe("TelegramApiClient button and document payloads", () => {
           from: { id: 7, username: "owner" },
           document: { file_id: "pdf", file_unique_id: "u-pdf", file_name: "notes.pdf", mime_type: "application/pdf", file_size: 400 },
         },
+      }, {
+        update_id: 4,
+        message: {
+          message_id: 13,
+          media_group_id: "album-1",
+          caption: "compare these screenshots",
+          chat: { id: 123, type: "private" },
+          from: { id: 7, username: "owner" },
+          photo: [{ file_id: "album-a", file_unique_id: "u-album-a", width: 100, height: 100, file_size: 100 }],
+        },
+      }, {
+        update_id: 5,
+        message: {
+          message_id: 14,
+          media_group_id: "album-1",
+          chat: { id: 123, type: "private" },
+          from: { id: 7, username: "owner" },
+          photo: [{ file_id: "album-b", file_unique_id: "u-album-b", width: 100, height: 100, file_size: 100 }],
+        },
       }]),
     };
 
@@ -144,6 +163,11 @@ describe("TelegramApiClient button and document payloads", () => {
     expect(updates[0]).toMatchObject({ text: "inspect this screenshot", images: [{ kind: "photo", fileId: "best", mimeType: "image/jpeg", supported: true }] });
     expect(updates[1]).toMatchObject({ text: "original image", images: [{ kind: "document", fileId: "doc-image", fileName: "screen.png", mimeType: "image/png", supported: true }] });
     expect(updates[2]).toMatchObject({ text: "", images: [{ kind: "document", fileId: "pdf", mimeType: "application/pdf", supported: false }] });
+    expect(updates[3]).toMatchObject({
+      updateId: 5,
+      text: "compare these screenshots",
+      images: [{ fileId: "album-a" }, { fileId: "album-b" }],
+    });
   });
 
   it("downloads authorized Telegram images and sends latest images as documents", async () => {

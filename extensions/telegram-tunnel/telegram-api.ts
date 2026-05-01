@@ -33,6 +33,30 @@ export class TelegramApiClient {
     });
 
     const inbound: TelegramInboundUpdate[] = [];
+    const mediaGroups = new Map<string, TelegramInboundMessage>();
+
+    const addMessage = (message: TelegramInboundMessage, mediaGroupId?: string) => {
+      if (!mediaGroupId || !message.images || message.images.length === 0) {
+        inbound.push(message);
+        return;
+      }
+
+      const groupKey = `${message.chat.id}:${message.user.id}:${mediaGroupId}`;
+      const existing = mediaGroups.get(groupKey);
+      if (!existing) {
+        mediaGroups.set(groupKey, message);
+        return;
+      }
+
+      existing.updateId = Math.max(existing.updateId, message.updateId);
+      existing.images = [...(existing.images ?? []), ...(message.images ?? [])];
+      if (!existing.text && message.text) {
+        existing.text = message.text;
+      } else if (existing.text && message.text && existing.text !== message.text) {
+        existing.text = `${existing.text}\n${message.text}`;
+      }
+    };
+
     for (const update of updates) {
       const message = update.message;
       if (message && message.from && message.chat) {
@@ -41,25 +65,25 @@ export class TelegramApiClient {
         if (!text && images.length === 0) {
           // Ignore unsupported non-text/non-image messages.
         } else {
-        inbound.push({
-          kind: "message",
-          updateId: update.update_id,
-          messageId: message.message_id,
-          text,
-          images: images.length > 0 ? images : undefined,
-          chat: {
-            id: message.chat.id,
-            type: message.chat.type,
-            title: "title" in message.chat ? message.chat.title : undefined,
-          },
-          user: {
-            id: message.from.id,
-            username: message.from.username,
-            firstName: message.from.first_name,
-            lastName: message.from.last_name,
-          },
-        } satisfies TelegramInboundMessage);
-        continue;
+          addMessage({
+            kind: "message",
+            updateId: update.update_id,
+            messageId: message.message_id,
+            text,
+            images: images.length > 0 ? images : undefined,
+            chat: {
+              id: message.chat.id,
+              type: message.chat.type,
+              title: "title" in message.chat ? message.chat.title : undefined,
+            },
+            user: {
+              id: message.from.id,
+              username: message.from.username,
+              firstName: message.from.first_name,
+              lastName: message.from.last_name,
+            },
+          } satisfies TelegramInboundMessage, typeof message.media_group_id === "string" ? message.media_group_id : undefined);
+          continue;
         }
       }
 
@@ -88,7 +112,7 @@ export class TelegramApiClient {
       }
     }
 
-    return inbound.sort((a, b) => a.updateId - b.updateId);
+    return [...inbound, ...mediaGroups.values()].sort((a, b) => a.updateId - b.updateId);
   }
 
   async sendPlainText(chatId: number, text: string): Promise<void> {

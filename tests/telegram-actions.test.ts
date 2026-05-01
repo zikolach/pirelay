@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
 import {
   buildAnswerActionKeyboard,
+  buildAnswerAmbiguityCallbackData,
+  buildAnswerAmbiguityKeyboard,
   buildAnswerCustomCallbackData,
   buildAnswerOptionCallbackData,
   buildFullChatCallbackData,
@@ -23,6 +25,12 @@ describe("telegram action callbacks", () => {
     expect(parseTelegramActionCallbackData(buildAnswerCustomCallbackData("turn-1"))).toEqual({
       kind: "answer-custom",
       turnId: "turn-1",
+    });
+    expect(parseTelegramActionCallbackData(buildAnswerAmbiguityCallbackData("turn-1", "tok", "prompt"))).toEqual({
+      kind: "answer-ambiguity",
+      turnId: "turn-1",
+      token: "tok",
+      resolution: "prompt",
     });
     expect(parseTelegramActionCallbackData(buildFullChatCallbackData("turn-1"))).toEqual({
       kind: "full-chat",
@@ -58,6 +66,13 @@ describe("telegram action callbacks", () => {
     ]);
     expect(buildFullOutputKeyboard("abc123")).toEqual([[{"callbackData":"full:abc123:chat","text":"📄 Show in chat"},{"callbackData":"full:abc123:md","text":"⬇️ Download .md"}]]);
     expect(buildLatestImagesKeyboard("abc123", 2)).toEqual([[{ text: "🖼 Download 2 images", callbackData: "imgs:abc123" }]]);
+    expect(buildAnswerAmbiguityKeyboard("abc123", "tok")).toEqual([
+      [
+        { text: "➡️ Send as prompt", callbackData: "ans:abc123:amb:tok:prompt" },
+        { text: "✅ Answer previous", callbackData: "ans:abc123:amb:tok:answer" },
+      ],
+      [{ text: "Cancel", callbackData: "ans:abc123:amb:tok:cancel" }],
+    ]);
     expect(buildAnswerActionKeyboard(metadata!, { includeFullOutputActions: false })).toEqual([
       [{ text: "A. Sync specs now", callbackData: "ans:abc123:opt:A" }],
       [{ text: "B. Archive without syncing", callbackData: "ans:abc123:opt:B" }],

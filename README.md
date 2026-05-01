@@ -248,10 +248,13 @@ Choose:
 
 Telegram can:
 - tap an inline option button when the Telegram client supports buttons
-- reply directly with `1` or `2`
-- reply with the option text if it matches cleanly
+- reply directly with a short unambiguous option such as `1` or `2`
+- reply with an explicit answer phrase such as `option 1`, `choose B`, or `answer 2`
+- reply with the option text if it matches cleanly and does not look like a new prompt
 - tap **Custom answer** and send a free-form answer as the next message
 - send `answer` to open a normalized answer draft
+
+Long, question-like, Markdown-like, or instruction-like Telegram messages are treated as normal prompts by default, even if the latest Pi output had answer buttons. If a short reply is ambiguous, PiRelay asks whether to send it as a prompt, answer the previous question, or cancel.
 
 It also supports inline lettered choices such as:
 

@@ -5,6 +5,7 @@ import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
   buildFreeTextChoiceInjection,
+  classifyAnswerIntent,
   isGuidedAnswerStart,
   isGuidedAnswerCancel,
   matchChoiceOption,
@@ -13,6 +14,7 @@ import {
   summarizeTailForTelegram,
 } from './answer-workflow.ts';
 import {
+  buildAnswerAmbiguityKeyboard,
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   buildLatestImagesKeyboard,
@@ -41,6 +43,7 @@ const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
 const answerFlows = new Map();
 const pendingCustomAnswers = new Map();
+const pendingAnswerAmbiguities = new Map();
 const activityIndicators = new Map();
 const statePath = `${config.stateDir}/state.json`;
 let updateOffset;
@@ -70,6 +73,7 @@ const TELEGRAM_ACTIVITY_ACTION = 'typing';
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60 * 1000;
+const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60 * 1000;
 const DEFAULT_ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 function allowedImageMimeTypes() {
@@ -450,8 +454,9 @@ function combineKeyboards(...keyboards) {
 }
 
 function completionActionKeyboardForRoute(route) {
+  if (route?.notification?.structuredAnswer) return undefined;
   return combineKeyboards(
-    route?.notification?.structuredAnswer ? undefined : fullOutputKeyboardForRoute(route),
+    fullOutputKeyboardForRoute(route),
     latestImagesKeyboardForRoute(route),
   );
 }
@@ -483,10 +488,26 @@ function getCustomAnswerKey(route, userId) {
   return `${route.sessionKey}:${route.binding?.chatId ?? 'unbound'}:${userId}`;
 }
 
+function getAmbiguityKey(route, userId, token) {
+  return `${route.sessionKey}:${route.binding?.chatId ?? 'unbound'}:${userId}:${token}`;
+}
+
 function clearCustomAnswersForRoute(route) {
   for (const [key, pending] of pendingCustomAnswers.entries()) {
     if (pending.sessionKey === route.sessionKey) pendingCustomAnswers.delete(key);
   }
+}
+
+function clearAmbiguitiesForRoute(route) {
+  for (const [key, pending] of pendingAnswerAmbiguities.entries()) {
+    if (pending.sessionKey === route.sessionKey) pendingAnswerAmbiguities.delete(key);
+  }
+}
+
+function clearAnswerStateForRoute(route) {
+  clearAnswerFlow(route);
+  clearCustomAnswersForRoute(route);
+  clearAmbiguitiesForRoute(route);
 }
 
 function clearStaleCustomAnswers(route) {
@@ -516,6 +537,42 @@ function takePendingCustomAnswer(route, user) {
   if (!pending) return undefined;
   pendingCustomAnswers.delete(key);
   return pending;
+}
+
+function createAmbiguityToken() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function setPendingAmbiguity(route, user, turnId, text) {
+  if (!route?.binding) return undefined;
+  const token = createAmbiguityToken();
+  pendingAnswerAmbiguities.set(getAmbiguityKey(route, user.id, token), {
+    sessionKey: route.sessionKey,
+    chatId: route.binding.chatId,
+    userId: user.id,
+    turnId,
+    text,
+    expiresAt: Date.now() + ANSWER_AMBIGUITY_EXPIRY_MS,
+  });
+  return token;
+}
+
+function takePendingAmbiguity(route, user, token) {
+  if (!route?.binding) return undefined;
+  const key = getAmbiguityKey(route, user.id, token);
+  const pending = pendingAnswerAmbiguities.get(key);
+  if (!pending) return undefined;
+  pendingAnswerAmbiguities.delete(key);
+  return pending;
+}
+
+function findPendingAmbiguity(route, user) {
+  if (!route?.binding) return undefined;
+  const prefix = `${route.sessionKey}:${route.binding.chatId}:${user.id}:`;
+  for (const [key, pending] of pendingAnswerAmbiguities.entries()) {
+    if (key.startsWith(prefix)) return [key.slice(prefix.length), pending];
+  }
+  return undefined;
 }
 
 async function deliverAnswerInjection(route, message, text) {
@@ -816,8 +873,11 @@ function hasImageAttachments(message) {
   return messageImages(message).length > 0;
 }
 
-function promptTextForMessage(message, fallback = 'Please inspect the attached image.') {
-  return String(message.text || '').trim() || fallback;
+function promptTextForMessage(message, fallback) {
+  const text = String(message.text || '').trim();
+  if (text) return text;
+  if (fallback) return fallback;
+  return messageImages(message).length > 1 ? 'Please inspect the attached images.' : 'Please inspect the attached image.';
 }
 
 async function downloadAuthorizedImages(message, route) {
@@ -864,6 +924,56 @@ async function deliverAuthorizedPrompt(message, route, text, { deliverAs, auditM
     return;
   }
   if (!activityStarted) await sendPlainText(message.chat.id, 'Prompt delivered to Pi.');
+}
+
+async function deliverPlainPrompt(message, route, text) {
+  clearAnswerStateForRoute(route);
+  const busy = isEffectivelyBusy(route);
+  const deliverAs = busy ? config.busyDeliveryMode : undefined;
+  await deliverAuthorizedPrompt(message, route, text, {
+    deliverAs,
+    auditMessage: busy
+      ? `Telegram ${getUserLabel(message.user)} queued a ${deliverAs} message.`
+      : `Telegram ${getUserLabel(message.user)} sent a prompt.`,
+    busyAck: busy ? `Pi is busy; your message was queued as ${deliverAs}.` : undefined,
+  });
+}
+
+function ambiguityTextChoice(text) {
+  const normalized = String(text || '').trim().toLowerCase();
+  if (['send as prompt', 'as prompt', 'prompt'].includes(normalized)) return 'prompt';
+  if (['answer previous', 'as answer', 'answer'].includes(normalized)) return 'answer';
+  if (isGuidedAnswerCancel(normalized)) return 'cancel';
+  return undefined;
+}
+
+async function resolveAmbiguity(message, route, pending, resolution) {
+  const currentTurnId = getCurrentTurnId(route);
+  const metadata = hasAnswerableLatestOutput(route) ? route?.notification?.structuredAnswer : undefined;
+  if (resolution === 'cancel') {
+    await sendPlainText(message.chat.id, 'Cancelled.');
+    return;
+  }
+  if (pending.expiresAt <= Date.now() || pending.turnId !== currentTurnId) {
+    await sendPlainText(message.chat.id, 'That answer confirmation is no longer current. Send your message again if needed.');
+    return;
+  }
+  if (resolution === 'prompt') {
+    await deliverPlainPrompt(message, route, pending.text);
+    return;
+  }
+  if (!metadata) {
+    await sendPlainText(message.chat.id, 'There is no current answerable output. Send your message again as a normal prompt.');
+    return;
+  }
+  const result = advanceGuidedAnswerFlow(metadata, startGuidedAnswerFlow(), pending.text);
+  if (!result.done || !result.injectionText) {
+    await sendPlainText(message.chat.id, "I could not use that text as a complete answer. Send 'answer' to open the guided answer flow.");
+    return;
+  }
+  clearAnswerStateForRoute(route);
+  await deliverAnswerInjection(route, message, result.injectionText);
+  await sendPlainText(message.chat.id, result.responseText);
 }
 
 async function getLatestImages(route) {
@@ -1051,8 +1161,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
       return;
     }
     case 'disconnect': {
-      clearAnswerFlow(route);
-      clearCustomAnswersForRoute(route);
+      clearAnswerStateForRoute(route);
       clearActivityIndicator(route);
       route.binding = undefined;
       await revokeBinding(route.sessionKey);
@@ -1078,7 +1187,7 @@ async function handleAuthorizedText(message, route) {
   }
 
   if (hasImageAttachments(message)) {
-    takePendingCustomAnswer(route, message.user);
+    clearAnswerStateForRoute(route);
     const busy = isEffectivelyBusy(route);
     const deliverAs = busy ? config.busyDeliveryMode : undefined;
     await deliverAuthorizedPrompt(message, route, promptTextForMessage(message), {
@@ -1088,6 +1197,14 @@ async function handleAuthorizedText(message, route) {
         : `Telegram ${getUserLabel(message.user)} sent an image prompt.`,
       busyAck: busy ? `Pi is busy; your message was queued as ${deliverAs}.` : undefined,
     });
+    return;
+  }
+
+  const pendingAmbiguity = findPendingAmbiguity(route, message.user);
+  const ambiguityResolution = pendingAmbiguity ? ambiguityTextChoice(message.text) : undefined;
+  if (pendingAmbiguity && ambiguityResolution) {
+    pendingAnswerAmbiguities.delete(getAmbiguityKey(route, message.user.id, pendingAmbiguity[0]));
+    await resolveAmbiguity(message, route, pendingAmbiguity[1], ambiguityResolution);
     return;
   }
 
@@ -1110,22 +1227,42 @@ async function handleAuthorizedText(message, route) {
   if (await handleAnswerFlowReply(message, route)) {
     return;
   }
-  if (isGuidedAnswerStart(message.text)) {
+
+  const metadata = hasAnswerableLatestOutput(route) ? route?.notification?.structuredAnswer : undefined;
+  const intent = classifyAnswerIntent(metadata, message.text);
+  if (intent.kind === 'start-flow') {
     await startAnswerFlow(message, route);
     return;
   }
-  if (await handleDirectStructuredAnswer(message, route)) {
+  if (metadata && (intent.kind === 'bare-option' || (intent.kind === 'explicit-answer' && intent.option))) {
+    const option = intent.kind === 'bare-option' ? intent.option : intent.option;
+    clearAnswerStateForRoute(route);
+    await deliverAnswerInjection(route, message, buildChoiceInjection(metadata, option));
+    await sendPlainText(message.chat.id, `Selected option ${option.id}: ${option.label}`);
     return;
   }
-  const busy = isEffectivelyBusy(route);
-  const deliverAs = busy ? config.busyDeliveryMode : undefined;
-  await deliverAuthorizedPrompt(message, route, message.text, {
-    deliverAs,
-    auditMessage: busy
-      ? `Telegram ${getUserLabel(message.user)} queued a ${deliverAs} message.`
-      : `Telegram ${getUserLabel(message.user)} sent a prompt.`,
-    busyAck: busy ? `Pi is busy; your message was queued as ${deliverAs}.` : undefined,
-  });
+  if (metadata && intent.kind === 'explicit-answer') {
+    const result = advanceGuidedAnswerFlow(metadata, startGuidedAnswerFlow(), message.text);
+    if (result.done && result.injectionText) {
+      clearAnswerStateForRoute(route);
+      await deliverAnswerInjection(route, message, result.injectionText);
+      await sendPlainText(message.chat.id, result.responseText);
+      return;
+    }
+  }
+  if (metadata && intent.kind === 'ambiguous') {
+    const turnId = getCurrentTurnId(route);
+    const token = turnId ? setPendingAmbiguity(route, message.user, turnId, message.text) : undefined;
+    if (turnId && token) {
+      await sendPlainText(
+        message.chat.id,
+        "This could be an answer to the previous Pi question or a new prompt. What should I do?\n\nYou can also reply: 'send as prompt', 'answer previous', or 'cancel'.",
+        buildAnswerAmbiguityKeyboard(turnId, token),
+      );
+      return;
+    }
+  }
+  await deliverPlainPrompt(message, route, message.text);
 }
 
 async function processInbound(message) {
@@ -1224,6 +1361,17 @@ async function processCallback(callback) {
       await sendPlainText(callback.chat.id, "Send your custom answer as the next message, or send 'cancel' to stop.");
       return;
     }
+    case 'answer-ambiguity': {
+      const pending = takePendingAmbiguity(route, callback.user, action.token);
+      if (!pending || pending.expiresAt <= Date.now() || pending.turnId !== currentTurnId) {
+        await answerCallbackQuery(callback.callbackQueryId, 'This confirmation is no longer current.');
+        await sendPlainText(callback.chat.id, 'That answer confirmation is no longer current. Send your message again if needed.');
+        return;
+      }
+      await answerCallbackQuery(callback.callbackQueryId, action.resolution === 'prompt' ? 'Sending as prompt.' : action.resolution === 'answer' ? 'Answering previous.' : 'Cancelled.');
+      await resolveAmbiguity({ ...callback, text: pending.text }, route, pending, action.resolution);
+      return;
+    }
     case 'full-chat': {
       const text = route.notification?.lastAssistantText;
       await answerCallbackQuery(callback.callbackQueryId, text ? 'Sending full output.' : 'No output available.');
@@ -1260,6 +1408,87 @@ async function processCallback(callback) {
   }
 }
 
+function mergeInboundAlbumMessage(albums, inbound, message, mediaGroupId) {
+  if (!mediaGroupId || !message.images || message.images.length === 0) {
+    inbound.push(message);
+    return;
+  }
+
+  const groupKey = `${message.chat.id}:${message.user.id}:${mediaGroupId}`;
+  const existing = albums.get(groupKey);
+  if (!existing) {
+    albums.set(groupKey, message);
+    return;
+  }
+
+  existing.updateId = Math.max(existing.updateId, message.updateId);
+  existing.images = [...(existing.images || []), ...(message.images || [])];
+  if (!existing.text && message.text) {
+    existing.text = message.text;
+  } else if (existing.text && message.text && existing.text !== message.text) {
+    existing.text = `${existing.text}\n${message.text}`;
+  }
+}
+
+function normalizeTelegramUpdates(updates) {
+  const inbound = [];
+  const albums = new Map();
+
+  for (const update of updates) {
+    const message = update.message;
+    const callback = update.callback_query;
+    if (message && message.from && message.chat) {
+      const text = message.text || message.caption || '';
+      const images = extractImageReferences(message);
+      if (!text && images.length === 0) continue;
+      mergeInboundAlbumMessage(albums, inbound, {
+        kind: 'message',
+        updateId: update.update_id,
+        messageId: message.message_id,
+        text,
+        images: images.length > 0 ? images : undefined,
+        chat: {
+          id: message.chat.id,
+          type: message.chat.type,
+          title: 'title' in message.chat ? message.chat.title : undefined,
+        },
+        user: {
+          id: message.from.id,
+          username: message.from.username,
+          firstName: message.from.first_name,
+          lastName: message.from.last_name,
+        },
+      }, typeof message.media_group_id === 'string' ? message.media_group_id : undefined);
+      continue;
+    }
+
+    const callbackMessage = callback?.message;
+    const callbackChat = callbackMessage?.chat;
+    if (callback?.data && callback.from && callbackChat) {
+      inbound.push({
+        kind: 'callback',
+        updateId: update.update_id,
+        callbackQueryId: callback.id,
+        messageId: callbackMessage.message_id,
+        data: callback.data,
+        chat: {
+          id: callbackChat.id,
+          type: callbackChat.type,
+          title: 'title' in callbackChat ? callbackChat.title : undefined,
+        },
+        user: {
+          id: callback.from.id,
+          username: callback.from.username,
+          firstName: callback.from.first_name,
+          lastName: callback.from.last_name,
+        },
+      });
+    }
+  }
+
+  return [...inbound, ...albums.values()].sort((left, right) => left.updateId - right.updateId);
+}
+
 async function pollLoop() {
   while (!shuttingDown) {
     try {
@@ -1269,54 +1498,12 @@ async function pollLoop() {
         timeout: config.pollingTimeoutSeconds || 20,
         allowed_updates: ['message', 'callback_query'],
       });
-      for (const update of updates) {
-        const message = update.message;
-        const callback = update.callback_query;
-        updateOffset = update.update_id + 1;
-        if (message && message.from && message.chat) {
-          const text = message.text || message.caption || '';
-          const images = extractImageReferences(message);
-          if (!text && images.length === 0) continue;
-          await processInbound({
-            updateId: update.update_id,
-            messageId: message.message_id,
-            text,
-            images: images.length > 0 ? images : undefined,
-            chat: {
-              id: message.chat.id,
-              type: message.chat.type,
-              title: 'title' in message.chat ? message.chat.title : undefined,
-            },
-            user: {
-              id: message.from.id,
-              username: message.from.username,
-              firstName: message.from.first_name,
-              lastName: message.from.last_name,
-            },
-          });
-          continue;
-        }
-        const callbackMessage = callback?.message;
-        const callbackChat = callbackMessage?.chat;
-        if (callback?.data && callback.from && callbackChat) {
-          await processCallback({
-            updateId: update.update_id,
-            callbackQueryId: callback.id,
-            messageId: callbackMessage.message_id,
-            data: callback.data,
-            chat: {
-              id: callbackChat.id,
-              type: callbackChat.type,
-              title: 'title' in callbackChat ? callbackChat.title : undefined,
-            },
-            user: {
-              id: callback.from.id,
-              username: callback.from.username,
-              firstName: callback.from.first_name,
-              lastName: callback.from.last_name,
-            },
-          });
-        }
+      if (updates.length > 0) {
+        updateOffset = Math.max(...updates.map((update) => update.update_id)) + 1;
+      }
+      for (const update of normalizeTelegramUpdates(updates)) {
+        if (update.kind === 'callback') await processCallback(update);
+        else await processInbound(update);
       }
     } catch {
       await sleep(1500);
@@ -1330,8 +1517,7 @@ function removeClient(socket) {
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
     if (existing) {
-      clearAnswerFlow(existing);
-      clearCustomAnswersForRoute(existing);
+      clearAnswerStateForRoute(existing);
       clearActivityIndicator(existing);
     }
     routes.delete(sessionKey);
@@ -1369,7 +1555,9 @@ async function handleClientRequest(socket, message) {
           clearActivityIndicator(previousRoute);
         }
         routes.set(route.sessionKey, nextRoute);
-        if (!route.notification?.structuredAnswer && previousRoute) {
+        if (previousRoute && getCurrentTurnId(previousRoute) !== getCurrentTurnId(nextRoute)) {
+          clearAnswerStateForRoute(previousRoute);
+        } else if (!route.notification?.structuredAnswer && previousRoute) {
           clearAnswerFlow(previousRoute);
         }
         clearStaleCustomAnswers(nextRoute);
@@ -1386,8 +1574,7 @@ async function handleClientRequest(socket, message) {
         client?.routes.delete(message.sessionKey);
         const existing = routes.get(message.sessionKey);
         if (existing) {
-          clearAnswerFlow(existing);
-          clearCustomAnswersForRoute(existing);
+          clearAnswerStateForRoute(existing);
           clearActivityIndicator(existing);
         }
         routes.delete(message.sessionKey);

@@ -9,6 +9,7 @@ import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
   buildFreeTextChoiceInjection,
+  classifyAnswerIntent,
   isGuidedAnswerStart,
   isGuidedAnswerCancel,
   matchChoiceOption,
@@ -17,6 +18,7 @@ import {
   summarizeTailForTelegram,
 } from "./answer-workflow.js";
 import {
+  buildAnswerAmbiguityKeyboard,
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   buildLatestImagesKeyboard,
@@ -75,12 +77,22 @@ const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
+const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;
 
 interface PendingCustomAnswerState {
   sessionKey: string;
   chatId: number;
   userId: number;
   turnId: string;
+  expiresAt: number;
+}
+
+interface PendingAnswerAmbiguityState {
+  sessionKey: string;
+  chatId: number;
+  userId: number;
+  turnId: string;
+  text: string;
   expiresAt: number;
 }
 
@@ -110,6 +122,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly routes = new Map<string, SessionRoute>();
   private readonly answerFlows = new Map<string, ReturnType<typeof startGuidedAnswerFlow>>();
   private readonly pendingCustomAnswers = new Map<string, PendingCustomAnswerState>();
+  private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
   private started = false;
   private pollingTask?: Promise<void>;
@@ -172,7 +185,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (previousRoute?.binding?.chatId !== route.binding?.chatId && previousRoute?.binding) {
       this.clearActivityIndicator(previousRoute);
     }
-    if (!route.notification.structuredAnswer) {
+    if (previousRoute && this.currentTurnId(previousRoute) !== this.currentTurnId(route)) {
+      this.clearAnswerStateForRoute(previousRoute);
+    } else if (!route.notification.structuredAnswer) {
       this.answerFlows.delete(this.answerFlowKey(route));
     }
     this.clearStaleCustomAnswers(route);
@@ -187,8 +202,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async unregisterRoute(sessionKey: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (route) {
-      this.answerFlows.delete(this.answerFlowKey(route));
-      this.clearCustomAnswersForRoute(route);
+      this.clearAnswerStateForRoute(route);
       this.clearActivityIndicator(route);
     }
     this.routes.delete(sessionKey);
@@ -230,6 +244,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return route.notification.structuredAnswer?.turnId ?? route.notification.lastTurnId;
   }
 
+  private ambiguityKey(sessionKey: string, chatId: number, userId: number, token: string): string {
+    return `${sessionKey}:${chatId}:${userId}:${token}`;
+  }
+
+  private createAmbiguityToken(): string {
+    return createTurnId();
+  }
+
   private fullOutputKeyboardForRoute(route: SessionRoute) {
     if (!this.shouldOfferFullOutputActionsForRoute(route)) return undefined;
     const turnId = this.currentTurnId(route);
@@ -248,8 +270,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private completionActionKeyboardForRoute(route: SessionRoute) {
+    if (route.notification.structuredAnswer) return undefined;
     return this.combineKeyboards(
-      route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route),
+      this.fullOutputKeyboardForRoute(route),
       this.latestImagesKeyboardForRoute(route),
     );
   }
@@ -272,6 +295,18 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     for (const [key, pending] of this.pendingCustomAnswers.entries()) {
       if (pending.sessionKey === route.sessionKey) this.pendingCustomAnswers.delete(key);
     }
+  }
+
+  private clearAmbiguitiesForRoute(route: SessionRoute): void {
+    for (const [key, pending] of this.pendingAnswerAmbiguities.entries()) {
+      if (pending.sessionKey === route.sessionKey) this.pendingAnswerAmbiguities.delete(key);
+    }
+  }
+
+  private clearAnswerStateForRoute(route: SessionRoute): void {
+    this.answerFlows.delete(this.answerFlowKey(route));
+    this.clearCustomAnswersForRoute(route);
+    this.clearAmbiguitiesForRoute(route);
   }
 
   private clearStaleCustomAnswers(route: SessionRoute): void {
@@ -303,6 +338,38 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!pending) return undefined;
     this.pendingCustomAnswers.delete(key);
     return pending;
+  }
+
+  private setPendingAmbiguity(route: SessionRoute, user: TelegramUserSummary, turnId: string, text: string): string | undefined {
+    if (!route.binding) return undefined;
+    const token = this.createAmbiguityToken();
+    this.pendingAnswerAmbiguities.set(this.ambiguityKey(route.sessionKey, route.binding.chatId, user.id, token), {
+      sessionKey: route.sessionKey,
+      chatId: route.binding.chatId,
+      userId: user.id,
+      turnId,
+      text,
+      expiresAt: Date.now() + ANSWER_AMBIGUITY_EXPIRY_MS,
+    });
+    return token;
+  }
+
+  private takePendingAmbiguity(route: SessionRoute, user: TelegramUserSummary, token: string): PendingAnswerAmbiguityState | undefined {
+    if (!route.binding) return undefined;
+    const key = this.ambiguityKey(route.sessionKey, route.binding.chatId, user.id, token);
+    const pending = this.pendingAnswerAmbiguities.get(key);
+    if (!pending) return undefined;
+    this.pendingAnswerAmbiguities.delete(key);
+    return pending;
+  }
+
+  private findPendingAmbiguity(route: SessionRoute, user: TelegramUserSummary): [string, PendingAnswerAmbiguityState] | undefined {
+    if (!route.binding) return undefined;
+    const prefix = `${route.sessionKey}:${route.binding.chatId}:${user.id}:`;
+    for (const [key, pending] of this.pendingAnswerAmbiguities.entries()) {
+      if (key.startsWith(prefix)) return [key.slice(prefix.length), pending];
+    }
+    return undefined;
   }
 
   private activityKey(sessionKey: string, chatId: number): string {
@@ -542,6 +609,24 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(callback.chat.id, "Send your custom answer as the next message, or send 'cancel' to stop.");
         return;
       }
+      case "answer-ambiguity": {
+        const pending = this.takePendingAmbiguity(route, callback.user, action.token);
+        if (!pending || pending.expiresAt <= Date.now() || pending.turnId !== currentTurnId) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "This confirmation is no longer current.");
+          await this.api.sendPlainText(callback.chat.id, "That answer confirmation is no longer current. Send your message again if needed.");
+          return;
+        }
+        await this.api.answerCallbackQuery(callback.callbackQueryId, action.resolution === "prompt" ? "Sending as prompt." : action.resolution === "answer" ? "Answering previous." : "Cancelled.");
+        await this.resolveAmbiguity(route, {
+          kind: "message",
+          updateId: callback.updateId,
+          messageId: callback.messageId ?? 0,
+          text: pending.text,
+          chat: callback.chat,
+          user: callback.user,
+        }, pending, action.resolution);
+        return;
+      }
       case "full-chat": {
         const text = route.notification.lastAssistantText;
         await this.api.answerCallbackQuery(callback.callbackQueryId, text ? "Sending full output." : "No output available.");
@@ -653,9 +738,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return this.messageImages(message).length > 0;
   }
 
-  private promptTextForMessage(message: TelegramInboundMessage, fallback = "Please inspect the attached image."): string {
+  private promptTextForMessage(message: TelegramInboundMessage, fallback?: string): string {
     const text = message.text.trim();
-    return text || fallback;
+    if (text) return text;
+    if (fallback) return fallback;
+    return this.messageImages(message).length > 1 ? "Please inspect the attached images." : "Please inspect the attached image.";
   }
 
   private async downloadAuthorizedImages(route: SessionRoute, message: TelegramInboundMessage): Promise<TelegramDownloadedImage[] | undefined> {
@@ -899,7 +986,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "disconnect": {
-        this.answerFlows.delete(this.answerFlowKey(route));
+        this.clearAnswerStateForRoute(route);
         this.clearActivityIndicator(route);
         await this.revokeBinding(route, `Telegram ${getTelegramUserLabel(message.user)} disconnected the tunnel.`);
         await this.api.sendPlainText(message.chat.id, "Disconnected. Future messages from this chat will be ignored until a new pairing is created.");
@@ -911,6 +998,65 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
+  private async deliverPlainPrompt(route: SessionRoute, message: TelegramInboundMessage, text: string): Promise<void> {
+    this.clearAnswerStateForRoute(route);
+    const idle = isEffectivelyIdle(route);
+    const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
+    const activityStarted = await this.startActivityIndicator(route);
+    route.actions.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
+    route.actions.appendAudit(
+      idle
+        ? `Telegram ${getTelegramUserLabel(message.user)} sent a prompt.`
+        : `Telegram ${getTelegramUserLabel(message.user)} queued a ${deliverAs} message.`,
+    );
+    if (!idle) {
+      await this.api.sendPlainText(message.chat.id, `Pi is busy; your message was queued as ${deliverAs}.`);
+      return;
+    }
+    if (!activityStarted) {
+      await this.api.sendPlainText(message.chat.id, "Prompt delivered to Pi.");
+    }
+  }
+
+  private ambiguityTextChoice(text: string): "prompt" | "answer" | "cancel" | undefined {
+    const normalized = text.trim().toLowerCase();
+    if (["send as prompt", "as prompt", "prompt"].includes(normalized)) return "prompt";
+    if (["answer previous", "as answer", "answer"].includes(normalized)) return "answer";
+    if (isGuidedAnswerCancel(normalized)) return "cancel";
+    return undefined;
+  }
+
+  private async resolveAmbiguity(route: SessionRoute, message: TelegramInboundMessage, pending: PendingAnswerAmbiguityState, resolution: "prompt" | "answer" | "cancel"): Promise<void> {
+    const currentTurnId = this.currentTurnId(route);
+    const metadata = hasAnswerableLatestOutput(route) ? route.notification.structuredAnswer : undefined;
+    if (resolution === "cancel") {
+      await this.api.sendPlainText(message.chat.id, "Cancelled.");
+      return;
+    }
+    if (pending.expiresAt <= Date.now() || pending.turnId !== currentTurnId) {
+      await this.api.sendPlainText(message.chat.id, "That answer confirmation is no longer current. Send your message again if needed.");
+      return;
+    }
+    if (resolution === "prompt") {
+      await this.deliverPlainPrompt(route, message, pending.text);
+      return;
+    }
+    if (!metadata) {
+      await this.api.sendPlainText(message.chat.id, "There is no current answerable output. Send your message again as a normal prompt.");
+      return;
+    }
+    const result = advanceGuidedAnswerFlow(metadata, startGuidedAnswerFlow(), pending.text);
+    if (!result.done || !result.injectionText) {
+      await this.api.sendPlainText(message.chat.id, "I could not use that text as a complete answer. Send 'answer' to open the guided answer flow.");
+      return;
+    }
+    this.clearAnswerStateForRoute(route);
+    await this.startActivityIndicator(route);
+    route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
+    route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
+    await this.api.sendPlainText(message.chat.id, result.responseText);
+  }
+
   private async handleAuthorizedMessage(route: SessionRoute, message: TelegramInboundMessage): Promise<void> {
     const binding = route.binding;
     if (!binding) return;
@@ -920,7 +1066,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     if (this.hasImageAttachments(message)) {
-      this.takePendingCustomAnswer(route, message.user);
+      this.clearAnswerStateForRoute(route);
       const idle = isEffectivelyIdle(route);
       const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
       await this.deliverAuthorizedPrompt(route, message, this.promptTextForMessage(message), {
@@ -930,6 +1076,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           : `Telegram ${getTelegramUserLabel(message.user)} queued an image ${deliverAs} message.`,
         busyAck: idle ? undefined : `Pi is busy; your message was queued as ${deliverAs}.`,
       });
+      return;
+    }
+
+    const pendingAmbiguity = this.findPendingAmbiguity(route, message.user);
+    const ambiguityResolution = pendingAmbiguity ? this.ambiguityTextChoice(message.text) : undefined;
+    if (pendingAmbiguity && ambiguityResolution) {
+      this.pendingAnswerAmbiguities.delete(this.ambiguityKey(route.sessionKey, message.chat.id, message.user.id, pendingAmbiguity[0]));
+      await this.resolveAmbiguity(route, message, pendingAmbiguity[1], ambiguityResolution);
       return;
     }
 
@@ -979,7 +1133,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
     }
 
-    if (isGuidedAnswerStart(message.text)) {
+    const intent = classifyAnswerIntent(metadata, message.text);
+    if (intent.kind === "start-flow") {
       if (!metadata) {
         await this.api.sendPlainText(
           message.chat.id,
@@ -995,33 +1150,44 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const matchedOption = metadata ? matchChoiceOption(metadata, message.text) : undefined;
-    if (metadata && matchedOption) {
+    if (metadata && (intent.kind === "bare-option" || (intent.kind === "explicit-answer" && intent.option))) {
+      const option = intent.kind === "bare-option" ? intent.option : intent.option!;
+      this.clearAnswerStateForRoute(route);
       await this.startActivityIndicator(route);
-      route.actions.sendUserMessage(buildChoiceInjection(metadata, matchedOption), isEffectivelyIdle(route)
+      route.actions.sendUserMessage(buildChoiceInjection(metadata, option), isEffectivelyIdle(route)
         ? undefined
         : { deliverAs: this.config.busyDeliveryMode });
       route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
-      await this.api.sendPlainText(message.chat.id, `Selected option ${matchedOption.id}: ${matchedOption.label}`);
+      await this.api.sendPlainText(message.chat.id, `Selected option ${option.id}: ${option.label}`);
       return;
     }
 
-    const idle = isEffectivelyIdle(route);
-    const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
-    const activityStarted = await this.startActivityIndicator(route);
-    route.actions.sendUserMessage(message.text, deliverAs ? { deliverAs } : undefined);
-    route.actions.appendAudit(
-      idle
-        ? `Telegram ${getTelegramUserLabel(message.user)} sent a prompt.`
-        : `Telegram ${getTelegramUserLabel(message.user)} queued a ${deliverAs} message.`,
-    );
-    if (!idle) {
-      await this.api.sendPlainText(message.chat.id, `Pi is busy; your message was queued as ${deliverAs}.`);
-      return;
+    if (metadata && intent.kind === "explicit-answer") {
+      const result = advanceGuidedAnswerFlow(metadata, startGuidedAnswerFlow(), message.text);
+      if (result.done && result.injectionText) {
+        this.clearAnswerStateForRoute(route);
+        await this.startActivityIndicator(route);
+        route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
+        await this.api.sendPlainText(message.chat.id, result.responseText);
+        return;
+      }
     }
-    if (!activityStarted) {
-      await this.api.sendPlainText(message.chat.id, "Prompt delivered to Pi.");
+
+    if (metadata && intent.kind === "ambiguous") {
+      const turnId = this.currentTurnId(route);
+      const token = turnId ? this.setPendingAmbiguity(route, message.user, turnId, message.text) : undefined;
+      if (turnId && token) {
+        await this.api.sendPlainTextWithKeyboard(
+          message.chat.id,
+          "This could be an answer to the previous Pi question or a new prompt. What should I do?\n\nYou can also reply: 'send as prompt', 'answer previous', or 'cancel'.",
+          buildAnswerAmbiguityKeyboard(turnId, token),
+        );
+        return;
+      }
     }
+
+    await this.deliverPlainPrompt(route, message, message.text);
   }
 
   private async revokeBinding(route: SessionRoute, auditMessage: string): Promise<void> {
@@ -1048,6 +1214,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.clearActivityIndicator(route);
+    this.clearAnswerStateForRoute(route);
     if (!route.binding || route.binding.paused) return;
     const notification = route.notification;
     const durationMs = notification.startedAt ? Date.now() - notification.startedAt : undefined;
@@ -1057,9 +1224,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
       notification.lastSummary = summary;
       const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
-      const actionKeyboard = this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
+      const actionKeyboard = route.notification.structuredAnswer
+        ? undefined
+        : this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
       const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
-      const imageHint = notification.latestImages?.count
+      const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
         ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
         : "";
       await this.api.sendPlainTextWithKeyboard(
@@ -1130,7 +1299,7 @@ export async function sendSessionNotification(
   const fallback = status === "completed"
     ? route.notification.lastSummary ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
     : route.notification.lastFailure ?? `Pi task ${status}.`;
-  const imageHint = status === "completed" && route.notification.latestImages?.count
+  const imageHint = status === "completed" && !route.notification.structuredAnswer && route.notification.latestImages?.count
     ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
     : "";
   await runtime.sendToBoundChat(route.sessionKey, `${fallback}${imageHint}`);

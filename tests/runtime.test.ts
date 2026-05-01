@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
@@ -273,6 +273,62 @@ describe("InProcessTunnelRuntime", () => {
     expect(deliveries).toEqual([{ text: [{ type: "text", text: "what is broken here?" }, image], deliverAs: undefined }]);
   });
 
+  it("routes image-only Telegram albums as a single multimodal Pi prompt", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-image-album:/tmp/session-image-album.jsonl",
+      sessionId: "session-image-album",
+      sessionFile: "/tmp/session-image-album.jsonl",
+      sessionLabel: "session-image-album.jsonl",
+      chatId: 881,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const downloads: string[] = [];
+    (runtime as any).api = {
+      downloadImage: async (reference: any) => {
+        downloads.push(reference.fileId);
+        return {
+          image: { type: "image" as const, data: Buffer.from(reference.fileId).toString("base64"), mimeType: "image/jpeg" },
+          fileName: `${reference.fileId}.jpg`,
+          fileSize: 3,
+          source: reference,
+        };
+      },
+      sendPlainText: async () => undefined,
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 24,
+      messageId: 24,
+      text: "",
+      images: [
+        { kind: "photo", fileId: "photo-a", mimeType: "image/jpeg", supported: true },
+        { kind: "photo", fileId: "photo-b", mimeType: "image/jpeg", supported: true },
+      ],
+      chat: { id: 881, type: "private" },
+      user: { id: 31, username: "owner" },
+    });
+
+    expect(downloads).toEqual(["photo-a", "photo-b"]);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.text).toMatchObject([
+      { type: "text", text: "Please inspect the attached images." },
+      { type: "image", mimeType: "image/jpeg" },
+      { type: "image", mimeType: "image/jpeg" },
+    ]);
+  });
+
   it("does not download unauthorized Telegram images", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -485,6 +541,100 @@ describe("InProcessTunnelRuntime", () => {
     ]);
   });
 
+  it("routes prompt-like text as a normal prompt after answerable output", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-prompt-like:/tmp/session-prompt-like.jsonl",
+      sessionId: "session-prompt-like",
+      sessionFile: "/tmp/session-prompt-like.jsonl",
+      sessionLabel: "session-prompt-like.jsonl",
+      chatId: 889,
+      userId: 10,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries, outbound } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = ["Choose:", "1. sync", "2. skip"].join("\n");
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(route.notification.lastAssistantText);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    (runtime as any).api = { sendPlainText: async () => undefined, sendChatAction: async () => undefined };
+
+    await (runtime as any).processInbound({
+      updateId: 41,
+      messageId: 41,
+      text: "How can messenger interaction be adjusted to be audio-first?",
+      chat: { id: 889, type: "private" },
+      user: { id: 10, username: "owner" },
+    });
+
+    expect(deliveries).toEqual([{ text: "How can messenger interaction be adjusted to be audio-first?", deliverAs: undefined }]);
+    expect(outbound.at(-1)).toBe("audit:Telegram @owner sent a prompt.");
+  });
+
+  it("asks for confirmation for ambiguous answer-like text", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-ambiguous:/tmp/session-ambiguous.jsonl",
+      sessionId: "session-ambiguous",
+      sessionFile: "/tmp/session-ambiguous.jsonl",
+      sessionLabel: "session-ambiguous.jsonl",
+      chatId: 890,
+      userId: 10,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-ambiguous";
+    route.notification.lastAssistantText = ["Choose:", "1. sync", "2. skip"].join("\n");
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(route.notification.lastAssistantText, { turnId: "turn-ambiguous" });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sends: Array<{ text: string; keyboard?: any }> = [];
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push({ text }),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string, keyboard?: any) => sends.push({ text, keyboard }),
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 42,
+      messageId: 42,
+      text: "I think sync is safest",
+      chat: { id: 890, type: "private" },
+      user: { id: 10, username: "owner" },
+    });
+
+    expect(deliveries).toEqual([]);
+    expect(sends[0]?.text).toContain("could be an answer");
+    const promptCallback = sends[0]?.keyboard?.[0]?.[0]?.callbackData as string;
+    expect(parseTelegramActionCallbackData(promptCallback)).toMatchObject({ kind: "answer-ambiguity", resolution: "prompt" });
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 43,
+      callbackQueryId: "amb-1",
+      data: promptCallback,
+      chat: { id: 890, type: "private" },
+      user: { id: 10, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Sending as prompt."]);
+    expect(deliveries).toEqual([{ text: "I think sync is safest", deliverAs: undefined }]);
+  });
+
   it("supports explicit answer-draft replies for structured questions", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -648,6 +798,15 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends[0]?.keyboard).toBeUndefined();
     expect(sends[1]?.text).toContain("Use /full or the full-output buttons");
     expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildFullOutputKeyboard(route.notification.structuredAnswer!.turnId)));
+
+    sends.length = 0;
+    route.notification.latestImages = { turnId: "turn-decision", count: 1, skipped: 0 };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sends).toHaveLength(2);
+    expect(sends[0]?.keyboard).toBeUndefined();
+    expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
   });
 
   it("treats terminal notification state as idle even if stale busy context remains", async () => {
