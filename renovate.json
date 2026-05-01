@@ -2,10 +2,10 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    ":semanticCommits",
-    ":prHourlyLimit2",
-    ":prConcurrentLimit5"
+    ":semanticCommits"
   ],
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 5,
   "dependencyDashboard": true,
   "labels": ["dependencies"],
   "schedule": ["before 9am on monday"],
