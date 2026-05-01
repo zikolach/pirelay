@@ -5,24 +5,19 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageFileLoadResult, LatestTurnImage, SessionRoute, SessionStatusSnapshot, SetupCache, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { ensureStateDir } from "./paths.js";
-import { formatModelId, sha256 } from "./utils.js";
+import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "./relay-core.js";
+import { sha256 } from "./utils.js";
 
-interface BrokerRouteState {
-  sessionKey: string;
-  sessionId: string;
-  sessionFile?: string;
-  sessionLabel: string;
-  binding?: TelegramBindingMetadata;
-  busy: boolean;
-  modelId?: string;
-  imageInputSupported?: boolean;
-  lastActivityAt?: number;
-  notification: SessionRoute["notification"];
-}
+const BROKER_PROTOCOL_VERSION = 1;
+const BROKER_CHANNEL = "telegram" as const;
+
+type BrokerRouteState = RelayRouteState;
 
 interface BrokerProtocolRequest {
   type: "request";
   requestId: string;
+  protocolVersion?: number;
+  channel?: typeof BROKER_CHANNEL;
   action: string;
   [key: string]: unknown;
 }
@@ -91,18 +86,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   getStatus(sessionKey: string): SessionStatusSnapshot | undefined {
     const route = this.routes.get(sessionKey);
     if (!route) return undefined;
-    return {
-      sessionKey: route.sessionKey,
-      sessionLabel: route.sessionLabel,
-      sessionId: route.sessionId,
-      sessionFile: route.sessionFile,
-      online: true,
-      busy: !route.actions.context.isIdle(),
-      modelId: formatModelId(route.actions.getModel()),
-      lastActivityAt: route.lastActivityAt,
-      binding: route.binding,
-      notification: route.notification,
-    };
+    return statusSnapshotForRoute(route, { online: true, busy: !route.actions.context.isIdle() });
   }
 
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
@@ -110,18 +94,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private serializeRoute(route: SessionRoute): BrokerRouteState {
-    return {
-      sessionKey: route.sessionKey,
-      sessionId: route.sessionId,
-      sessionFile: route.sessionFile,
-      sessionLabel: route.sessionLabel,
-      binding: route.binding,
-      busy: !route.actions.context.isIdle(),
-      modelId: formatModelId(route.actions.getModel()),
-      imageInputSupported: Boolean(route.actions.getModel()?.input?.includes("image")),
-      lastActivityAt: route.lastActivityAt,
-      notification: route.notification,
-    };
+    return relayRouteStateForRoute(route, { channel: BROKER_CHANNEL, busy: !route.actions.context.isIdle() });
   }
 
   private async ensureConnected(): Promise<void> {
@@ -301,7 +274,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }
 
     const requestId = randomUUID();
-    const message: BrokerProtocolRequest = { type: "request", requestId, action, ...payload };
+    const message: BrokerProtocolRequest = { ...payload, type: "request", requestId, protocolVersion: BROKER_PROTOCOL_VERSION, channel: BROKER_CHANNEL, action };
     const result = new Promise<unknown>((resolvePromise, rejectPromise) => {
       this.pending.set(requestId, { resolve: resolvePromise, reject: rejectPromise });
     });

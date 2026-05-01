@@ -90,9 +90,9 @@ class PairingQrScreen {
   }
 }
 
-function getCommandHelp(): string {
+function getCommandHelp(commandName = "telegram-tunnel"): string {
   return [
-    "Usage: /telegram-tunnel <subcommand>",
+    `Usage: /${commandName} <subcommand>`,
     "",
     "Subcommands:",
     "  setup       Validate the bot token and cache the bot username",
@@ -370,41 +370,48 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(lines.join("\n"), "info");
   }
 
-  pi.registerCommand("telegram-tunnel", {
-    description: "Manage Telegram pairing and remote control for the current Pi session",
-    getArgumentCompletions: (prefix) => {
-      const options = ["setup", "connect", "disconnect", "status"];
-      const filtered = options.filter((option) => option.startsWith(prefix));
-      return filtered.length > 0 ? filtered.map((value) => ({ value, label: value })) : null;
-    },
-    handler: async (args, ctx) => {
-      latestContext = ctx;
-      const trimmedArgs = args.trim();
-      const [subcommand, ...rest] = trimmedArgs.split(/\s+/);
-      const subcommandArgs = rest.join(" ").trim();
-      try {
-        switch ((subcommand || "").toLowerCase()) {
-          case "setup":
-            await handleSetup(ctx);
-            return;
-          case "connect":
-            await handleConnect(ctx, subcommandArgs);
-            return;
-          case "disconnect":
-            await handleDisconnect(ctx);
-            return;
-          case "status":
-            await handleStatus(ctx);
-            return;
-          default:
-            ctx.ui.notify(getCommandHelp(), "info");
+  type LocalRelayCommand = Parameters<ExtensionAPI["registerCommand"]>[1];
+
+  function createLocalRelayCommand(commandName: "telegram-tunnel" | "relay", description: string): LocalRelayCommand {
+    return {
+      description,
+      getArgumentCompletions: (prefix) => {
+        const options = ["setup", "connect", "disconnect", "status"];
+        const filtered = options.filter((option) => option.startsWith(prefix));
+        return filtered.length > 0 ? filtered.map((value) => ({ value, label: value })) : null;
+      },
+      handler: async (args, ctx) => {
+        latestContext = ctx;
+        const trimmedArgs = args.trim();
+        const [subcommand, ...rest] = trimmedArgs.split(/\s+/);
+        const subcommandArgs = rest.join(" ").trim();
+        try {
+          switch ((subcommand || "").toLowerCase()) {
+            case "setup":
+              await handleSetup(ctx);
+              return;
+            case "connect":
+              await handleConnect(ctx, subcommandArgs);
+              return;
+            case "disconnect":
+              await handleDisconnect(ctx);
+              return;
+            case "status":
+              await handleStatus(ctx);
+              return;
+            default:
+              ctx.ui.notify(getCommandHelp(commandName), "info");
+          }
+        } catch (error) {
+          const message = error instanceof ConfigError || error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(message, "error");
         }
-      } catch (error) {
-        const message = error instanceof ConfigError || error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(message, "error");
-      }
-    },
-  });
+      },
+    };
+  }
+
+  pi.registerCommand("telegram-tunnel", createLocalRelayCommand("telegram-tunnel", "Manage Telegram pairing and remote control for the current Pi session"));
+  pi.registerCommand("relay", createLocalRelayCommand("relay", "Manage relay pairing and remote control for the current Pi session"));
 
   pi.registerMessageRenderer(AUDIT_MESSAGE_TYPE, (message, _options, theme) => ({
     render(width: number) {

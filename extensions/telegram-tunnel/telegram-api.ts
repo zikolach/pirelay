@@ -131,10 +131,16 @@ export class TelegramApiClient {
 
   async sendMarkdownDocument(chatId: number, filename: string, text: string, caption?: string): Promise<void> {
     const redacted = redactSecret(text, this.config.redactionPatterns);
+    await this.sendDocumentData(chatId, filename, Buffer.from(redacted, "utf8"), caption);
+  }
+
+  async sendDocumentData(chatId: number, filename: string, data: Uint8Array, caption?: string): Promise<void> {
+    const redactedCaption = caption ? redactSecret(caption, this.config.redactionPatterns) : undefined;
+    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
     await this.withRetry(() => this.api.sendDocument(
       chatId,
-      new InputFile(Buffer.from(redacted, "utf8"), filename),
-      caption ? { caption } : undefined,
+      new InputFile(bytes, filename),
+      redactedCaption ? { caption: redactedCaption } : undefined,
     ));
   }
 
@@ -188,11 +194,12 @@ export class TelegramApiClient {
     ));
   }
 
-  async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
-    await this.withRetry(() => this.api.answerCallbackQuery(callbackQueryId, text ? { text } : undefined));
+  async answerCallbackQuery(callbackQueryId: string, text?: string, alert = false): Promise<void> {
+    const options = text || alert ? { text, show_alert: alert } : undefined;
+    await this.withRetry(() => this.api.answerCallbackQuery(callbackQueryId, options));
   }
 
-  async sendChatAction(chatId: number, action: "typing" = "typing"): Promise<void> {
+  async sendChatAction(chatId: number, action: "typing" | "upload_document" | "record_video" = "typing"): Promise<void> {
     await this.withRetry(() => this.api.sendChatAction(chatId, action));
   }
 
