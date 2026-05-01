@@ -308,7 +308,7 @@ When the chat view contains Markdown tables, PiRelay reformats them into aligned
 
 PiRelay uses one local authoritative broker per bot token so multiple active Pi sessions on the same machine can share one Telegram bot safely.
 
-Internally, PiRelay is moving toward channel adapters so Telegram-specific transport stays separate from session routing, authorization, output retrieval, and guided answer behavior. Telegram remains fully compatible; future adapters can plug into the same relay core. See [docs/adapters.md](docs/adapters.md) for the adapter boundaries.
+Internally, PiRelay is moving toward channel adapters and interaction middleware so Telegram-specific transport stays separate from reusable session routing, authorization, output retrieval, guided answer, media, redaction, progress, and future accessibility behavior. Telegram remains fully compatible; future adapters can plug into the same relay core. See [docs/adapters.md](docs/adapters.md) for the adapter and middleware boundaries.
 
 Pair sessions with short labels when useful:
 

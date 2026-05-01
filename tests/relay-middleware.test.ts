@@ -1,0 +1,101 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  createRelayPipeline,
+  redactForTrace,
+  relayPipelineProtocolVersion,
+  type RelayMiddleware,
+  type RelayPipelineContext,
+  type RelayPipelineEvent,
+} from "../extensions/telegram-tunnel/relay-middleware.js";
+
+function event(overrides: Partial<RelayPipelineEvent> = {}): RelayPipelineEvent {
+  return {
+    id: "event-1",
+    channel: "telegram",
+    phase: "inbound",
+    inbound: {
+      kind: "message",
+      channel: "telegram",
+      updateId: "1",
+      messageId: "2",
+      text: "hello",
+      attachments: [],
+      conversation: { channel: "telegram", id: "10", kind: "private" },
+      sender: { channel: "telegram", userId: "20" },
+    },
+    authorized: true,
+    adapter: { channel: "telegram", capabilities: { inlineButtons: true } },
+    ...overrides,
+  };
+}
+
+function context(): RelayPipelineContext {
+  return {
+    trace: [],
+    emitTrace(entry) {
+      this.trace.push(entry);
+    },
+  };
+}
+
+describe("relay middleware pipeline", () => {
+  it("exports a protocol version for broker envelopes", () => {
+    expect(relayPipelineProtocolVersion).toBe(1);
+  });
+
+  it("runs middleware in deterministic phase and ordering order", async () => {
+    const calls: string[] = [];
+    const middleware: RelayMiddleware[] = [
+      { id: "late", phases: ["intent"], order: 20, run: async () => { calls.push("late"); return { kind: "continue" }; } },
+      { id: "early", phases: ["inbound"], order: 10, run: async () => { calls.push("early"); return { kind: "continue" }; } },
+      { id: "middle", phases: ["intent"], order: 10, run: async () => { calls.push("middle"); return { kind: "continue" }; } },
+    ];
+
+    const result = await createRelayPipeline(middleware).run(event(), context());
+    expect(result.kind).toBe("continue");
+    expect(calls).toEqual(["early", "middle", "late"]);
+  });
+
+  it("returns prompt, channel response, internal action, and blocked results", async () => {
+    await expect(createRelayPipeline([{ id: "prompt", phases: ["delivery"], run: async () => ({ kind: "prompt", prompt: { content: "hi", safety: "safe" } }) }]).run(event(), context()))
+      .resolves.toMatchObject({ kind: "prompt", prompt: { content: "hi" } });
+    await expect(createRelayPipeline([{ id: "response", phases: ["outbound"], run: async () => ({ kind: "channel-response", response: { kind: "text", text: "ok", safety: "safe" } }) }]).run(event(), context()))
+      .resolves.toMatchObject({ kind: "channel-response", response: { text: "ok" } });
+    await expect(createRelayPipeline([{ id: "action", phases: ["intent"], run: async () => ({ kind: "internal-action", action: { type: "repeat-last", safety: "safe" } }) }]).run(event(), context()))
+      .resolves.toMatchObject({ kind: "internal-action", action: { type: "repeat-last" } });
+    await expect(createRelayPipeline([{ id: "blocked", phases: ["inbound"], run: async () => ({ kind: "blocked", reason: "nope", safety: "safe" }) }]).run(event(), context()))
+      .resolves.toMatchObject({ kind: "blocked", reason: "nope" });
+  });
+
+  it("blocks unsafe pre-authorization media middleware", async () => {
+    const mediaMiddleware: RelayMiddleware = {
+      id: "media-download",
+      phases: ["inbound"],
+      safety: "media-download",
+      requiresAuthorization: true,
+      run: vi.fn(async () => ({ kind: "continue" as const })),
+    };
+
+    const result = await createRelayPipeline([mediaMiddleware]).run(event({ authorized: false }), context());
+    expect(result).toMatchObject({ kind: "blocked", reason: "authorization-required" });
+    expect(mediaMiddleware.run).not.toHaveBeenCalled();
+  });
+
+  it("continues after recoverable failures and stops on fatal failures", async () => {
+    const recoverable = createRelayPipeline([
+      { id: "recoverable", phases: ["inbound"], failure: "recoverable", run: async () => { throw new Error("secret token"); } },
+      { id: "next", phases: ["intent"], run: async () => ({ kind: "channel-response", response: { kind: "text", text: "ok", safety: "safe" } }) },
+    ]);
+    await expect(recoverable.run(event(), context())).resolves.toMatchObject({ kind: "channel-response" });
+
+    const fatal = createRelayPipeline([
+      { id: "fatal", phases: ["inbound"], failure: "fatal", run: async () => { throw new Error("boom"); } },
+      { id: "never", phases: ["intent"], run: async () => ({ kind: "continue" }) },
+    ]);
+    await expect(fatal.run(event(), context())).resolves.toMatchObject({ kind: "error", middlewareId: "fatal" });
+  });
+
+  it("redacts trace data", () => {
+    expect(redactForTrace("bot token=abc123 should hide")).toBe("bot [redacted] should hide");
+  });
+});
