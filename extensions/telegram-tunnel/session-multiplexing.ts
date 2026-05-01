@@ -32,7 +32,9 @@ export interface BoundSessionIdentity {
   };
 }
 
-const SESSION_MARKERS = ["🟦", "🟩", "🟧", "🟪", "🟨", "🟥", "⬜", "⬛"];
+const BASE_SESSION_MARKERS = ["🟦", "🟩", "🟧", "🟪", "🟨", "🟥", "⬜", "⬛"];
+const EXTRA_SESSION_MARKERS = ["🔵", "🟢", "🟠", "🟣", "🟡", "🔴", "⚪", "⚫"];
+const SESSION_MARKERS = [...BASE_SESSION_MARKERS, ...EXTRA_SESSION_MARKERS];
 
 function stableHash(value: string): number {
   let hash = 2166136261;
@@ -49,7 +51,36 @@ export function shortSessionId(entry: Pick<SessionListEntry, "sessionId" | "sess
 
 export function sessionMarkerFor(entry: Pick<SessionListEntry, "sessionKey" | "sessionId">): string {
   const identity = entry.sessionKey || entry.sessionId;
-  return SESSION_MARKERS[stableHash(identity) % SESSION_MARKERS.length]!;
+  return BASE_SESSION_MARKERS[stableHash(identity) % BASE_SESSION_MARKERS.length]!;
+}
+
+function sessionMarkerIdentity(entry: Pick<SessionListEntry, "sessionKey" | "sessionId">): string {
+  return entry.sessionKey || entry.sessionId;
+}
+
+export function sessionMarkersFor(entries: Array<Pick<SessionListEntry, "sessionKey" | "sessionId">>): Map<string, string> {
+  const assignments = new Map<string, string>();
+  const used = new Set<string>();
+
+  for (const entry of entries) {
+    const identity = sessionMarkerIdentity(entry);
+    if (assignments.has(identity)) continue;
+
+    const preferredIndex = stableHash(identity) % BASE_SESSION_MARKERS.length;
+    let marker = SESSION_MARKERS[preferredIndex]!;
+    for (let offset = 0; offset < SESSION_MARKERS.length; offset += 1) {
+      const candidate = SESSION_MARKERS[(preferredIndex + offset) % SESSION_MARKERS.length]!;
+      if (!used.has(candidate)) {
+        marker = candidate;
+        break;
+      }
+    }
+
+    assignments.set(identity, marker);
+    used.add(marker);
+  }
+
+  return assignments;
 }
 
 export function hasMultipleBoundSessionsForRoute(route: BoundSessionIdentity, candidates: Iterable<BoundSessionIdentity>): boolean {
@@ -64,7 +95,11 @@ export function hasMultipleBoundSessionsForRoute(route: BoundSessionIdentity, ca
 }
 
 export function sessionSourcePrefixForRoute(route: BoundSessionIdentity, candidates: Iterable<BoundSessionIdentity>): string {
-  return hasMultipleBoundSessionsForRoute(route, candidates) ? `${sessionMarkerFor(route)} ${route.sessionLabel}\n\n` : "";
+  if (!route.binding) return "";
+  const peers = [...candidates].filter((candidate) => candidate.binding?.chatId === route.binding?.chatId && candidate.binding?.userId === route.binding?.userId);
+  if (peers.length <= 1) return "";
+  const marker = sessionMarkersFor(peers).get(sessionMarkerIdentity(route)) ?? sessionMarkerFor(route);
+  return `${marker} ${route.sessionLabel}\n\n`;
 }
 
 function normalizeSelector(value: string): string {
@@ -96,15 +131,16 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
   }
 
   const duplicates = duplicateSessionLabels(entries);
+  const markers = sessionMarkersFor(entries);
   const lines = ["Pi sessions", ""];
   entries.forEach((entry, index) => {
     const active = entry.sessionKey === activeSessionKey ? " — active" : "";
     const state = entry.online ? "online" : "offline";
     const activity = entry.online ? ` — ${entry.busy ? "busy" : "idle"}` : "";
     const paused = entry.paused ? " — paused" : "";
-    lines.push(`${index + 1}. ${sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)} — ${state}${activity}${paused}${active}`);
+    lines.push(`${index + 1}. ${markers.get(sessionMarkerIdentity(entry)) ?? sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)} — ${state}${activity}${paused}${active}`);
   });
-  lines.push("", "Use /use <number|label> to switch, or /to <session> <prompt> for a one-shot prompt.");
+  lines.push("", "Use /use <number|label> to switch, /to <session> <prompt> for a one-shot prompt, or /forget <session> to remove an offline session.");
   return lines.join("\n");
 }
 
