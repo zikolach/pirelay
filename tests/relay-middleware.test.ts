@@ -47,7 +47,7 @@ describe("relay middleware pipeline", () => {
     expect(relayPipelineProtocolVersion).toBe(1);
   });
 
-  it("runs middleware in deterministic phase and ordering order", async () => {
+  it("runs middleware in deterministic phase order", async () => {
     const calls: string[] = [];
     const middleware: RelayMiddleware[] = [
       { id: "late", phases: ["intent"], order: 20, run: async () => { calls.push("late"); return { kind: "continue" }; } },
@@ -58,6 +58,13 @@ describe("relay middleware pipeline", () => {
     const result = await createRelayPipeline(middleware).run(event(), context());
     expect(result.kind).toBe("continue");
     expect(calls).toEqual(["early", "middle", "late"]);
+  });
+
+  it("rejects duplicate middleware ids", () => {
+    expect(() => createRelayPipeline([
+      { id: "duplicate", phases: ["inbound"], run: async () => ({ kind: "continue" }) },
+      { id: "duplicate", phases: ["intent"], run: async () => ({ kind: "continue" }) },
+    ])).toThrow("Duplicate middleware id: duplicate");
   });
 
   it("honors before ordering constraints regardless of input order", async () => {

@@ -129,13 +129,15 @@ export function telegramMediaMiddleware(): RelayMiddleware {
   };
 }
 
+const telegramIngressPipeline = createRelayPipeline([
+  telegramMediaMiddleware(),
+  telegramCommandMiddleware(),
+  telegramActionMiddleware(),
+]);
+
 export async function runTelegramIngressPipeline(update: TelegramInboundUpdate, options: TelegramRelayEventOptions): Promise<TelegramIngressPipelineResult> {
   const event = createTelegramRelayEvent(update, options);
-  const result = await createRelayPipeline([
-    telegramMediaMiddleware(),
-    telegramCommandMiddleware(),
-    telegramActionMiddleware(),
-  ]).run(event);
+  const result = await telegramIngressPipeline.run(event);
   return { event: result.event ?? event, result };
 }
 

@@ -196,7 +196,11 @@ export function createRelayPipelineContext(): RelayPipelineContext {
 }
 
 export function orderMiddleware(middleware: RelayMiddleware[]): RelayMiddleware[] {
-  const byId = new Map(middleware.map((item) => [item.id, item]));
+  const byId = new Map<string, RelayMiddleware>();
+  for (const item of middleware) {
+    if (byId.has(item.id)) throw new Error(`Duplicate middleware id: ${item.id}`);
+    byId.set(item.id, item);
+  }
   const dependencies = new Map<string, Set<string>>();
   for (const item of middleware) {
     const itemDependencies = dependencies.get(item.id) ?? new Set<string>();
