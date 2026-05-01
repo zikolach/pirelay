@@ -50,6 +50,11 @@ describe("telegram relay middleware bridge", () => {
     expect(telegramActionFromPipelineResult(result)).toMatchObject({ kind: "full-chat", turnId: "turn-1" });
   });
 
+  it("keeps unauthorized command parsing available before media download", async () => {
+    const result = await createRelayPipeline([telegramMediaMiddleware(), telegramCommandMiddleware()]).run(createTelegramRelayEvent(message, { authorized: false }));
+    expect(result).toMatchObject({ kind: "continue", intent: { type: "command", command: "status" } });
+  });
+
   it("annotates media before download while preserving authorization boundary", async () => {
     const withMedia: TelegramInboundMessage = {
       ...message,

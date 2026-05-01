@@ -60,6 +60,17 @@ describe("relay middleware pipeline", () => {
     expect(calls).toEqual(["early", "middle", "late"]);
   });
 
+  it("honors before ordering constraints regardless of input order", async () => {
+    const calls: string[] = [];
+    const middleware: RelayMiddleware[] = [
+      { id: "target", phases: ["intent"], order: 1, run: async () => { calls.push("target"); return { kind: "continue" }; } },
+      { id: "source", phases: ["intent"], order: 99, ordering: { before: ["target"] }, run: async () => { calls.push("source"); return { kind: "continue" }; } },
+    ];
+
+    await createRelayPipeline(middleware).run(event(), context());
+    expect(calls).toEqual(["source", "target"]);
+  });
+
   it("returns prompt, channel response, internal action, and blocked results", async () => {
     await expect(createRelayPipeline([{ id: "prompt", phases: ["delivery"], run: async () => ({ kind: "prompt", prompt: { content: "hi", safety: "safe" } }) }]).run(event(), context()))
       .resolves.toMatchObject({ kind: "prompt", prompt: { content: "hi" } });

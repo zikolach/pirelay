@@ -48,6 +48,8 @@ if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
 }
 
+const BROKER_PROTOCOL_VERSION = 1;
+
 const api = new Api(config.botToken);
 const clients = new Map();
 const routes = new Map();
@@ -473,7 +475,7 @@ function requestClient(route, action, payload = {}) {
       ...payload,
       type: 'request',
       requestId,
-      protocolVersion: 1,
+      protocolVersion: BROKER_PROTOCOL_VERSION,
       channel,
       action,
       sessionKey: route.sessionKey,

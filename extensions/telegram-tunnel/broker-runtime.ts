@@ -185,8 +185,13 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     };
 
     try {
-      if (typeof request.protocolVersion === "number" && request.protocolVersion !== relayPipelineProtocolVersion) {
+      if (typeof request.protocolVersion === "number" && request.protocolVersion !== BROKER_PROTOCOL_VERSION) {
         await respond({ ok: false, error: `Unsupported broker protocol version: ${request.protocolVersion}` });
+        return;
+      }
+      const pipeline = request.pipeline as { protocolVersion?: unknown } | undefined;
+      if (typeof pipeline?.protocolVersion === "number" && pipeline.protocolVersion !== relayPipelineProtocolVersion) {
+        await respond({ ok: false, error: `Unsupported relay pipeline protocol version: ${pipeline.protocolVersion}` });
         return;
       }
 

@@ -114,8 +114,6 @@ export function telegramMediaMiddleware(): RelayMiddleware {
     id: "telegram-media-metadata",
     phases: ["inbound"],
     order: 10,
-    safety: "media-download",
-    requiresAuthorization: true,
     run: async (event) => {
       if (!isMessageEvent(event.inbound) || event.inbound.attachments.length === 0) return { kind: "continue", event };
       const media: RelayMediaReference[] = event.inbound.attachments.map((attachment) => ({

@@ -197,6 +197,18 @@ export function createRelayPipelineContext(): RelayPipelineContext {
 
 export function orderMiddleware(middleware: RelayMiddleware[]): RelayMiddleware[] {
   const byId = new Map(middleware.map((item) => [item.id, item]));
+  const dependencies = new Map<string, Set<string>>();
+  for (const item of middleware) {
+    const itemDependencies = dependencies.get(item.id) ?? new Set<string>();
+    for (const dependency of item.ordering?.after ?? []) itemDependencies.add(dependency);
+    dependencies.set(item.id, itemDependencies);
+    for (const target of item.ordering?.before ?? []) {
+      const targetDependencies = dependencies.get(target) ?? new Set<string>();
+      targetDependencies.add(item.id);
+      dependencies.set(target, targetDependencies);
+    }
+  }
+
   const visited = new Set<string>();
   const visiting = new Set<string>();
   const result: RelayMiddleware[] = [];
@@ -206,15 +218,9 @@ export function orderMiddleware(middleware: RelayMiddleware[]): RelayMiddleware[
     if (visited.has(item.id)) return;
     if (visiting.has(item.id)) throw new Error(`Middleware ordering cycle at ${item.id}.`);
     visiting.add(item.id);
-    for (const dependency of item.ordering?.after ?? []) {
+    for (const dependency of dependencies.get(item.id) ?? []) {
       const dependencyItem = byId.get(dependency);
       if (dependencyItem) visit(dependencyItem);
-    }
-    for (const [candidateId, candidate] of byId.entries()) {
-      if (candidate.ordering?.before?.includes(item.id)) visit(candidate);
-      if (item.ordering?.before?.includes(candidateId)) {
-        // handled by the candidate's implicit after relationship when candidate is visited
-      }
     }
     visiting.delete(item.id);
     visited.add(item.id);
