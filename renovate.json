@@ -22,6 +22,11 @@
       "enabled": false
     },
     {
+      "description": "Show Node runtime and workflow updates in the dashboard before opening PRs.",
+      "matchDatasources": ["node-version"],
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": "Group safe development tooling updates and automerge them after CI passes.",
       "groupName": "dev tooling",
       "matchDepTypes": ["devDependencies"],
