@@ -41,6 +41,7 @@ import type {
   TunnelRuntime,
   TelegramUserSummary,
 } from "./types.js";
+import { sessionMarkerFor } from "./session-multiplexing.js";
 import {
   buildImagePromptContent,
   createTurnId,
@@ -1210,7 +1211,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private sourcePrefixForRoute(route: SessionRoute): string {
-    return this.hasMultipleLiveSessionsForRoute(route) ? `Session ${route.sessionLabel}\n\n` : "";
+    return this.hasMultipleLiveSessionsForRoute(route) ? `${sessionMarkerFor(route)} ${route.sessionLabel}\n\n` : "";
   }
 
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {

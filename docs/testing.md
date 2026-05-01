@@ -78,7 +78,7 @@ Check:
 
 1. Pair one Pi session with `/telegram-tunnel connect docs`.
 2. Pair a second Pi session to the same Telegram chat with `/telegram-tunnel connect api`.
-3. Use `/sessions` and verify the list shows numbers, labels, active marker, online/offline state, and idle/busy state.
+3. Use `/sessions` and verify the list shows numbers, stable visual markers, labels, active marker, online/offline state, and idle/busy state.
 4. Use `/use <number|label>` in Telegram and verify ordinary prompts route to the selected active session.
 5. Use `/to <session> <prompt>` and verify the prompt reaches the target session without changing the active session.
 6. Pair two sessions with the same label and verify `/use <label>` asks for numeric disambiguation.

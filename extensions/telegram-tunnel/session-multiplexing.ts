@@ -22,8 +22,24 @@ export interface SessionTargetResolution {
   result: SessionSelectorResult;
 }
 
+const SESSION_MARKERS = ["🟦", "🟩", "🟧", "🟪", "🟨", "🟥", "⬜", "⬛"];
+
+function stableHash(value: string): number {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
 export function shortSessionId(entry: Pick<SessionListEntry, "sessionId" | "sessionKey">): string {
   return (entry.sessionId || entry.sessionKey).slice(0, 8);
+}
+
+export function sessionMarkerFor(entry: Pick<SessionListEntry, "sessionKey" | "sessionId">): string {
+  const identity = entry.sessionKey || entry.sessionId;
+  return SESSION_MARKERS[stableHash(identity) % SESSION_MARKERS.length]!;
 }
 
 function normalizeSelector(value: string): string {
@@ -61,7 +77,7 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
     const state = entry.online ? "online" : "offline";
     const activity = entry.online ? ` — ${entry.busy ? "busy" : "idle"}` : "";
     const paused = entry.paused ? " — paused" : "";
-    lines.push(`${index + 1}. ${disambiguatedSessionLabel(entry, duplicates)} — ${state}${activity}${paused}${active}`);
+    lines.push(`${index + 1}. ${sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)} — ${state}${activity}${paused}${active}`);
   });
   lines.push("", "Use /use <number|label> to switch, or /to <session> <prompt> for a one-shot prompt.");
   return lines.join("\n");

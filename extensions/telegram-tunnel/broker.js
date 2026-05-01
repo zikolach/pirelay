@@ -33,6 +33,7 @@ import {
   formatSessionList,
   resolveSessionSelector,
   resolveSessionTargetArgs,
+  sessionMarkerFor,
 } from './session-multiplexing.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
@@ -410,7 +411,7 @@ function chatHasMultipleLiveSessions(chatId, userId) {
 
 function sourcePrefixForRoute(route) {
   if (!route?.binding) return '';
-  return chatHasMultipleLiveSessions(route.binding.chatId, route.binding.userId) ? `Session ${route.sessionLabel}\n\n` : '';
+  return chatHasMultipleLiveSessions(route.binding.chatId, route.binding.userId) ? `${sessionMarkerFor(route)} ${route.sessionLabel}\n\n` : '';
 }
 
 async function resolveRouteForChat(chatId, userId) {

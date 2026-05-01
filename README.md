@@ -316,11 +316,11 @@ Pair sessions with short labels when useful:
 When no label is provided, PiRelay uses the Pi session name when available, then the project folder name, then the session file basename, then a short session id fallback.
 
 If one Telegram chat is paired to multiple sessions:
-- use `/sessions` to list numbered sessions with labels, active marker, online/offline state, and idle/busy state
+- use `/sessions` to list numbered sessions with stable visual markers, labels, active marker, online/offline state, and idle/busy state
 - use `/use <number|label>` to pick the active target
 - use `/to <session> <prompt>` for a one-shot prompt without changing the active session; quote labels that contain spaces, for example `/to "docs team" run tests`
 
-Duplicate labels are allowed; `/sessions` adds short identifiers when needed and numeric selection always works. Ordinary prompts are not guessed when multiple live sessions exist without a selected active session.
+Duplicate labels are allowed; `/sessions` adds short identifiers when needed and numeric selection always works. Lightweight markers such as `🟦` or `🟩` are derived from stable session identity so multi-session notifications are easier to distinguish without storing extra state. Ordinary prompts are not guessed when multiple live sessions exist without a selected active session.
 
 This avoids Telegram polling conflicts and keeps routing explicit. Multiple independent brokers on different machines must not poll the same bot token concurrently; a laptop-plus-cloud shared-chat setup would require a future relay hub architecture.
 

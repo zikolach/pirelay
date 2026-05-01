@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
 
 const tempDirs: string[] = [];
 
@@ -43,9 +43,9 @@ describe("telegram utils", () => {
     ];
 
     const list = formatSessionList(entries, entries[0]!.sessionKey);
-    expect(list).toContain("1. api [abcdef11] — online — idle — active");
-    expect(list).toContain("2. api [bcdefa22] — online — busy");
-    expect(list).toContain("3. docs — offline");
+    expect(list).toContain(`1. ${sessionMarkerFor(entries[0]!)} api [abcdef11] — online — idle — active`);
+    expect(list).toContain(`2. ${sessionMarkerFor(entries[1]!)} api [bcdefa22] — online — busy`);
+    expect(list).toContain(`3. ${sessionMarkerFor(entries[2]!)} docs — offline`);
 
     expect(resolveSessionSelector(entries, "1")).toMatchObject({ kind: "matched", index: 0 });
     expect(resolveSessionSelector(entries, "docs")).toMatchObject({ kind: "offline", index: 2 });
@@ -53,6 +53,12 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector(entries, "abcdef")).toMatchObject({ kind: "matched", index: 0 });
     expect(resolveSessionSelector(entries, "missing")).toMatchObject({ kind: "no-match" });
     expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("assigns stable lightweight markers from session identity", () => {
+    const entry = { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "api", online: true };
+    expect(sessionMarkerFor(entry)).toBe(sessionMarkerFor({ sessionKey: entry.sessionKey, sessionId: entry.sessionId }));
+    expect(sessionMarkerFor(entry)).toMatch(/^./u);
   });
 
   it("distinguishes missing and unmatched session selectors", () => {
