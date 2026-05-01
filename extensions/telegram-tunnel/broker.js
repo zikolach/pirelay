@@ -1,49 +1,77 @@
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
+import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
-import {
-  advanceGuidedAnswerFlow,
-  buildChoiceInjection,
-  buildFreeTextChoiceInjection,
-  classifyAnswerIntent,
-  isGuidedAnswerStart,
-  isGuidedAnswerCancel,
-  matchChoiceOption,
-  renderGuidedAnswerPrompt,
-  startGuidedAnswerFlow,
-  summarizeTailForTelegram,
-} from './answer-workflow.ts';
-import {
-  buildAnswerAmbiguityKeyboard,
-  buildAnswerActionKeyboard,
-  buildFullOutputKeyboard,
-  buildLatestImagesKeyboard,
-  parseTelegramActionCallbackData,
-  shouldOfferFullOutputActions,
-} from './telegram-actions.ts';
-import { formatTelegramChatText } from './telegram-format.ts';
-import {
-  base64ByteLength,
-  buildImagePromptContent,
-  isAllowedImageMimeType,
-  normalizeImageMimeType,
-  safeTelegramImageFilename,
-} from './utils.ts';
-import {
-  formatSessionList,
-  resolveSessionSelector,
-  resolveSessionTargetArgs,
-  sessionSourcePrefixForRoute,
-} from './session-multiplexing.ts';
-import {
-  commandIntentFromPipeline,
-  runTelegramIngressPipeline,
-  telegramActionFromPipelineResult,
-} from './relay-telegram-middleware.ts';
-import { relayPipelineProtocolVersion } from './relay-middleware.ts';
+
+const jiti = createJiti(import.meta.url);
+const [
+  answerWorkflowModule,
+  telegramActionsModule,
+  telegramFormatModule,
+  utilsModule,
+  sessionMultiplexingModule,
+  relayTelegramMiddlewareModule,
+  relayMiddlewareModule,
+] = await Promise.all([
+  jiti.import('./answer-workflow.ts'),
+  jiti.import('./telegram-actions.ts'),
+  jiti.import('./telegram-format.ts'),
+  jiti.import('./utils.ts'),
+  jiti.import('./session-multiplexing.ts'),
+  jiti.import('./relay-telegram-middleware.ts'),
+  jiti.import('./relay-middleware.ts'),
+]);
+
+function requiredFunction(module, modulePath, exportName) {
+  const value = module?.[exportName];
+  if (typeof value !== 'function') {
+    throw new Error(`Broker startup failed: ${modulePath} missing function export ${exportName}.`);
+  }
+  return value;
+}
+
+function requiredNumber(module, modulePath, exportName) {
+  const value = module?.[exportName];
+  if (typeof value !== 'number') {
+    throw new Error(`Broker startup failed: ${modulePath} missing number export ${exportName}.`);
+  }
+  return value;
+}
+
+const advanceGuidedAnswerFlow = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'advanceGuidedAnswerFlow');
+const buildChoiceInjection = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'buildChoiceInjection');
+const buildFreeTextChoiceInjection = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'buildFreeTextChoiceInjection');
+const classifyAnswerIntent = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'classifyAnswerIntent');
+const isGuidedAnswerStart = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'isGuidedAnswerStart');
+const isGuidedAnswerCancel = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'isGuidedAnswerCancel');
+const matchChoiceOption = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'matchChoiceOption');
+const renderGuidedAnswerPrompt = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'renderGuidedAnswerPrompt');
+const startGuidedAnswerFlow = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'startGuidedAnswerFlow');
+const summarizeTailForTelegram = requiredFunction(answerWorkflowModule, './answer-workflow.ts', 'summarizeTailForTelegram');
+const buildAnswerAmbiguityKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildAnswerAmbiguityKeyboard');
+const buildAnswerActionKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildAnswerActionKeyboard');
+const buildFullOutputKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildFullOutputKeyboard');
+const buildLatestImagesKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildLatestImagesKeyboard');
+const parseTelegramActionCallbackData = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'parseTelegramActionCallbackData');
+const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
+const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
+const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
+const buildImagePromptContent = requiredFunction(utilsModule, './utils.ts', 'buildImagePromptContent');
+const isAllowedImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAllowedImageMimeType');
+const normalizeImageMimeType = requiredFunction(utilsModule, './utils.ts', 'normalizeImageMimeType');
+const safeTelegramImageFilename = requiredFunction(utilsModule, './utils.ts', 'safeTelegramImageFilename');
+const formatSessionList = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'formatSessionList');
+const resolveSessionSelector = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionSelector');
+const resolveSessionTargetArgs = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionTargetArgs');
+const sessionSourcePrefixForRoute = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionSourcePrefixForRoute');
+const commandIntentFromPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'commandIntentFromPipeline');
+const runTelegramIngressPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'runTelegramIngressPipeline');
+const telegramActionFromPipelineResult = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'telegramActionFromPipelineResult');
+const relayPipelineProtocolVersion = requiredNumber(relayMiddlewareModule, './relay-middleware.ts', 'relayPipelineProtocolVersion');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
+const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
 }
@@ -1820,7 +1848,7 @@ const server = net.createServer((socket) => {
 
 server.listen(socketPath, async () => {
   await ensureSetup().catch(() => undefined);
-  void pollLoop();
+  if (!skipPolling) void pollLoop();
 });
 
 const shutdown = async () => {
