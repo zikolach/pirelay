@@ -641,6 +641,43 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     await this.handleAuthorizedMessage(route, message);
   }
 
+  private async resolveCallbackRoute(
+    callback: TelegramInboundCallback,
+    action: NonNullable<ReturnType<typeof parseTelegramActionCallbackData>>,
+  ): Promise<SessionRoute | undefined> {
+    if (action.kind === "dashboard" && /^i\d+$/.test(action.sessionRef)) {
+      const entries = this.sessionEntriesForChat(callback.chat.id, callback.user.id);
+      const index = Number(action.sessionRef.slice(1)) - 1;
+      const entry = entries[index];
+      if (!entry) {
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "This dashboard is stale.");
+        await this.api.sendPlainText(callback.chat.id, "That session dashboard is stale. Use /sessions for the latest list.");
+        return undefined;
+      }
+      const route = entry.online ? this.routes.get(entry.sessionKey) : undefined;
+      if (!route) {
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
+        await this.api.sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
+        return undefined;
+      }
+      return route;
+    }
+
+    const persisted = await this.store.getBindingByChatId(callback.chat.id);
+    if (!persisted || persisted.status === "revoked") {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "This chat is not paired.");
+      return undefined;
+    }
+
+    const route = this.routes.get(persisted.sessionKey);
+    if (!route) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
+      await this.api.sendPlainText(callback.chat.id, `The paired Pi session (${persisted.sessionLabel}) is currently offline. Resume it locally, then try again.`);
+      return undefined;
+    }
+    return route;
+  }
+
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
     const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config: this.config });
     const action = telegramActionFromPipelineResult(initialPipeline.result) ?? parseTelegramActionCallbackData(callback.data);
@@ -649,18 +686,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const persisted = await this.store.getBindingByChatId(callback.chat.id);
-    if (!persisted || persisted.status === "revoked") {
-      await this.api.answerCallbackQuery(callback.callbackQueryId, "This chat is not paired.");
-      return;
-    }
-
-    const route = this.routes.get(persisted.sessionKey);
-    if (!route) {
-      await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
-      await this.api.sendPlainText(callback.chat.id, `The paired Pi session (${persisted.sessionLabel}) is currently offline. Resume it locally, then try again.`);
-      return;
-    }
+    const route = await this.resolveCallbackRoute(callback, action);
+    if (!route) return;
 
     if (!route.binding || !(await this.isAuthorized(route, callback.user))) {
       await this.api.answerCallbackQuery(callback.callbackQueryId, "Unauthorized.");

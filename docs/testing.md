@@ -83,7 +83,7 @@ Check:
 5. Use `/to <session> <prompt>` and verify the prompt reaches the target session without changing the active session.
 6. Pair two sessions with the same label and verify `/use <label>` asks for numeric disambiguation.
 7. Disconnect one session locally and verify `/use <number>` reports it as offline while the remaining session still works.
-8. Set `/alias docs phone` and verify `/sessions` and selectors use the alias while retaining the original label for disambiguation.
+8. Use `/use docs`, then set `/alias phone`, and verify `/sessions` and selectors use the alias while retaining the original label for disambiguation.
 9. Use `/progress quiet`, `/progress verbose`, and `/recent` during a run and verify safe progress noise changes without suppressing terminal completion/failure/abort notifications.
 10. Reconnect the disconnected session and verify local prompts still work there too.
 

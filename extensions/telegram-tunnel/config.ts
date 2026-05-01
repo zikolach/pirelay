@@ -150,9 +150,8 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   const allowedImageMimeTypes = parseStringList(process.env.PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES)
     ?? fileConfig?.allowedImageMimeTypes
     ?? ["image/jpeg", "image/png", "image/webp"];
-  const progressMode = normalizeProgressMode(process.env.PI_TELEGRAM_TUNNEL_PROGRESS_MODE)
-    ?? fileConfig?.progressMode
-    ?? DEFAULT_PROGRESS_MODE;
+  const rawProgressMode = process.env.PI_TELEGRAM_TUNNEL_PROGRESS_MODE ?? fileConfig?.progressMode;
+  const progressMode = rawProgressMode === undefined ? DEFAULT_PROGRESS_MODE : normalizeProgressMode(rawProgressMode);
   const progressIntervalMs = parseNumber(
     process.env.PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS,
     fileConfig?.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS,

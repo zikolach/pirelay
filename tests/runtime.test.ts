@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
 import { createProgressActivity } from "../extensions/telegram-tunnel/progress.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
@@ -1110,6 +1110,61 @@ describe("InProcessTunnelRuntime", () => {
     expect(images).toEqual(["preview.png", "preview.png"]);
     expect(callbacks).toEqual(["This action is no longer current.", "Sending image outputs."]);
     expect(sent).toContain("That image action belongs to an older Pi output. Use the latest buttons or /images.");
+  });
+
+  it("routes session-list dashboard callbacks to the selected session", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-dash-1:/tmp/session-dash-1.jsonl",
+      sessionId: "session-dash-1",
+      sessionFile: "/tmp/session-dash-1.jsonl",
+      sessionLabel: "first.jsonl",
+      chatId: 1008,
+      userId: 28,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-dash-2:/tmp/session-dash-2.jsonl",
+      sessionId: "session-dash-2",
+      sessionFile: "/tmp/session-dash-2.jsonl",
+      sessionLabel: "second.jsonl",
+      alias: "second-phone",
+      chatId: 1008,
+      userId: 28,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true).route;
+    const second = createRoute(secondBinding, true).route;
+    second.notification.recentActivity = [createProgressActivity({ id: "p2", kind: "tool", text: "Second route activity", at: Date.now() }, config)!];
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    (runtime as any).routes.set(first.sessionKey, first);
+    (runtime as any).routes.set(second.sessionKey, second);
+    const sent: string[] = [];
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processCallback({
+      kind: "callback",
+      updateId: 30,
+      callbackQueryId: "dash-i2",
+      messageId: 30,
+      data: buildDashboardCallbackData("i2", "recent"),
+      chat: { id: 1008, type: "private" },
+      user: { id: 28, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Showing recent activity."]);
+    expect(sent.join("\n")).toContain("Second route activity");
   });
 
   it("coalesces rate-limited progress updates and respects quiet mode", async () => {
