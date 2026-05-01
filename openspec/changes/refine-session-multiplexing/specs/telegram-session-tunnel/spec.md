@@ -24,11 +24,16 @@ The system SHALL present a compact list of paired sessions for an authorized Tel
 
 #### Scenario: User lists sessions
 - **WHEN** an authorized Telegram user invokes `/sessions`
-- **THEN** the system lists paired sessions with number, label, active marker, online/offline state, idle/busy state when online, and enough disambiguation for duplicate labels
+- **THEN** the system lists paired sessions with number, stable lightweight visual marker, label, active marker, online/offline state, idle/busy state when online, and enough disambiguation for duplicate labels
 
 #### Scenario: Duplicate labels exist
 - **WHEN** multiple paired sessions have the same display label
 - **THEN** the system keeps numeric selection unambiguous and includes short session identifiers or other safe disambiguators in the list
+
+#### Scenario: Session identity markers are stable
+- **WHEN** paired sessions are shown in `/sessions`
+- **THEN** each session has a deterministic lightweight visual marker derived from its stable identity
+- **AND** the marker remains stable across route refreshes without being persisted as state
 
 #### Scenario: No sessions exist
 - **WHEN** an authorized Telegram user invokes `/sessions` and no active or persisted bindings exist for that chat/user
@@ -73,7 +78,7 @@ The system SHALL identify the source session in Telegram notifications when a ch
 
 #### Scenario: Multiple sessions are paired to chat
 - **WHEN** a completion, failure, abort, image-availability, or progress notification is sent to a chat that has multiple paired sessions
-- **THEN** the notification includes the originating session label
+- **THEN** the notification includes the originating session marker and label
 
 #### Scenario: Only one session is paired to chat
 - **WHEN** a notification is sent to a chat with only one paired session
