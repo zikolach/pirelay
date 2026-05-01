@@ -397,13 +397,19 @@ async function getSessionEntriesForChat(chatId, userId) {
   ];
 }
 
-async function chatHasMultipleSessions(chatId, userId) {
-  return (await getSessionEntriesForChat(chatId, userId)).length > 1;
+function chatHasMultipleLiveSessions(chatId, userId) {
+  let count = 0;
+  for (const route of routes.values()) {
+    if (route.binding?.chatId !== chatId || route.binding?.userId !== userId) continue;
+    count += 1;
+    if (count > 1) return true;
+  }
+  return false;
 }
 
-async function sourcePrefixForRoute(route) {
+function sourcePrefixForRoute(route) {
   if (!route?.binding) return '';
-  return await chatHasMultipleSessions(route.binding.chatId, route.binding.userId) ? `Session ${route.sessionLabel}\n\n` : '';
+  return chatHasMultipleLiveSessions(route.binding.chatId, route.binding.userId) ? `Session ${route.sessionLabel}\n\n` : '';
 }
 
 async function resolveRouteForChat(chatId, userId) {
@@ -799,13 +805,22 @@ async function handleSessionsCommand(message) {
 }
 
 async function handleUseCommand(message, args) {
-  const { result, route } = await resolveRouteSelectorForChat(message.chat.id, message.user.id, args);
+  const selector = String(args || '').trim();
+  if (!selector) {
+    await sendPlainText(message.chat.id, 'Usage: /use <number|label>. Use /sessions to list available sessions.');
+    return;
+  }
+  const { result, route } = await resolveRouteSelectorForChat(message.chat.id, message.user.id, selector);
   if (result.kind === 'empty') {
     await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
     return;
   }
   if (result.kind === 'missing') {
     await sendPlainText(message.chat.id, 'Usage: /use <number|label>. Use /sessions to list available sessions.');
+    return;
+  }
+  if (result.kind === 'no-match') {
+    await sendPlainText(message.chat.id, 'No matching session found. Use /sessions to list available sessions.');
     return;
   }
   if (result.kind === 'ambiguous') {
@@ -843,6 +858,10 @@ async function handleToCommand(message, args) {
     return;
   }
   if (result.kind === 'missing') {
+    await sendPlainText(message.chat.id, 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.');
+    return;
+  }
+  if (result.kind === 'no-match') {
     await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
     return;
   }
@@ -1676,7 +1695,7 @@ async function handleClientRequest(socket, message) {
           return;
         }
         syncActivityIndicator(route);
-        const sourcePrefix = await sourcePrefixForRoute(route);
+        const sourcePrefix = sourcePrefixForRoute(route);
         await sendPlainText(route.binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(

@@ -220,7 +220,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
-    const sourcePrefix = await this.sourcePrefixForRoute(route);
+    const sourcePrefix = this.sourcePrefixForRoute(route);
     await this.api.sendPlainTextWithKeyboard(route.binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
@@ -1198,11 +1198,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     route.actions.appendAudit(auditMessage);
   }
 
-  private async sourcePrefixForRoute(route: SessionRoute): Promise<string> {
-    if (!route.binding) return "";
-    const bindings = (await this.store.getBindingsByChatId(route.binding.chatId))
-      .filter((binding) => binding.status !== "revoked" && binding.userId === route.binding?.userId);
-    return bindings.length > 1 ? `Session ${route.sessionLabel}\n\n` : "";
+  private hasMultipleLiveSessionsForRoute(route: SessionRoute): boolean {
+    if (!route.binding) return false;
+    let count = 0;
+    for (const candidate of this.routes.values()) {
+      if (candidate.binding?.chatId !== route.binding.chatId || candidate.binding?.userId !== route.binding.userId) continue;
+      count += 1;
+      if (count > 1) return true;
+    }
+    return false;
+  }
+
+  private sourcePrefixForRoute(route: SessionRoute): string {
+    return this.hasMultipleLiveSessionsForRoute(route) ? `Session ${route.sessionLabel}\n\n` : "";
   }
 
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {
@@ -1228,7 +1236,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const durationMs = notification.startedAt ? Date.now() - notification.startedAt : undefined;
     const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : "unknown time";
 
-    const sourcePrefix = await this.sourcePrefixForRoute(route);
+    const sourcePrefix = this.sourcePrefixForRoute(route);
 
     if (status === "completed" && notification.lastAssistantText) {
       const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);

@@ -13,6 +13,7 @@ export type SessionSelectorResult =
   | { kind: "ambiguous"; matches: Array<{ entry: SessionListEntry; index: number }> }
   | { kind: "offline"; entry: SessionListEntry; index: number }
   | { kind: "missing" }
+  | { kind: "no-match" }
   | { kind: "empty" };
 
 export function shortSessionId(entry: Pick<SessionListEntry, "sessionId" | "sessionKey">): string {
@@ -73,16 +74,18 @@ export function resolveSessionSelector(entries: SessionListEntry[], selector: st
   const trimmed = selector.trim();
   if (!trimmed) return { kind: "missing" };
 
-  const asNumber = Number(trimmed);
-  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= entries.length) {
-    const entry = entries[asNumber - 1]!;
-    return entry.online ? { kind: "matched", entry, index: asNumber - 1 } : { kind: "offline", entry, index: asNumber - 1 };
+  if (/^\d+$/.test(trimmed)) {
+    const asNumber = parseInt(trimmed, 10);
+    if (asNumber >= 1 && asNumber <= entries.length) {
+      const entry = entries[asNumber - 1]!;
+      return entry.online ? { kind: "matched", entry, index: asNumber - 1 } : { kind: "offline", entry, index: asNumber - 1 };
+    }
   }
 
   const matches = entries
     .map((entry, index) => ({ entry, index }))
     .filter(({ entry }) => selectorMatches(entry, trimmed));
-  if (matches.length === 0) return { kind: "missing" };
+  if (matches.length === 0) return { kind: "no-match" };
 
   const liveMatches = matches.filter(({ entry }) => entry.online);
   if (liveMatches.length === 1) return { kind: "matched", entry: liveMatches[0]!.entry, index: liveMatches[0]!.index };

@@ -51,6 +51,14 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector(entries, "docs")).toMatchObject({ kind: "offline", index: 2 });
     expect(resolveSessionSelector(entries, "api")).toMatchObject({ kind: "ambiguous" });
     expect(resolveSessionSelector(entries, "abcdef")).toMatchObject({ kind: "matched", index: 0 });
+    expect(resolveSessionSelector(entries, "missing")).toMatchObject({ kind: "no-match" });
+    expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("distinguishes missing and unmatched session selectors", () => {
+    expect(resolveSessionSelector([], "1")).toMatchObject({ kind: "empty" });
+    expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "")).toMatchObject({ kind: "missing" });
+    expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "docs")).toMatchObject({ kind: "no-match" });
   });
 
   it("chunks oversized Telegram output", () => {
