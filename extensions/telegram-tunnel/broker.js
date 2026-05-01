@@ -750,6 +750,17 @@ async function revokeBinding(sessionKey) {
   return revoked;
 }
 
+async function revokeBindingForChat(sessionKey, chatId, userId) {
+  let revoked;
+  await updateState((state) => {
+    const existing = state.bindings[sessionKey];
+    if (!existing || existing.chatId !== chatId || existing.userId !== userId || existing.status === 'revoked') return;
+    revoked = { ...existing, revokedAt: nowIso(), lastSeenAt: nowIso(), status: 'revoked' };
+    state.bindings[sessionKey] = revoked;
+  });
+  return revoked;
+}
+
 async function handlePairStart(message, nonce) {
   if (!nonce) {
     await sendPlainText(message.chat.id, 'Missing pairing payload. Re-run /telegram-tunnel connect in Pi and scan the new QR code.');
@@ -871,8 +882,8 @@ async function handleForgetCommand(message, args) {
       await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is online. Use /use ${result.index + 1} then /disconnect to revoke an active session.`);
       return;
     case 'offline': {
-      const revoked = await revokeBinding(result.entry.sessionKey);
-      if (!revoked || revoked.chatId !== message.chat.id || revoked.userId !== message.user.id) {
+      const revoked = await revokeBindingForChat(result.entry.sessionKey, message.chat.id, message.user.id);
+      if (!revoked) {
         await sendPlainText(message.chat.id, 'No matching offline session found. Use /sessions to list available sessions.');
         return;
       }

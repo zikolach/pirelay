@@ -61,11 +61,15 @@ function sessionMarkerIdentity(entry: Pick<SessionListEntry, "sessionKey" | "ses
 export function sessionMarkersFor(entries: Array<Pick<SessionListEntry, "sessionKey" | "sessionId">>): Map<string, string> {
   const assignments = new Map<string, string>();
   const used = new Set<string>();
+  const identities = [...new Set(entries.map(sessionMarkerIdentity))].sort((left, right) => {
+    const leftHash = stableHash(left);
+    const rightHash = stableHash(right);
+    return (leftHash % BASE_SESSION_MARKERS.length) - (rightHash % BASE_SESSION_MARKERS.length)
+      || leftHash - rightHash
+      || left.localeCompare(right);
+  });
 
-  for (const entry of entries) {
-    const identity = sessionMarkerIdentity(entry);
-    if (assignments.has(identity)) continue;
-
+  for (const identity of identities) {
     const preferredIndex = stableHash(identity) % BASE_SESSION_MARKERS.length;
     let marker = SESSION_MARKERS[preferredIndex]!;
     for (let offset = 0; offset < SESSION_MARKERS.length; offset += 1) {

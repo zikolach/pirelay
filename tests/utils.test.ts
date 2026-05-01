@@ -74,6 +74,7 @@ describe("telegram utils", () => {
     expect(markers.get(entries[0]!.sessionKey)).toBe(sessionMarkerFor(entries[0]!));
     expect(markers.get(entries[1]!.sessionKey)).not.toBe(sessionMarkerFor(entries[0]!));
     expect(formatSessionList(entries)).toContain(`2. ${markers.get(entries[1]!.sessionKey)} docs — online — idle`);
+    expect(sessionMarkersFor([...entries].reverse())).toEqual(markers);
   });
 
   it("builds a source prefix only when multiple live sessions share a chat", () => {
