@@ -1,6 +1,8 @@
 ## Context
 
-PiRelay already tracks session state, busy/idle lifecycle, latest assistant output, latest images, and broker route metadata. The gap is that Telegram users only get sparse lifecycle feedback: accepted prompt activity plus terminal completion/failure/abort notifications.
+PiRelay already tracks session state, busy/idle lifecycle, latest assistant output, latest images, and broker route metadata. The relay channel-adapter and interaction-middleware foundations are now implemented and archived as current specs, so this change should build on those normalized event/action boundaries rather than adding Telegram-only routing paths. The detached broker startup path is also covered by a plain-Node smoke test, including a test-only polling skip switch for network-free process boot validation.
+
+The gap is that Telegram users only get sparse lifecycle feedback: accepted prompt activity plus terminal completion/failure/abort notifications.
 
 ## Goals / Non-Goals
 
@@ -13,23 +15,26 @@ PiRelay already tracks session state, busy/idle lifecycle, latest assistant outp
 **Non-Goals:**
 - Streaming hidden prompts, full tool logs, or raw terminal output to Telegram.
 - Replacing the local Pi TUI.
-- Adding non-Telegram channels; that belongs to adapter architecture work.
+- Adding non-Telegram channels; use the existing adapter boundaries but keep this change focused on Telegram UX.
 
 ## Decisions
 
 1. **Use safe progress events, not raw logs.**
    Progress updates should be derived from lifecycle/tool categories that are already safe to expose or from sanitized short descriptions. Do not forward hidden prompts, raw command output, or whole tool payloads.
 
-2. **Rate-limit and coalesce updates.**
+2. **Route progress through relay boundaries.**
+   Model progress as relay-safe events/results that can be serialized through broker IPC and rendered by the Telegram adapter. Reuse existing middleware protocol versioning and authorization-before-side-effects invariants.
+
+3. **Rate-limit and coalesce updates.**
    Maintain a per-route progress accumulator and send at most one update per configured interval. Coalesce repeated events into messages such as “Editing files…” or “Running tests…”.
 
-3. **Keep notification preferences in binding metadata.**
+4. **Keep notification preferences in binding metadata.**
    Store non-secret settings such as `progressMode`, `alias`, and dashboard preferences alongside existing binding metadata so they survive resume without adding secrets to session history.
 
-4. **Prefer inline dashboard actions with command fallbacks.**
+5. **Prefer inline dashboard actions with command fallbacks.**
    `/sessions` and `/status` should include buttons for Use, Full, Images, Pause/Resume, Abort, Compact, and recent activity where relevant. Existing text commands remain supported.
 
-5. **Avoid chat spam by default.**
+6. **Avoid chat spam by default.**
    Default mode should be conservative: terminal notifications plus occasional progress for long-running turns. Verbose mode can increase update frequency explicitly.
 
 ## Risks / Trade-offs
@@ -42,7 +47,7 @@ PiRelay already tracks session state, busy/idle lifecycle, latest assistant outp
 ## Migration Plan
 
 1. Add progress preference/config types and binding persistence.
-2. Add progress accumulator and sanitized formatter in in-process runtime.
-3. Mirror progress state and dashboard callbacks in broker runtime.
+2. Add relay-safe progress event types, accumulator, and sanitized formatter in shared helpers used by the in-process runtime and broker process.
+3. Mirror progress state and dashboard callbacks through `broker-runtime.ts`/`broker.js` IPC without bypassing middleware protocol checks.
 4. Extend `/sessions`, `/status`, and help/docs.
-5. Add tests for rate limiting, quiet/verbose modes, stale callbacks, alias persistence, and broker parity.
+5. Add tests for rate limiting, quiet/verbose modes, stale callbacks, alias persistence, broker parity, and broker process smoke behavior without Telegram network polling.

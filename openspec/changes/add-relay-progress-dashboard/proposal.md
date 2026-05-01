@@ -19,6 +19,6 @@ PiRelay is useful for launching and finishing work remotely, but long-running Pi
 
 ## Impact
 
-- Affected code: Telegram runtime, broker runtime, callback handling, state persistence, summary/progress formatting, tests, and documentation.
+- Affected code: Telegram runtime, broker runtime/process IPC, relay middleware/channel adapter helpers, callback handling, state persistence, summary/progress formatting, tests, and documentation.
 - Affected behavior: Telegram users receive optional progress updates and can manage sessions through richer inline actions.
 - No breaking changes to existing `/telegram-tunnel` commands; existing commands remain fallbacks.
