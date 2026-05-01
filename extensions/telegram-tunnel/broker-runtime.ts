@@ -274,7 +274,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }
 
     const requestId = randomUUID();
-    const message: BrokerProtocolRequest = { type: "request", requestId, protocolVersion: BROKER_PROTOCOL_VERSION, channel: BROKER_CHANNEL, action, ...payload };
+    const message: BrokerProtocolRequest = { ...payload, type: "request", requestId, protocolVersion: BROKER_PROTOCOL_VERSION, channel: BROKER_CHANNEL, action };
     const result = new Promise<unknown>((resolvePromise, rejectPromise) => {
       this.pending.set(requestId, { resolve: resolvePromise, reject: rejectPromise });
     });

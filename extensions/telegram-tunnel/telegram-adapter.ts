@@ -88,11 +88,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async sendText(address: ChannelRouteAddress, text: string, options?: { buttons?: ChannelButtonLayout }): Promise<void> {
-    await this.api.sendPlainTextWithKeyboard(Number(address.conversationId), text, options?.buttons ? toTelegramKeyboard(options.buttons) : undefined);
+    await this.api.sendPlainTextWithKeyboard(telegramChatId(address), text, options?.buttons ? toTelegramKeyboard(options.buttons) : undefined);
   }
 
   async sendDocument(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
-    await this.api.sendDocumentData(Number(address.conversationId), file.fileName, outboundFileBytes(file), options?.caption);
+    await this.api.sendDocumentData(telegramChatId(address), file.fileName, outboundFileBytes(file), options?.caption);
     if (options?.buttons) {
       await this.sendText(address, "Actions:", { buttons: options.buttons });
     }
@@ -104,7 +104,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   async sendActivity(address: ChannelRouteAddress, activity: "typing" | "uploading" | "recording"): Promise<void> {
     const telegramAction = activity === "uploading" ? "upload_document" : activity === "recording" ? "record_video" : "typing";
-    await this.api.sendChatAction(Number(address.conversationId), telegramAction);
+    await this.api.sendChatAction(telegramChatId(address), telegramAction);
   }
 
   async answerAction(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void> {
@@ -197,9 +197,28 @@ export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineK
   return layout.map((row) => row.map((button) => ({ text: button.label, callbackData: button.actionData })));
 }
 
+function telegramChatId(address: ChannelRouteAddress): number {
+  const chatId = Number(address.conversationId);
+  if (!Number.isFinite(chatId)) throw new Error(`Invalid Telegram chat id: ${address.conversationId}`);
+  return chatId;
+}
+
 function outboundFileBytes(file: ChannelOutboundFile): Uint8Array {
   if (typeof file.data !== "string") return file.data;
+  if (!isCanonicalBase64(file.data)) {
+    throw new Error("ChannelOutboundFile.data string values must be base64-encoded.");
+  }
   return Buffer.from(file.data, "base64");
+}
+
+function isCanonicalBase64(data: string): boolean {
+  if (data.length === 0 || data.length % 4 !== 0) return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return false;
+  try {
+    return Buffer.from(data, "base64").toString("base64") === data;
+  } catch {
+    return false;
+  }
 }
 
 async function sleep(ms: number): Promise<void> {

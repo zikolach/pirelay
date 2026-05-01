@@ -91,13 +91,30 @@ describe("telegram channel adapter", () => {
 
     await adapter.send({ kind: "text", address, text: "hello", buttons: [[{ label: "OK", actionData: "ok" }]] });
     await adapter.send({ kind: "document", address, file: { fileName: "out.md", mimeType: "text/markdown", data: Buffer.from("abc") }, caption: "cap" });
+    await adapter.send({ kind: "document", address, file: { fileName: "base64.bin", mimeType: "application/octet-stream", data: Buffer.from("xyz").toString("base64") } });
     await adapter.send({ kind: "activity", address, activity: "typing" });
     await adapter.send({ kind: "activity", address, activity: "uploading" });
     await adapter.send({ kind: "activity", address, activity: "recording" });
     await adapter.send({ kind: "action-answer", channel: "telegram", actionId: "cb-1", text: "done", alert: true });
 
     expect(api.sendPlainTextWithKeyboard).toHaveBeenCalledWith(30, "hello", [[{ text: "OK", callbackData: "ok" }]]);
-    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "activity:typing", "activity:upload_document", "activity:record_video", "answer:cb-1:done:alert"]);
+    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "doc:base64.bin:3:", "activity:typing", "activity:upload_document", "activity:record_video", "answer:cb-1:done:alert"]);
+  });
+
+  it("rejects invalid Telegram adapter outbound identifiers and file encodings", async () => {
+    const api: TelegramApiOperations = {
+      getUpdates: vi.fn(async () => []),
+      sendPlainTextWithKeyboard: vi.fn(async () => undefined),
+      sendDocumentData: vi.fn(async () => undefined),
+      answerCallbackQuery: vi.fn(async () => undefined),
+      sendChatAction: vi.fn(async () => undefined),
+    };
+    const adapter = new TelegramChannelAdapter(config(), api);
+    const invalidAddress = { channel: "telegram", conversationId: "not-a-number", userId: "40" };
+    const validAddress = { channel: "telegram", conversationId: "30", userId: "40" };
+
+    await expect(adapter.send({ kind: "text", address: invalidAddress, text: "hello" })).rejects.toThrow("Invalid Telegram chat id: not-a-number");
+    await expect(adapter.send({ kind: "document", address: validAddress, file: { fileName: "plain.txt", mimeType: "text/plain", data: "hello" } })).rejects.toThrow("base64-encoded");
   });
 
   it("retries updates when a handler fails before advancing offset", async () => {
