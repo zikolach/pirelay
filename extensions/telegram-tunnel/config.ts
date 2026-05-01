@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { DEFAULT_STATE_DIR, getDefaultConfigPath } from "./paths.js";
-import type { ConfigLoadResult, ProgressMode, TelegramTunnelConfig } from "./types.js";
+import type { ConfigLoadResult, TelegramTunnelConfig } from "./types.js";
 import { DEFAULT_MAX_PROGRESS_MESSAGE_CHARS, DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_MODE, DEFAULT_RECENT_ACTIVITY_LIMIT, DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS, normalizeProgressMode } from "./progress.js";
 import { getDefaultRedactionPatterns } from "./utils.js";
 
@@ -24,7 +24,7 @@ interface ConfigFileShape {
   maxOutboundImageBytes?: number;
   maxLatestImages?: number;
   allowedImageMimeTypes?: string[];
-  progressMode?: ProgressMode;
+  progressMode?: string;
   progressIntervalMs?: number;
   verboseProgressIntervalMs?: number;
   recentActivityLimit?: number;

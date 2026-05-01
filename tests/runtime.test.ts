@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/telegram-tunnel/telegram-actions.js";
 import { createProgressActivity } from "../extensions/telegram-tunnel/progress.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
@@ -1158,7 +1158,7 @@ describe("InProcessTunnelRuntime", () => {
       updateId: 30,
       callbackQueryId: "dash-i2",
       messageId: 30,
-      data: buildDashboardCallbackData("i2", "recent"),
+      data: buildDashboardCallbackData(sessionDashboardRef(second.sessionKey), "recent"),
       chat: { id: 1008, type: "private" },
       user: { id: 28, username: "owner" },
     });

@@ -58,6 +58,19 @@ export function buildLatestImagesCallbackData(turnId: string): string {
   return `imgs:${encodePart(turnId)}`;
 }
 
+export function sessionDashboardRef(sessionKey: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < sessionKey.length; index += 1) {
+    hash ^= sessionKey.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `s${hash.toString(16).padStart(8, "0")}`;
+}
+
+export function isIndexedSessionDashboardRef(sessionRef: string): boolean {
+  return /^i\d+$/.test(sessionRef);
+}
+
 export function buildDashboardCallbackData(sessionRef: string, action: DashboardAction): string {
   return `dash:${encodePart(sessionRef)}:${action}`;
 }
@@ -147,7 +160,7 @@ export function buildSessionDashboardKeyboard(sessionRef: string, options: { pau
 
 export function buildSessionListDashboardKeyboard(entries: Array<{ online: boolean; sessionKey: string }>, maxRows = 8): TelegramInlineKeyboard {
   return entries.slice(0, maxRows).map((entry, index) => {
-    const sessionRef = `i${index + 1}`;
+    const sessionRef = sessionDashboardRef(entry.sessionKey);
     return [
       { text: entry.online ? `Use ${index + 1}` : `Offline ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "use") },
       { text: `Recent ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "recent") },

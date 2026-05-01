@@ -13,6 +13,7 @@ const [
   relayTelegramMiddlewareModule,
   relayMiddlewareModule,
   progressModule,
+  commandsModule,
 ] = await Promise.all([
   jiti.import('./answer-workflow.ts'),
   jiti.import('./telegram-actions.ts'),
@@ -22,6 +23,7 @@ const [
   jiti.import('./relay-telegram-middleware.ts'),
   jiti.import('./relay-middleware.ts'),
   jiti.import('./progress.ts'),
+  jiti.import('./commands.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -36,6 +38,14 @@ function requiredNumber(module, modulePath, exportName) {
   const value = module?.[exportName];
   if (typeof value !== 'number') {
     throw new Error(`Broker startup failed: ${modulePath} missing number export ${exportName}.`);
+  }
+  return value;
+}
+
+function requiredString(module, modulePath, exportName) {
+  const value = module?.[exportName];
+  if (typeof value !== 'string') {
+    throw new Error(`Broker startup failed: ${modulePath} missing string export ${exportName}.`);
   }
   return value;
 }
@@ -56,7 +66,9 @@ const buildFullOutputKeyboard = requiredFunction(telegramActionsModule, './teleg
 const buildLatestImagesKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildLatestImagesKeyboard');
 const buildSessionDashboardKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildSessionDashboardKeyboard');
 const buildSessionListDashboardKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildSessionListDashboardKeyboard');
+const isIndexedSessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'isIndexedSessionDashboardRef');
 const parseTelegramActionCallbackData = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'parseTelegramActionCallbackData');
+const sessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'sessionDashboardRef');
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
 const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
@@ -81,6 +93,9 @@ const progressIntervalMsFor = requiredFunction(progressModule, './progress.ts', 
 const progressModeFor = requiredFunction(progressModule, './progress.ts', 'progressModeFor');
 const recentActivityLimit = requiredFunction(progressModule, './progress.ts', 'recentActivityLimit');
 const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progress.ts', 'shouldSendNonTerminalProgress');
+const HELP_TEXT = requiredString(commandsModule, './commands.ts', 'BROKER_HELP_TEXT');
+const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts', 'commandAllowsWhilePaused');
+const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
@@ -104,31 +119,6 @@ const progressStates = new Map();
 const statePath = `${config.stateDir}/state.json`;
 let updateOffset;
 let shuttingDown = false;
-
-const HELP_TEXT = [
-  'Telegram tunnel commands:',
-  '/help - show commands',
-  '/status - session and tunnel dashboard',
-  '/sessions - list available paired sessions',
-  '/progress <quiet|normal|verbose|completion-only> - set progress notifications',
-  '/alias <name|clear> - set the active session alias',
-  '/recent - show recent safe activity',
-  '/use <session> - select an active session',
-  '/forget <session> - remove an offline session from the list',
-  '/to <session> <prompt> - send one prompt without switching sessions',
-  '/summary - latest summary/excerpt',
-  '/full - latest full assistant output',
-  '/images - download latest image outputs or generated image files',
-  '/send-image <path> - send a validated workspace image file',
-  '/steer <text> - steer the active run',
-  '/followup <text> - queue a follow-up',
-  '/abort - abort the active run',
-  '/compact - trigger Pi compaction',
-  '/pause - pause remote delivery',
-  '/resume - resume remote delivery',
-  '/disconnect - revoke this chat binding',
-  "answer - start a guided answer flow when the latest output contains choices/questions",
-].join('\n');
 
 const TELEGRAM_ACTIVITY_ACTION = 'typing';
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1200;
@@ -1361,7 +1351,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     return;
   }
-  if (binding.paused && !['resume', 'status', 'help', 'disconnect', 'sessions', 'use', 'forget', 'progress', 'notify', 'alias', 'recent', 'activity'].includes(command)) {
+  if (binding.paused && !commandAllowsWhilePaused(command)) {
     await sendPlainText(message.chat.id, 'The tunnel is currently paused. Use /resume or disconnect locally.');
     return;
   }
@@ -1385,10 +1375,9 @@ async function handleAuthorizedCommand(message, route, command, args) {
       return;
     }
     case 'alias': {
-      const alias = String(args || '').trim();
       route.binding = {
         ...binding,
-        alias: alias && alias.toLowerCase() !== 'clear' && alias.toLowerCase() !== 'reset' ? alias.slice(0, 64) : undefined,
+        alias: normalizeAliasArg(String(args || '')),
         lastSeenAt: nowIso(),
       };
       await upsertBinding(route.binding);
@@ -1705,10 +1694,11 @@ async function processCallback(callback) {
 
   const live = getLiveRoutesForChat(callback.chat.id, callback.user.id);
   let route;
-  if (action.kind === 'dashboard' && /^i\d+$/.test(action.sessionRef)) {
+  if (action.kind === 'dashboard' && action.sessionRef !== 'current') {
     const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id);
-    const index = Number(action.sessionRef.slice(1)) - 1;
-    const entry = entries[index];
+    const entry = isIndexedSessionDashboardRef(action.sessionRef)
+      ? entries[Number(action.sessionRef.slice(1)) - 1]
+      : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
     if (!entry) {
       await answerCallbackQuery(callback.callbackQueryId, 'This dashboard is stale.');
       await sendPlainText(callback.chat.id, 'That session dashboard is stale. Use /sessions for the latest list.');

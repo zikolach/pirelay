@@ -25,7 +25,9 @@ import {
   buildLatestImagesKeyboard,
   buildSessionDashboardKeyboard,
   buildSessionListDashboardKeyboard,
+  isIndexedSessionDashboardRef,
   parseTelegramActionCallbackData,
+  sessionDashboardRef,
   shouldOfferFullOutputActions,
   type DashboardAction,
 } from "./telegram-actions.js";
@@ -45,6 +47,7 @@ import type {
   TunnelRuntime,
   TelegramUserSummary,
 } from "./types.js";
+import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg } from "./commands.js";
 import { formatSessionList, resolveSessionSelector, sessionSourcePrefixForRoute, type SessionListEntry } from "./session-multiplexing.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./relay-telegram-middleware.js";
 import {
@@ -70,28 +73,6 @@ import {
   summarizeTextDeterministically,
   toIsoNow,
 } from "./utils.js";
-
-const HELP_TEXT = [
-  "Telegram tunnel commands:",
-  "/help - show commands",
-  "/status - session and tunnel dashboard",
-  "/sessions - list paired session dashboard",
-  "/progress <quiet|normal|verbose|completion-only> - set progress notifications",
-  "/alias <name|clear> - set a session alias",
-  "/recent - show recent safe activity",
-  "/summary - latest summary/excerpt",
-  "/full - latest full assistant output",
-  "/images - download latest image outputs or generated image files",
-  "/send-image <path> - send a validated workspace image file",
-  "/steer <text> - steer the active run",
-  "/followup <text> - queue a follow-up",
-  "/abort - abort the active run",
-  "/compact - trigger Pi compaction",
-  "/pause - pause remote delivery",
-  "/resume - resume remote delivery",
-  "/disconnect - revoke this chat binding",
-  "answer - start a guided answer flow when the latest output contains choices/questions",
-].join("\n");
 
 const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
@@ -645,10 +626,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     callback: TelegramInboundCallback,
     action: NonNullable<ReturnType<typeof parseTelegramActionCallbackData>>,
   ): Promise<SessionRoute | undefined> {
-    if (action.kind === "dashboard" && /^i\d+$/.test(action.sessionRef)) {
+    if (action.kind === "dashboard" && action.sessionRef !== "current") {
       const entries = this.sessionEntriesForChat(callback.chat.id, callback.user.id);
-      const index = Number(action.sessionRef.slice(1)) - 1;
-      const entry = entries[index];
+      const entry = isIndexedSessionDashboardRef(action.sessionRef)
+        ? entries[Number(action.sessionRef.slice(1)) - 1]
+        : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
       if (!entry) {
         await this.api.answerCallbackQuery(callback.callbackQueryId, "This dashboard is stale.");
         await this.api.sendPlainText(callback.chat.id, "That session dashboard is stale. Use /sessions for the latest list.");
@@ -1072,7 +1054,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    if (binding.paused && !["resume", "status", "help", "disconnect", "sessions", "progress", "notify", "alias", "recent", "activity"].includes(command)) {
+    if (binding.paused && !commandAllowsWhilePaused(command)) {
       await this.api.sendPlainText(message.chat.id, "The tunnel is currently paused. Use /resume or disconnect locally.");
       return;
     }
@@ -1105,8 +1087,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "alias": {
-        const alias = args.trim();
-        binding.alias = alias && alias.toLowerCase() !== "clear" && alias.toLowerCase() !== "reset" ? alias.slice(0, 64) : undefined;
+        binding.alias = normalizeAliasArg(args);
         await this.store.upsertBinding(binding);
         route.actions.persistBinding(binding, false);
         await this.api.sendPlainText(message.chat.id, binding.alias ? `Session alias set to ${binding.alias}.` : "Session alias cleared.");

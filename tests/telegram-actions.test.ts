@@ -14,6 +14,7 @@ import {
   buildSessionDashboardKeyboard,
   buildSessionListDashboardKeyboard,
   parseTelegramActionCallbackData,
+  sessionDashboardRef,
   shouldOfferFullOutputActions,
 } from "../extensions/telegram-tunnel/telegram-actions.js";
 
@@ -91,7 +92,10 @@ describe("telegram action callbacks", () => {
       { online: true, sessionKey: "one" },
       { online: false, sessionKey: "two" },
     ]);
-    expect(parseTelegramActionCallbackData(listKeyboard[1]![0]!.callbackData)).toEqual({ kind: "dashboard", sessionRef: "i2", action: "use" });
+    expect(parseTelegramActionCallbackData(listKeyboard[1]![0]!.callbackData)).toEqual({ kind: "dashboard", sessionRef: sessionDashboardRef("two"), action: "use" });
+    expect(sessionDashboardRef("two")).toBe(sessionDashboardRef("two"));
+    expect(sessionDashboardRef("two")).not.toBe("i2");
+    expect(`dash:${sessionDashboardRef("two")}:recent`.length).toBeLessThanOrEqual(64);
     expect(parseTelegramActionCallbackData("dash:current:unknown")).toBeUndefined();
   });
 
