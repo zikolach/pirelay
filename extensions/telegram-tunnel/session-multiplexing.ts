@@ -16,6 +16,12 @@ export type SessionSelectorResult =
   | { kind: "no-match" }
   | { kind: "empty" };
 
+export interface SessionTargetResolution {
+  selector: string;
+  prompt: string;
+  result: SessionSelectorResult;
+}
+
 export function shortSessionId(entry: Pick<SessionListEntry, "sessionId" | "sessionKey">): string {
   return (entry.sessionId || entry.sessionKey).slice(0, 8);
 }
@@ -93,4 +99,32 @@ export function resolveSessionSelector(entries: SessionListEntry[], selector: st
 
   if (matches.length === 1) return { kind: "offline", entry: matches[0]!.entry, index: matches[0]!.index };
   return { kind: "ambiguous", matches };
+}
+
+function isMeaningfulTargetResult(result: SessionSelectorResult): boolean {
+  return result.kind === "matched" || result.kind === "ambiguous" || result.kind === "offline";
+}
+
+export function resolveSessionTargetArgs(entries: SessionListEntry[], args: string): SessionTargetResolution {
+  const rawArgs = args.trim();
+  if (!rawArgs) return { selector: "", prompt: "", result: resolveSessionSelector(entries, "") };
+
+  const quoted = rawArgs.match(/^"([^"]+)"(?:\s+([\s\S]*))?$/);
+  if (quoted) {
+    const selector = quoted[1]?.trim() ?? "";
+    const prompt = quoted[2]?.trim() ?? "";
+    return { selector, prompt, result: resolveSessionSelector(entries, selector) };
+  }
+
+  const parts = rawArgs.split(/\s+/).filter(Boolean);
+  for (let end = parts.length; end >= 1; end -= 1) {
+    const selector = parts.slice(0, end).join(" ");
+    const prompt = parts.slice(end).join(" ").trim();
+    const result = resolveSessionSelector(entries, selector);
+    if (isMeaningfulTargetResult(result)) return { selector, prompt, result };
+  }
+
+  const selector = parts[0] ?? "";
+  const prompt = parts.slice(1).join(" ").trim();
+  return { selector, prompt, result: resolveSessionSelector(entries, selector) };
 }

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
-import { formatSessionList, resolveSessionSelector, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
 
 const tempDirs: string[] = [];
 
@@ -59,6 +59,18 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector([], "1")).toMatchObject({ kind: "empty" });
     expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "")).toMatchObject({ kind: "missing" });
     expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "docs")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("resolves one-shot target arguments with quoted and multi-word labels", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "docs team", online: true, busy: false },
+      { sessionKey: "b:/tmp/b", sessionId: "bcdefa222222", sessionLabel: "api", online: true, busy: false },
+    ];
+
+    expect(resolveSessionTargetArgs(entries, '"docs team" run tests')).toMatchObject({ selector: "docs team", prompt: "run tests", result: { kind: "matched", index: 0 } });
+    expect(resolveSessionTargetArgs(entries, "docs team run tests")).toMatchObject({ selector: "docs team", prompt: "run tests", result: { kind: "matched", index: 0 } });
+    expect(resolveSessionTargetArgs(entries, "api run tests")).toMatchObject({ selector: "api", prompt: "run tests", result: { kind: "matched", index: 1 } });
+    expect(resolveSessionTargetArgs(entries, "missing run tests")).toMatchObject({ selector: "missing", prompt: "run tests", result: { kind: "no-match" } });
   });
 
   it("chunks oversized Telegram output", () => {
