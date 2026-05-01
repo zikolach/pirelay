@@ -126,6 +126,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly activeSessionByChatUser = new Map<string, string>();
   private started = false;
   private pollingTask?: Promise<void>;
   private releaseLock?: () => Promise<void>;
@@ -568,14 +569,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const persisted = await this.store.getBindingByChatId(message.chat.id);
+    const persisted = await this.activeBindingForMessage(message.chat.id, message.user.id);
     if (!persisted) {
-      await this.api.sendPlainText(message.chat.id, "This chat is not paired to an active Pi session. Run /telegram-tunnel connect locally first.");
-      return;
-    }
-
-    if (persisted.status === "revoked") {
-      await this.api.sendPlainText(message.chat.id, "This Telegram tunnel binding has been revoked. Pair again from Pi with /telegram-tunnel connect.");
+      const revoked = await this.chatUserHasRevokedBinding(message.chat.id, message.user.id);
+      await this.api.sendPlainText(
+        message.chat.id,
+        revoked
+          ? "This Telegram tunnel binding has been revoked. Pair again from Pi with /telegram-tunnel connect."
+          : await this.chatHasActiveBinding(message.chat.id)
+            ? "Unauthorized Telegram identity for this Pi session."
+            : "This chat is not paired to an active Pi session. Run /telegram-tunnel connect locally first.",
+      );
       return;
     }
 
@@ -627,7 +631,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     action: NonNullable<ReturnType<typeof parseTelegramActionCallbackData>>,
   ): Promise<SessionRoute | undefined> {
     if (action.kind === "dashboard" && action.sessionRef !== "current") {
-      const entries = this.sessionEntriesForChat(callback.chat.id, callback.user.id);
+      const entries = await this.sessionEntriesForChat(callback.chat.id, callback.user.id);
       const entry = isIndexedSessionDashboardRef(action.sessionRef)
         ? entries[Number(action.sessionRef.slice(1)) - 1]
         : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
@@ -645,9 +649,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return route;
     }
 
-    const persisted = await this.store.getBindingByChatId(callback.chat.id);
-    if (!persisted || persisted.status === "revoked") {
-      await this.api.answerCallbackQuery(callback.callbackQueryId, "This chat is not paired.");
+    const persisted = await this.activeBindingForMessage(callback.chat.id, callback.user.id);
+    if (!persisted) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, await this.chatHasActiveBinding(callback.chat.id) ? "Unauthorized." : "This chat is not paired.");
       return undefined;
     }
 
@@ -789,6 +793,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const chatId = callback.chat.id;
     switch (action) {
       case "use":
+        this.activeSessionByChatUser.set(this.activeSessionKey(chatId, callback.user.id), route.sessionKey);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Active session selected.");
+        await this.sendTextWithKeyboard(chatId, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
+        return;
       case "status":
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Showing status.");
         await this.sendTextWithKeyboard(chatId, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
@@ -888,6 +896,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     };
 
     route.binding = binding;
+    this.activeSessionByChatUser.set(this.activeSessionKey(message.chat.id, message.user.id), route.sessionKey);
     await this.store.upsertBinding(binding);
     route.actions.persistBinding(binding, false);
     route.actions.appendAudit(`Telegram tunnel paired with ${getTelegramUserLabel(message.user)}.`);
@@ -1069,8 +1078,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "sessions": {
-        const entries = this.sessionEntriesForChat(message.chat.id, message.user.id);
-        await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, route.sessionKey), buildSessionListDashboardKeyboard(entries));
+        const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+        await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, this.activeSessionByChatUser.get(this.activeSessionKey(message.chat.id, message.user.id)) ?? route.sessionKey), buildSessionListDashboardKeyboard(entries));
         return;
       }
       case "progress":
@@ -1393,6 +1402,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async revokeBinding(route: SessionRoute, auditMessage: string): Promise<void> {
+    if (route.binding) this.activeSessionByChatUser.delete(this.activeSessionKey(route.binding.chatId, route.binding.userId));
     route.binding = undefined;
     await this.store.revokeBinding(route.sessionKey);
     route.actions.persistBinding(null, true);
@@ -1403,21 +1413,77 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return sessionSourcePrefixForRoute(route, this.routes.values());
   }
 
-  private sessionEntriesForChat(chatId: number, userId: number): SessionListEntry[] {
-    return [...this.routes.values()]
-      .filter((candidate) => candidate.binding?.chatId === chatId && candidate.binding?.userId === userId)
-      .map((candidate) => ({
-        sessionKey: candidate.sessionKey,
-        sessionId: candidate.sessionId,
-        sessionFile: candidate.sessionFile,
-        sessionLabel: candidate.sessionLabel,
-        alias: candidate.binding?.alias,
+  private activeSessionKey(chatId: number, userId: number): string {
+    return `${chatId}:${userId}`;
+  }
+
+  private async chatHasActiveBinding(chatId: number): Promise<boolean> {
+    return (await this.store.getBindingsByChatId(chatId)).some((binding) => binding.status !== "revoked");
+  }
+
+  private async chatUserHasRevokedBinding(chatId: number, userId: number): Promise<boolean> {
+    return (await this.store.getBindingsByChatId(chatId)).some((binding) => binding.status === "revoked" && binding.userId === userId);
+  }
+
+  private async activeBindingForMessage(chatId: number, userId: number): Promise<TelegramBindingMetadata | undefined> {
+    const bindings = (await this.store.getBindingsByChatId(chatId))
+      .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    if (bindings.length === 0) return undefined;
+    const activeKey = this.activeSessionByChatUser.get(this.activeSessionKey(chatId, userId));
+    const active = activeKey ? bindings.find((binding) => binding.sessionKey === activeKey) : undefined;
+    return active ?? bindings.find((binding) => this.routes.has(binding.sessionKey)) ?? bindings[0];
+  }
+
+  private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
+    const persisted = (await this.store.getBindingsByChatId(chatId))
+      .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    const byKey = new Map<string, SessionListEntry>();
+    for (const binding of persisted) {
+      const route = this.routes.get(binding.sessionKey);
+      if (route) {
+        byKey.set(binding.sessionKey, {
+          sessionKey: route.sessionKey,
+          sessionId: route.sessionId,
+          sessionFile: route.sessionFile,
+          sessionLabel: route.sessionLabel,
+          alias: route.binding?.alias ?? binding.alias,
+          online: true,
+          busy: !isEffectivelyIdle(route),
+          paused: Boolean(route.binding?.paused ?? binding.paused),
+          modelId: statusSnapshotForRoute(route, { online: true, busy: !isEffectivelyIdle(route) }).modelId,
+          lastActivityAt: route.lastActivityAt,
+        });
+        continue;
+      }
+      byKey.set(binding.sessionKey, {
+        sessionKey: binding.sessionKey,
+        sessionId: binding.sessionId,
+        sessionFile: binding.sessionFile,
+        sessionLabel: binding.sessionLabel,
+        alias: binding.alias,
+        online: false,
+        busy: false,
+        paused: Boolean(binding.paused),
+        lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+      });
+    }
+
+    for (const route of this.routes.values()) {
+      if (route.binding?.chatId !== chatId || route.binding.userId !== userId || byKey.has(route.sessionKey)) continue;
+      byKey.set(route.sessionKey, {
+        sessionKey: route.sessionKey,
+        sessionId: route.sessionId,
+        sessionFile: route.sessionFile,
+        sessionLabel: route.sessionLabel,
+        alias: route.binding.alias,
         online: true,
-        busy: !isEffectivelyIdle(candidate),
-        paused: Boolean(candidate.binding?.paused),
-        modelId: statusSnapshotForRoute(candidate, { online: true, busy: !isEffectivelyIdle(candidate) }).modelId,
-        lastActivityAt: candidate.lastActivityAt,
-      }));
+        busy: !isEffectivelyIdle(route),
+        paused: Boolean(route.binding.paused),
+        modelId: statusSnapshotForRoute(route, { online: true, busy: !isEffectivelyIdle(route) }).modelId,
+        lastActivityAt: route.lastActivityAt,
+      });
+    }
+    return [...byKey.values()];
   }
 
   private parseProgressModeArg(args: string) {

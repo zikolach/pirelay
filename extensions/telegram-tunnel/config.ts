@@ -188,7 +188,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     throw new ConfigError("allowedImageMimeTypes must include at least one MIME type.");
   }
   if (!normalizeProgressMode(progressMode)) {
-    throw new ConfigError("progressMode must be quiet, normal, verbose, or completionOnly.");
+    throw new ConfigError("progressMode must be quiet, normal, verbose, completion-only, or completionOnly.");
   }
   if (progressIntervalMs < 5_000 || progressIntervalMs > 10 * 60_000) {
     throw new ConfigError("progressIntervalMs must be between 5000 and 600000.");

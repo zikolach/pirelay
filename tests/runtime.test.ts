@@ -1167,6 +1167,115 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("Second route activity");
   });
 
+  it("uses dashboard selection for subsequent in-process prompts", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-use-1:/tmp/session-use-1.jsonl",
+      sessionId: "session-use-1",
+      sessionFile: "/tmp/session-use-1.jsonl",
+      sessionLabel: "first.jsonl",
+      chatId: 1009,
+      userId: 29,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-use-2:/tmp/session-use-2.jsonl",
+      sessionId: "session-use-2",
+      sessionFile: "/tmp/session-use-2.jsonl",
+      sessionLabel: "second.jsonl",
+      chatId: 1009,
+      userId: 29,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true);
+    const second = createRoute(secondBinding, true);
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    (runtime as any).routes.set(first.route.sessionKey, first.route);
+    (runtime as any).routes.set(second.route.sessionKey, second.route);
+    (runtime as any).api = {
+      answerCallbackQuery: async () => undefined,
+      sendPlainText: async () => undefined,
+      sendPlainTextWithKeyboard: async () => undefined,
+    };
+
+    await (runtime as any).processCallback({
+      kind: "callback",
+      updateId: 31,
+      callbackQueryId: "dash-use-second",
+      messageId: 31,
+      data: buildDashboardCallbackData(sessionDashboardRef(second.route.sessionKey), "use"),
+      chat: { id: 1009, type: "private" },
+      user: { id: 29, username: "owner" },
+    });
+
+    await (runtime as any).processInbound({
+      updateId: 32,
+      messageId: 32,
+      text: "hello selected session",
+      chat: { id: 1009, type: "private" },
+      user: { id: 29, username: "owner" },
+    });
+
+    expect(first.deliveries).toHaveLength(0);
+    expect(second.deliveries).toEqual([{ text: "hello selected session", deliverAs: undefined }]);
+  });
+
+  it("includes persisted offline sessions in the in-process session list", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const onlineBinding: TelegramBindingMetadata = {
+      sessionKey: "session-online:/tmp/session-online.jsonl",
+      sessionId: "session-online",
+      sessionFile: "/tmp/session-online.jsonl",
+      sessionLabel: "online.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const offlineBinding: TelegramBindingMetadata = {
+      sessionKey: "session-offline:/tmp/session-offline.jsonl",
+      sessionId: "session-offline",
+      sessionFile: "/tmp/session-offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const online = createRoute(onlineBinding, true);
+    await store.upsertBinding(onlineBinding);
+    await store.upsertBinding(offlineBinding);
+    (runtime as any).routes.set(online.route.sessionKey, online.route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 33,
+      messageId: 33,
+      text: "/sessions",
+      chat: { id: 1010, type: "private" },
+      user: { id: 30, username: "owner" },
+    });
+
+    expect(sent.join("\n")).toContain("online.jsonl");
+    expect(sent.join("\n")).toContain("offline.jsonl");
+    expect(sent.join("\n")).toContain("offline");
+  });
+
   it("coalesces rate-limited progress updates and respects quiet mode", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();
