@@ -41,7 +41,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   private polling = false;
 
   constructor(
-    private readonly config: TelegramTunnelConfig,
+    config: TelegramTunnelConfig,
     private readonly api: TelegramApiOperations = new TelegramApiClient(config),
   ) {
     this.capabilities = telegramCapabilities(config);
@@ -199,7 +199,7 @@ export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineK
 
 function telegramChatId(address: ChannelRouteAddress): number {
   const chatId = Number(address.conversationId);
-  if (!Number.isFinite(chatId)) throw new Error(`Invalid Telegram chat id: ${address.conversationId}`);
+  if (!Number.isSafeInteger(chatId)) throw new Error(`Invalid Telegram chat id: ${address.conversationId}`);
   return chatId;
 }
 

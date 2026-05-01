@@ -111,9 +111,11 @@ describe("telegram channel adapter", () => {
     };
     const adapter = new TelegramChannelAdapter(config(), api);
     const invalidAddress = { channel: "telegram", conversationId: "not-a-number", userId: "40" };
+    const decimalAddress = { channel: "telegram", conversationId: "30.5", userId: "40" };
     const validAddress = { channel: "telegram", conversationId: "30", userId: "40" };
 
     await expect(adapter.send({ kind: "text", address: invalidAddress, text: "hello" })).rejects.toThrow("Invalid Telegram chat id: not-a-number");
+    await expect(adapter.send({ kind: "text", address: decimalAddress, text: "hello" })).rejects.toThrow("Invalid Telegram chat id: 30.5");
     await expect(adapter.send({ kind: "document", address: validAddress, file: { fileName: "plain.txt", mimeType: "text/plain", data: "hello" } })).rejects.toThrow("base64-encoded");
   });
 
