@@ -42,6 +42,14 @@ Pipeline phases are:
 
 Middleware declares capabilities, ordering constraints, recoverable/fatal failure behavior, and safety classification. Authorization is an explicit pipeline boundary: middleware that downloads media, transcribes audio, extracts documents, invokes callbacks, or injects prompts must not run before the identity and route are authorized.
 
+Example future accessible audio flow:
+
+1. the adapter receives an authorized voice message and exposes it as audio media
+2. audio middleware downloads/transcribes it only after authorization
+3. the transcript becomes a normal prompt or a guided-answer/action intent
+4. outbound middleware can request spoken output only from content classified as safe for speech and after configured redaction
+5. sensitive actions use `requires-confirmation` before Pi delivery or control actions
+
 ## Future adapters
 
 A new adapter should implement the channel adapter interface, declare capabilities honestly, and avoid duplicating relay semantics. Authorization must happen before media download, transcription, prompt injection, callbacks, or control actions.

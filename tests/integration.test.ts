@@ -643,7 +643,7 @@ describe("Telegram tunnel integration behavior", () => {
 
       await runtime.registerRoute(route);
       const firstRegistration = brokerMessages.find((message) => message.action === "registerRoute");
-      expect(firstRegistration).toMatchObject({ protocolVersion: 1, channel: "telegram" });
+      expect(firstRegistration).toMatchObject({ protocolVersion: 1, channel: "telegram", pipeline: { protocolVersion: 1, channel: "telegram", action: "registerRoute" } });
       expect(firstRegistration?.route).toMatchObject({
         channel: "telegram",
         sessionKey: route.sessionKey,
@@ -669,6 +669,7 @@ describe("Telegram tunnel integration behavior", () => {
         requestId: "broker-deliver-1",
         protocolVersion: 1,
         channel: "telegram",
+        pipeline: { protocolVersion: 1, channel: "telegram", action: "deliverPrompt" },
         action: "deliverPrompt",
         sessionKey: route.sessionKey,
         text: "remote follow-up from broker",

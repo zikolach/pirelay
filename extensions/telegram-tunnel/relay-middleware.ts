@@ -140,6 +140,7 @@ export function createRelayPipeline(middleware: RelayMiddleware[]): RelayPipelin
     middleware: ordered,
     async run(initialEvent: RelayPipelineEvent, context = createRelayPipelineContext()): Promise<RelayPipelineResult> {
       let currentEvent = initialEvent;
+      let currentIntent: RelayIntent | undefined;
       const produced = new Set<string>();
 
       for (const phase of RELAY_MIDDLEWARE_PHASES) {
@@ -165,6 +166,7 @@ export function createRelayPipeline(middleware: RelayMiddleware[]): RelayPipelin
             const nextEvent = result.event ?? currentEvent;
             if (result.kind === "continue") {
               currentEvent = nextEvent;
+              currentIntent = result.intent ?? currentIntent;
               context.emitTrace({ middlewareId: item.id, phase, outcome: "continue" });
               continue;
             }
@@ -179,7 +181,7 @@ export function createRelayPipeline(middleware: RelayMiddleware[]): RelayPipelin
         }
       }
 
-      return { kind: "continue", event: currentEvent };
+      return { kind: "continue", event: currentEvent, intent: currentIntent };
     },
   };
 }
@@ -238,6 +240,39 @@ function requiresAuthorizationBeforeWork(middleware: RelayMiddleware): boolean {
     || middleware.safety === "media-download"
     || middleware.safety === "transcription"
     || middleware.safety === "extraction";
+}
+
+export function transcriptPrompt(transcript: string, metadata: Record<string, unknown> = {}): RelayPrompt {
+  return {
+    content: transcript,
+    safety: "redacted",
+    metadata: { accessibility: "transcript", ...metadata },
+  };
+}
+
+export function spokenOutputEvent(text: string, metadata: Record<string, unknown> = {}): RelayOutboundEvent {
+  return {
+    kind: "spoken-output",
+    text,
+    safety: "safe-for-speech",
+    metadata: { accessibility: "spoken-output", ...metadata },
+  };
+}
+
+export function readLastAction(metadata: Record<string, unknown> = {}): RelayAction {
+  return {
+    type: "read-last",
+    safety: "safe",
+    metadata: { accessibility: "read-last", ...metadata },
+  };
+}
+
+export function confirmationRequiredAction(action: Omit<RelayAction, "requiresConfirmation">): RelayAction {
+  return {
+    ...action,
+    safety: "requires-confirmation",
+    requiresConfirmation: true,
+  };
 }
 
 export function redactForTrace(value: string): string {

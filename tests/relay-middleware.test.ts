@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  confirmationRequiredAction,
   createRelayPipeline,
+  readLastAction,
   redactForTrace,
+  spokenOutputEvent,
+  transcriptPrompt,
   relayPipelineProtocolVersion,
   type RelayMiddleware,
   type RelayPipelineContext,
@@ -93,6 +97,21 @@ describe("relay middleware pipeline", () => {
       { id: "never", phases: ["intent"], run: async () => ({ kind: "continue" }) },
     ]);
     await expect(fatal.run(event(), context())).resolves.toMatchObject({ kind: "error", middlewareId: "fatal" });
+  });
+
+  it("provides future audio accessibility extension point helpers", () => {
+    expect(transcriptPrompt("please summarize", { mediaId: "voice-1" })).toMatchObject({
+      content: "please summarize",
+      safety: "redacted",
+      metadata: { accessibility: "transcript", mediaId: "voice-1" },
+    });
+    expect(spokenOutputEvent("safe answer")).toMatchObject({ kind: "spoken-output", text: "safe answer", safety: "safe-for-speech" });
+    expect(readLastAction()).toMatchObject({ type: "read-last", safety: "safe", metadata: { accessibility: "read-last" } });
+    expect(confirmationRequiredAction({ type: "abort", safety: "requires-confirmation" })).toMatchObject({
+      type: "abort",
+      requiresConfirmation: true,
+      safety: "requires-confirmation",
+    });
   });
 
   it("redacts trace data", () => {

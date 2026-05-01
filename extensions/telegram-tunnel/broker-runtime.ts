@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ImageFileLoadResult, LatestTurnImage, SessionRoute, SessionStatusSnapshot, SetupCache, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { ensureStateDir } from "./paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "./relay-core.js";
+import { relayPipelineProtocolVersion } from "./relay-middleware.js";
 import { sha256 } from "./utils.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
@@ -184,6 +185,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     };
 
     try {
+      if (typeof request.protocolVersion === "number" && request.protocolVersion !== relayPipelineProtocolVersion) {
+        await respond({ ok: false, error: `Unsupported broker protocol version: ${request.protocolVersion}` });
+        return;
+      }
+
       const sessionKey = String(request.sessionKey ?? "");
       const route = this.routes.get(sessionKey);
       if (!route) {
@@ -274,7 +280,15 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }
 
     const requestId = randomUUID();
-    const message: BrokerProtocolRequest = { ...payload, type: "request", requestId, protocolVersion: BROKER_PROTOCOL_VERSION, channel: BROKER_CHANNEL, action };
+    const message: BrokerProtocolRequest = {
+      ...payload,
+      type: "request",
+      requestId,
+      protocolVersion: BROKER_PROTOCOL_VERSION,
+      channel: BROKER_CHANNEL,
+      action,
+      pipeline: { protocolVersion: relayPipelineProtocolVersion, channel: BROKER_CHANNEL, action },
+    };
     const result = new Promise<unknown>((resolvePromise, rejectPromise) => {
       this.pending.set(requestId, { resolve: resolvePromise, reject: rejectPromise });
     });
