@@ -51,21 +51,49 @@ describe("telegram broker process", () => {
 
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode) return Promise.resolve();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
     const finish = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve();
     };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const handleKillError = (error: unknown) => {
+      if (isAlreadyExitedError(error)) finish();
+      else fail(error);
+    };
+
+    timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch (error) {
+        handleKillError(error);
+      }
     }, 1_000);
     timer.unref?.();
     child.once("exit", finish);
-    child.kill("SIGTERM");
+    if (child.exitCode !== null || child.signalCode) {
+      finish();
+      return;
+    }
+    try {
+      child.kill("SIGTERM");
+    } catch (error) {
+      handleKillError(error);
+    }
   });
+}
+
+function isAlreadyExitedError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
 function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams): Promise<void> {
