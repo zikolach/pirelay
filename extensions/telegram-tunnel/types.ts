@@ -4,6 +4,15 @@ import type { StructuredAnswerMetadata } from "./answer-workflow.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
+export type ProgressMode = "quiet" | "normal" | "verbose" | "completionOnly";
+
+export interface ProgressActivityEntry {
+  id: string;
+  kind: "lifecycle" | "tool" | "assistant" | "status";
+  text: string;
+  detail?: string;
+  at: number;
+}
 
 export interface TelegramTunnelConfig {
   botToken: string;
@@ -22,6 +31,11 @@ export interface TelegramTunnelConfig {
   maxOutboundImageBytes: number;
   maxLatestImages: number;
   allowedImageMimeTypes: string[];
+  progressMode?: ProgressMode;
+  progressIntervalMs?: number;
+  verboseProgressIntervalMs?: number;
+  recentActivityLimit?: number;
+  maxProgressMessageChars?: number;
 }
 
 export interface ConfigLoadResult {
@@ -56,6 +70,8 @@ export interface TelegramBindingMetadata {
   lastSeenAt: string;
   revokedAt?: string;
   paused?: boolean;
+  alias?: string;
+  progressMode?: ProgressMode;
 }
 
 export interface PersistedBindingRecord extends TelegramBindingMetadata {
@@ -108,6 +124,8 @@ export interface SessionNotificationState {
   abortRequested?: boolean;
   structuredAnswer?: StructuredAnswerMetadata;
   latestImages?: LatestTurnImageMetadata;
+  progressEvent?: ProgressActivityEntry;
+  recentActivity?: ProgressActivityEntry[];
 }
 
 export type TelegramPromptContent = string | (TextContent | ImageContent)[];

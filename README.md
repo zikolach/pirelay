@@ -191,11 +191,14 @@ Once paired, the Telegram bot supports:
 | Command | Purpose |
 |---|---|
 | `/help` | show available Telegram tunnel commands |
-| `/status` | show session identity, online/offline state, busy/idle state, model, and activity |
-| `/sessions` | list paired Pi sessions for this chat with number, label, online/offline state, and active marker |
+| `/status` | show the session dashboard with identity, online/offline state, busy/idle state, model, progress mode, recent activity, and quick-action buttons |
+| `/sessions` | list paired Pi sessions for this chat with number, alias/label, online/offline state, active marker, and dashboard buttons |
 | `/use <session>` | switch the active session by number, label, or session id prefix |
 | `/forget <session>` | remove an offline paired session from `/sessions` |
 | `/to <session> <prompt>` | send a one-shot prompt to a session without changing the active session |
+| `/progress <quiet\|normal\|verbose\|completion-only>` | set per-session progress notification noise |
+| `/alias <name\|clear>` | set or clear a Telegram-friendly session alias |
+| `/recent` or `/activity` | show recent safe progress/lifecycle activity |
 | `/summary` | show the latest concise summary |
 | `/full` | show the latest assistant output in Telegram-sized chunks |
 | `/images` | download latest captured image outputs or safe image files referenced by the latest completed turn |
@@ -320,8 +323,8 @@ Pair sessions with short labels when useful:
 When no label is provided, PiRelay uses the Pi session name when available, then the project folder name, then the session file basename, then a short session id fallback.
 
 If one Telegram chat is paired to multiple sessions:
-- use `/sessions` to list numbered sessions with stable visual markers, labels, active marker, online/offline state, and idle/busy state
-- use `/use <number|label>` to pick the active target
+- use `/sessions` to list numbered sessions with stable visual markers, aliases/labels, active marker, online/offline state, idle/busy state, model, last activity, and dashboard buttons
+- use `/use <number|alias|label>` to pick the active target
 - use `/forget <number|label>` to remove an offline paired session from the list
 - use `/to <session> <prompt>` for a one-shot prompt without changing the active session; quote labels that contain spaces, for example `/to "docs team" run tests`
 
@@ -349,6 +352,11 @@ Supported configuration keys include:
   "maxOutboundImageBytes": 10485760,
   "maxLatestImages": 4,
   "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"],
+  "progressMode": "normal",
+  "progressIntervalMs": 30000,
+  "verboseProgressIntervalMs": 10000,
+  "recentActivityLimit": 10,
+  "maxProgressMessageChars": 700,
   "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
 }
 ```
@@ -370,6 +378,11 @@ Environment variables:
 - `PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES`
 - `PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES`
 - `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES`
+- `PI_TELEGRAM_TUNNEL_PROGRESS_MODE`
+- `PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS`
+- `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
+- `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
+- `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
 
 For more detail, see [docs/config.md](docs/config.md).
 
@@ -385,7 +398,7 @@ Important points:
 - exported/shared Pi sessions only contain non-secret tunnel metadata
 - pairing links are single-use and expire quickly
 - `allowUserIds` can restrict which Telegram users may control the tunnel
-- redaction patterns can scrub common secret shapes before Telegram text/document delivery
+- redaction patterns can scrub common secret shapes before Telegram text/document delivery, including progress/recent-activity messages
 - image files can contain visual secrets; PiRelay requires explicit `/images`, image button, or `/send-image <relative-path>` action before sending latest image outputs/files back to Telegram
 - `/send-image` accepts only relative workspace PNG/JPEG/WebP paths after containment, symlink, MIME, and size validation; it is not a file browser
 

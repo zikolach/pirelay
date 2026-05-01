@@ -8,6 +8,7 @@ import { getOrCreateTunnelRuntime, sendSessionNotification } from "./runtime.js"
 import { TunnelStateStore } from "./state-store.js";
 import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { extractStructuredAnswerMetadata } from "./answer-workflow.js";
+import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "./progress.js";
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
 
 const BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -112,6 +113,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let activeTurnImagePathTexts: string[] = [];
   let latestTurnImages: LatestTurnImage[] = [];
   let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
+  let progressSequence = 0;
 
   async function ensureConfig(ctx?: ExtensionContext, interactiveNotice = false): Promise<TelegramTunnelConfig> {
     if (configCache) return configCache;
@@ -157,6 +159,21 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       if (loaded.ok) images.push(loaded.image);
     }
     return images;
+  }
+
+  function recordProgress(kind: "lifecycle" | "tool" | "assistant" | "status", text: string, detail?: string): void {
+    if (!currentRoute) return;
+    const config = configCache;
+    const entry = createProgressActivity({
+      id: `${Date.now()}-${++progressSequence}`,
+      kind,
+      text,
+      detail,
+    }, config ?? { redactionPatterns: [], maxProgressMessageChars: undefined });
+    if (!entry) return;
+    currentRoute.notification.progressEvent = entry;
+    appendRecentActivity(currentRoute.notification, entry, recentActivityLimit(config ?? {}));
+    currentRoute.lastActivityAt = Date.now();
   }
 
   function persistBinding(binding: TelegramBindingMetadata | null, revoked = false): void {
@@ -471,6 +488,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.notification.structuredAnswer = undefined;
     currentRoute.notification.latestImages = undefined;
     currentRoute.lastActivityAt = Date.now();
+    recordProgress("lifecycle", "Pi task started");
     publishRouteStateSoon();
   });
 
@@ -481,6 +499,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (event.message.role === "assistant") {
       currentRoute.notification.lastAssistantText = extractTextContent(event.message.content);
       currentRoute.lastActivityAt = Date.now();
+      if (currentRoute.notification.lastStatus === "running") {
+        recordProgress("assistant", "Drafting response");
+        publishRouteStateSoon();
+      }
     }
   });
 
@@ -497,6 +519,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       activeTurnImages.push(...extractImageContent(event.message.content));
       const toolText = extractTextContent(event.message.content as never);
       if (toolText) activeTurnImagePathTexts.push(toolText);
+      if (currentRoute.notification.lastStatus === "running") {
+        recordProgress("tool", "Processed tool result");
+        publishRouteStateSoon();
+      }
     }
   });
 
@@ -506,8 +532,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.actions.context = ctx;
     if (event.isError) {
       currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
+      recordProgress("tool", "Tool failed", event.toolName);
       publishRouteStateSoon();
+      return;
     }
+    recordProgress("tool", "Tool completed", event.toolName);
+    publishRouteStateSoon();
   });
 
   pi.on("agent_end", async (event, ctx) => {
@@ -572,6 +602,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         : "failed";
 
     currentRoute.notification.lastStatus = status;
+    recordProgress("lifecycle", status === "completed" ? "Pi task completed" : status === "aborted" ? "Pi task aborted" : "Pi task failed");
     if (status === "failed" && !currentRoute.notification.lastFailure) {
       currentRoute.notification.lastFailure = "The agent finished without a final assistant response.";
     }

@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { createProgressActivity } from "../extensions/telegram-tunnel/progress.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
@@ -1109,6 +1110,212 @@ describe("InProcessTunnelRuntime", () => {
     expect(images).toEqual(["preview.png", "preview.png"]);
     expect(callbacks).toEqual(["This action is no longer current.", "Sending image outputs."]);
     expect(sent).toContain("That image action belongs to an older Pi output. Use the latest buttons or /images.");
+  });
+
+  it("routes session-list dashboard callbacks to the selected session", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-dash-1:/tmp/session-dash-1.jsonl",
+      sessionId: "session-dash-1",
+      sessionFile: "/tmp/session-dash-1.jsonl",
+      sessionLabel: "first.jsonl",
+      chatId: 1008,
+      userId: 28,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-dash-2:/tmp/session-dash-2.jsonl",
+      sessionId: "session-dash-2",
+      sessionFile: "/tmp/session-dash-2.jsonl",
+      sessionLabel: "second.jsonl",
+      alias: "second-phone",
+      chatId: 1008,
+      userId: 28,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true).route;
+    const second = createRoute(secondBinding, true).route;
+    second.notification.recentActivity = [createProgressActivity({ id: "p2", kind: "tool", text: "Second route activity", at: Date.now() }, config)!];
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    (runtime as any).routes.set(first.sessionKey, first);
+    (runtime as any).routes.set(second.sessionKey, second);
+    const sent: string[] = [];
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processCallback({
+      kind: "callback",
+      updateId: 30,
+      callbackQueryId: "dash-i2",
+      messageId: 30,
+      data: buildDashboardCallbackData(sessionDashboardRef(second.sessionKey), "recent"),
+      chat: { id: 1008, type: "private" },
+      user: { id: 28, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Showing recent activity."]);
+    expect(sent.join("\n")).toContain("Second route activity");
+  });
+
+  it("uses dashboard selection for subsequent in-process prompts", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-use-1:/tmp/session-use-1.jsonl",
+      sessionId: "session-use-1",
+      sessionFile: "/tmp/session-use-1.jsonl",
+      sessionLabel: "first.jsonl",
+      chatId: 1009,
+      userId: 29,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-use-2:/tmp/session-use-2.jsonl",
+      sessionId: "session-use-2",
+      sessionFile: "/tmp/session-use-2.jsonl",
+      sessionLabel: "second.jsonl",
+      chatId: 1009,
+      userId: 29,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true);
+    const second = createRoute(secondBinding, true);
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    (runtime as any).routes.set(first.route.sessionKey, first.route);
+    (runtime as any).routes.set(second.route.sessionKey, second.route);
+    (runtime as any).api = {
+      answerCallbackQuery: async () => undefined,
+      sendPlainText: async () => undefined,
+      sendPlainTextWithKeyboard: async () => undefined,
+    };
+
+    await (runtime as any).processCallback({
+      kind: "callback",
+      updateId: 31,
+      callbackQueryId: "dash-use-second",
+      messageId: 31,
+      data: buildDashboardCallbackData(sessionDashboardRef(second.route.sessionKey), "use"),
+      chat: { id: 1009, type: "private" },
+      user: { id: 29, username: "owner" },
+    });
+
+    await (runtime as any).processInbound({
+      updateId: 32,
+      messageId: 32,
+      text: "hello selected session",
+      chat: { id: 1009, type: "private" },
+      user: { id: 29, username: "owner" },
+    });
+
+    expect(first.deliveries).toHaveLength(0);
+    expect(second.deliveries).toEqual([{ text: "hello selected session", deliverAs: undefined }]);
+  });
+
+  it("includes persisted offline sessions in the in-process session list", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const onlineBinding: TelegramBindingMetadata = {
+      sessionKey: "session-online:/tmp/session-online.jsonl",
+      sessionId: "session-online",
+      sessionFile: "/tmp/session-online.jsonl",
+      sessionLabel: "online.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const offlineBinding: TelegramBindingMetadata = {
+      sessionKey: "session-offline:/tmp/session-offline.jsonl",
+      sessionId: "session-offline",
+      sessionFile: "/tmp/session-offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const online = createRoute(onlineBinding, true);
+    await store.upsertBinding(onlineBinding);
+    await store.upsertBinding(offlineBinding);
+    (runtime as any).routes.set(online.route.sessionKey, online.route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 33,
+      messageId: 33,
+      text: "/sessions",
+      chat: { id: 1010, type: "private" },
+      user: { id: 30, username: "owner" },
+    });
+
+    expect(sent.join("\n")).toContain("online.jsonl");
+    expect(sent.join("\n")).toContain("offline.jsonl");
+    expect(sent.join("\n")).toContain("offline");
+  });
+
+  it("coalesces rate-limited progress updates and respects quiet mode", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1_000;
+    config.verboseProgressIntervalMs = 100;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress:/tmp/session-progress.jsonl",
+      sessionId: "session-progress",
+      sessionFile: "/tmp/session-progress.jsonl",
+      sessionLabel: "session-progress.jsonl",
+      chatId: 1007,
+      userId: 27,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "verbose",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    route.notification.progressEvent = createProgressActivity({ id: "p1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    route.notification.progressEvent = createProgressActivity({ id: "p2", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(sent[0]).toContain("Running tests (2×)");
+    expect(route.notification.recentActivity).toHaveLength(2);
+
+    sent.length = 0;
+    binding.progressMode = "quiet";
+    route.notification.progressEvent = createProgressActivity({ id: "p3", kind: "tool", text: "Editing files", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    expect(sent).toEqual([]);
   });
 
   it("sends explicit workspace image paths and explains empty latest image states", async () => {

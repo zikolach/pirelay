@@ -57,6 +57,15 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
   });
 
+  it("uses aliases in session lists and selectors", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "long local label", alias: "phone", online: true, busy: false, modelId: "gpt-test", lastActivityAt: 0 },
+    ];
+    const list = formatSessionList(entries, entries[0]!.sessionKey);
+    expect(list).toContain("phone (long local label) — online — idle — gpt-test");
+    expect(resolveSessionSelector(entries, "phone")).toMatchObject({ kind: "matched", index: 0 });
+  });
+
   it("assigns stable lightweight markers from session identity", () => {
     const entry = { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "api", online: true };
     expect(sessionMarkerFor(entry)).toBe(sessionMarkerFor({ sessionKey: entry.sessionKey, sessionId: entry.sessionId }));
@@ -84,6 +93,13 @@ describe("telegram utils", () => {
 
     expect(sessionSourcePrefixForRoute(first, [first, otherChat])).toBe("");
     expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkersFor([first, second]).get(first.sessionKey)} api\n\n`);
+  });
+
+  it("uses aliases in multi-session source prefixes", () => {
+    const first: BoundSessionIdentity = { sessionKey: "a", sessionId: "a", sessionLabel: "api-local", binding: { chatId: 1, userId: 2, alias: "phone" } };
+    const second: BoundSessionIdentity = { sessionKey: "b", sessionId: "b", sessionLabel: "docs", binding: { chatId: 1, userId: 2 } };
+
+    expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkersFor([first, second]).get(first.sessionKey)} phone\n\n`);
   });
 
   it("distinguishes missing and unmatched session selectors", () => {

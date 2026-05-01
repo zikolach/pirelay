@@ -23,8 +23,13 @@ import {
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   buildLatestImagesKeyboard,
+  buildSessionDashboardKeyboard,
+  buildSessionListDashboardKeyboard,
+  isIndexedSessionDashboardRef,
   parseTelegramActionCallbackData,
+  sessionDashboardRef,
   shouldOfferFullOutputActions,
+  type DashboardAction,
 } from "./telegram-actions.js";
 import type {
   LatestTurnImage,
@@ -42,8 +47,20 @@ import type {
   TunnelRuntime,
   TelegramUserSummary,
 } from "./types.js";
-import { sessionSourcePrefixForRoute } from "./session-multiplexing.js";
+import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg } from "./commands.js";
+import { formatSessionList, resolveSessionSelector, sessionSourcePrefixForRoute, type SessionListEntry } from "./session-multiplexing.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./relay-telegram-middleware.js";
+import {
+  appendRecentActivity,
+  displayProgressMode,
+  formatProgressUpdate,
+  formatRecentActivity,
+  normalizeProgressMode,
+  progressIntervalMsFor,
+  progressModeFor,
+  recentActivityLimit,
+  shouldSendNonTerminalProgress,
+} from "./progress.js";
 import {
   buildImagePromptContent,
   createTurnId,
@@ -56,24 +73,6 @@ import {
   summarizeTextDeterministically,
   toIsoNow,
 } from "./utils.js";
-
-const HELP_TEXT = [
-  "Telegram tunnel commands:",
-  "/help - show commands",
-  "/status - session and tunnel status",
-  "/summary - latest summary/excerpt",
-  "/full - latest full assistant output",
-  "/images - download latest image outputs or generated image files",
-  "/send-image <path> - send a validated workspace image file",
-  "/steer <text> - steer the active run",
-  "/followup <text> - queue a follow-up",
-  "/abort - abort the active run",
-  "/compact - trigger Pi compaction",
-  "/pause - pause remote delivery",
-  "/resume - resume remote delivery",
-  "/disconnect - revoke this chat binding",
-  "answer - start a guided answer flow when the latest output contains choices/questions",
-].join("\n");
 
 const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
@@ -126,6 +125,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly pendingCustomAnswers = new Map<string, PendingCustomAnswerState>();
   private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly activeSessionByChatUser = new Map<string, string>();
   private started = false;
   private pollingTask?: Promise<void>;
   private releaseLock?: () => Promise<void>;
@@ -154,6 +155,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async stop(): Promise<void> {
     this.started = false;
     this.clearAllActivityIndicators();
+    this.clearAllProgressStates();
     await this.pollingTask?.catch(() => undefined);
     this.pollingTask = undefined;
     if (this.releaseLock) {
@@ -195,6 +197,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     this.clearStaleCustomAnswers(route);
     this.routes.set(route.sessionKey, route);
     this.syncActivityIndicator(route);
+    this.syncProgressDelivery(route);
     if (route.binding) {
       await this.store.upsertBinding(route.binding);
     }
@@ -206,6 +209,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (route) {
       this.clearAnswerStateForRoute(route);
       this.clearActivityIndicator(route);
+      this.clearProgressState(route);
     }
     this.routes.delete(sessionKey);
     if (this.routes.size === 0) {
@@ -461,6 +465,70 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
+  private progressKey(route: SessionRoute): string | undefined {
+    return route.binding ? `${route.sessionKey}:${route.binding.chatId}` : undefined;
+  }
+
+  private clearAllProgressStates(): void {
+    for (const state of this.progressStates.values()) {
+      if (state.timer) clearTimeout(state.timer);
+    }
+    this.progressStates.clear();
+  }
+
+  private clearProgressState(route: SessionRoute): void {
+    const key = this.progressKey(route);
+    if (!key) return;
+    const state = this.progressStates.get(key);
+    if (state?.timer) clearTimeout(state.timer);
+    this.progressStates.delete(key);
+  }
+
+  private syncProgressDelivery(route: SessionRoute): void {
+    const event = route.notification.progressEvent;
+    const key = this.progressKey(route);
+    if (!key || !event || !route.binding || route.binding.paused || route.notification.lastStatus !== "running") {
+      if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
+      return;
+    }
+    const mode = progressModeFor(route.binding, this.config);
+    if (!shouldSendNonTerminalProgress(mode)) return;
+    let state = this.progressStates.get(key);
+    if (!state) {
+      state = { pending: [] };
+      this.progressStates.set(key, state);
+    }
+    if (state.lastEventId === event.id) return;
+    state.lastEventId = event.id;
+    appendRecentActivity(route.notification, event, recentActivityLimit(this.config));
+    state.pending.push(event);
+    if (state.timer) return;
+    const interval = progressIntervalMsFor(mode, this.config);
+    const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
+    const delay = Math.max(0, interval - elapsed);
+    state.timer = setTimeout(() => {
+      void this.flushProgress(route.sessionKey, route.binding!.chatId, key);
+    }, delay);
+    unrefTimer(state.timer);
+  }
+
+  private async flushProgress(sessionKey: string, chatId: number, key: string): Promise<void> {
+    const state = this.progressStates.get(key);
+    if (!state) return;
+    state.timer = undefined;
+    const route = this.routes.get(sessionKey);
+    if (!route || !route.binding || route.binding.chatId !== chatId || route.binding.paused || route.notification.lastStatus !== "running") {
+      if (route) this.clearProgressState(route);
+      else this.progressStates.delete(key);
+      return;
+    }
+    const pending = state.pending.splice(0);
+    const text = formatProgressUpdate(pending, this.config);
+    if (!text) return;
+    state.lastSentAt = Date.now();
+    await this.api.sendPlainText(chatId, `${this.sourcePrefixForRoute(route)}${text}`);
+  }
+
   private async acquireLock(): Promise<void> {
     const path = getLockFilePath(this.config.stateDir);
     await ensureParentDir(path);
@@ -501,14 +569,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const persisted = await this.store.getBindingByChatId(message.chat.id);
+    const persisted = await this.activeBindingForMessage(message.chat.id, message.user.id);
     if (!persisted) {
-      await this.api.sendPlainText(message.chat.id, "This chat is not paired to an active Pi session. Run /telegram-tunnel connect locally first.");
-      return;
-    }
-
-    if (persisted.status === "revoked") {
-      await this.api.sendPlainText(message.chat.id, "This Telegram tunnel binding has been revoked. Pair again from Pi with /telegram-tunnel connect.");
+      const revoked = await this.chatUserHasRevokedBinding(message.chat.id, message.user.id);
+      await this.api.sendPlainText(
+        message.chat.id,
+        revoked
+          ? "This Telegram tunnel binding has been revoked. Pair again from Pi with /telegram-tunnel connect."
+          : await this.chatHasActiveBinding(message.chat.id)
+            ? "Unauthorized Telegram identity for this Pi session."
+            : "This chat is not paired to an active Pi session. Run /telegram-tunnel connect locally first.",
+      );
       return;
     }
 
@@ -555,6 +626,44 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     await this.handleAuthorizedMessage(route, message);
   }
 
+  private async resolveCallbackRoute(
+    callback: TelegramInboundCallback,
+    action: NonNullable<ReturnType<typeof parseTelegramActionCallbackData>>,
+  ): Promise<SessionRoute | undefined> {
+    if (action.kind === "dashboard" && action.sessionRef !== "current") {
+      const entries = await this.sessionEntriesForChat(callback.chat.id, callback.user.id);
+      const entry = isIndexedSessionDashboardRef(action.sessionRef)
+        ? entries[Number(action.sessionRef.slice(1)) - 1]
+        : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
+      if (!entry) {
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "This dashboard is stale.");
+        await this.api.sendPlainText(callback.chat.id, "That session dashboard is stale. Use /sessions for the latest list.");
+        return undefined;
+      }
+      const route = entry.online ? this.routes.get(entry.sessionKey) : undefined;
+      if (!route) {
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
+        await this.api.sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
+        return undefined;
+      }
+      return route;
+    }
+
+    const persisted = await this.activeBindingForMessage(callback.chat.id, callback.user.id);
+    if (!persisted) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, await this.chatHasActiveBinding(callback.chat.id) ? "Unauthorized." : "This chat is not paired.");
+      return undefined;
+    }
+
+    const route = this.routes.get(persisted.sessionKey);
+    if (!route) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
+      await this.api.sendPlainText(callback.chat.id, `The paired Pi session (${persisted.sessionLabel}) is currently offline. Resume it locally, then try again.`);
+      return undefined;
+    }
+    return route;
+  }
+
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
     const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config: this.config });
     const action = telegramActionFromPipelineResult(initialPipeline.result) ?? parseTelegramActionCallbackData(callback.data);
@@ -563,21 +672,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const persisted = await this.store.getBindingByChatId(callback.chat.id);
-    if (!persisted || persisted.status === "revoked") {
-      await this.api.answerCallbackQuery(callback.callbackQueryId, "This chat is not paired.");
-      return;
-    }
-
-    const route = this.routes.get(persisted.sessionKey);
-    if (!route) {
-      await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
-      await this.api.sendPlainText(callback.chat.id, `The paired Pi session (${persisted.sessionLabel}) is currently offline. Resume it locally, then try again.`);
-      return;
-    }
+    const route = await this.resolveCallbackRoute(callback, action);
+    if (!route) return;
 
     if (!route.binding || !(await this.isAuthorized(route, callback.user))) {
       await this.api.answerCallbackQuery(callback.callbackQueryId, "Unauthorized.");
+      return;
+    }
+
+    if (action.kind === "dashboard") {
+      await this.handleDashboardAction(callback, route, action.action);
       return;
     }
 
@@ -681,6 +785,71 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
+  private async handleDashboardAction(callback: TelegramInboundCallback, route: SessionRoute, action: DashboardAction): Promise<void> {
+    if (!route.binding) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "This session is not paired.");
+      return;
+    }
+    const chatId = callback.chat.id;
+    switch (action) {
+      case "use":
+        this.activeSessionByChatUser.set(this.activeSessionKey(chatId, callback.user.id), route.sessionKey);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Active session selected.");
+        await this.sendTextWithKeyboard(chatId, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
+        return;
+      case "status":
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Showing status.");
+        await this.sendTextWithKeyboard(chatId, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
+        return;
+      case "recent":
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Showing recent activity.");
+        await this.sendRecentActivity(route, chatId);
+        return;
+      case "full":
+        await this.api.answerCallbackQuery(callback.callbackQueryId, route.notification.lastAssistantText ? "Sending full output." : "No output available.");
+        await this.api.sendPlainText(chatId, route.notification.lastAssistantText || "No completed assistant output is available yet for this session.");
+        return;
+      case "images":
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending image outputs.");
+        await this.sendLatestImages(route, chatId);
+        return;
+      case "pause":
+        route.binding.paused = true;
+        this.clearActivityIndicator(route);
+        this.clearProgressState(route);
+        await this.store.upsertBinding(route.binding);
+        route.actions.persistBinding(route.binding, false);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Tunnel paused.");
+        await this.api.sendPlainText(chatId, "Tunnel paused. Remote prompts and notifications are suspended until /resume.");
+        return;
+      case "resume":
+        route.binding.paused = false;
+        await this.store.upsertBinding(route.binding);
+        route.actions.persistBinding(route.binding, false);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Tunnel resumed.");
+        await this.api.sendPlainText(chatId, "Tunnel resumed.");
+        return;
+      case "abort":
+        if (isEffectivelyIdle(route)) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "Session is idle.");
+          await this.api.sendPlainText(chatId, "The Pi session is already idle.");
+          return;
+        }
+        route.notification.abortRequested = true;
+        route.actions.abort();
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested abort from dashboard.`);
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Abort requested.");
+        await this.api.sendPlainText(chatId, "Abort requested.");
+        return;
+      case "compact":
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested compaction from dashboard.`);
+        await route.actions.compact();
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Compaction requested.");
+        await this.api.sendPlainText(chatId, "Compaction requested.");
+        return;
+    }
+  }
+
   private async handleStart(message: TelegramInboundMessage, nonce: string): Promise<void> {
     if (!nonce) {
       await this.api.sendPlainText(message.chat.id, "Missing pairing payload. Re-run /telegram-tunnel connect in Pi and scan the new QR code.");
@@ -727,6 +896,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     };
 
     route.binding = binding;
+    this.activeSessionByChatUser.set(this.activeSessionKey(message.chat.id, message.user.id), route.sessionKey);
     await this.store.upsertBinding(binding);
     route.actions.persistBinding(binding, false);
     route.actions.appendAudit(`Telegram tunnel paired with ${getTelegramUserLabel(message.user)}.`);
@@ -893,7 +1063,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    if (binding.paused && !["resume", "status", "help", "disconnect"].includes(command)) {
+    if (binding.paused && !commandAllowsWhilePaused(command)) {
       await this.api.sendPlainText(message.chat.id, "The tunnel is currently paused. Use /resume or disconnect locally.");
       return;
     }
@@ -904,16 +1074,37 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "status": {
-        const status = this.statusOf(route, true);
-        const lines = [
-          `Session: ${status.sessionLabel}`,
-          `Binding: ${statusLineForBinding(status.binding)}`,
-          `Online: ${status.online ? "yes" : "no"}`,
-          `Busy: ${status.busy ? "yes" : "no"}`,
-          `Model: ${status.modelId ?? "unknown"}`,
-          `Last activity: ${status.lastActivityAt ? new Date(status.lastActivityAt).toLocaleString() : "unknown"}`,
-        ];
-        await this.api.sendPlainText(message.chat.id, lines.join("\n"));
+        await this.sendTextWithKeyboard(message.chat.id, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
+        return;
+      }
+      case "sessions": {
+        const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+        await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, this.activeSessionByChatUser.get(this.activeSessionKey(message.chat.id, message.user.id)) ?? route.sessionKey), buildSessionListDashboardKeyboard(entries));
+        return;
+      }
+      case "progress":
+      case "notify": {
+        const mode = args ? displayProgressMode(progressModeFor({ progressMode: this.parseProgressModeArg(args) }, this.config)) : undefined;
+        if (!args || !this.parseProgressModeArg(args)) {
+          await this.api.sendPlainText(message.chat.id, `Progress mode: ${displayProgressMode(binding.progressMode ?? this.config.progressMode)}\nUsage: /progress <quiet|normal|verbose|completion-only>`);
+          return;
+        }
+        binding.progressMode = this.parseProgressModeArg(args);
+        await this.store.upsertBinding(binding);
+        route.actions.persistBinding(binding, false);
+        await this.api.sendPlainText(message.chat.id, `Progress notifications set to ${mode}.`);
+        return;
+      }
+      case "alias": {
+        binding.alias = normalizeAliasArg(args);
+        await this.store.upsertBinding(binding);
+        route.actions.persistBinding(binding, false);
+        await this.api.sendPlainText(message.chat.id, binding.alias ? `Session alias set to ${binding.alias}.` : "Session alias cleared.");
+        return;
+      }
+      case "recent":
+      case "activity": {
+        await this.sendRecentActivity(route, message.chat.id);
         return;
       }
       case "summary": {
@@ -991,6 +1182,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       case "pause": {
         binding.paused = true;
         this.clearActivityIndicator(route);
+        this.clearProgressState(route);
         await this.store.upsertBinding(binding);
         route.actions.persistBinding(binding, false);
         await this.api.sendPlainText(message.chat.id, "Tunnel paused. Remote prompts and notifications are suspended until /resume.");
@@ -1006,6 +1198,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       case "disconnect": {
         this.clearAnswerStateForRoute(route);
         this.clearActivityIndicator(route);
+        this.clearProgressState(route);
         await this.revokeBinding(route, `Telegram ${getTelegramUserLabel(message.user)} disconnected the tunnel.`);
         await this.api.sendPlainText(message.chat.id, "Disconnected. Future messages from this chat will be ignored until a new pairing is created.");
         return;
@@ -1209,6 +1402,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async revokeBinding(route: SessionRoute, auditMessage: string): Promise<void> {
+    if (route.binding) this.activeSessionByChatUser.delete(this.activeSessionKey(route.binding.chatId, route.binding.userId));
     route.binding = undefined;
     await this.store.revokeBinding(route.sessionKey);
     route.actions.persistBinding(null, true);
@@ -1219,12 +1413,126 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return sessionSourcePrefixForRoute(route, this.routes.values());
   }
 
+  private activeSessionKey(chatId: number, userId: number): string {
+    return `${chatId}:${userId}`;
+  }
+
+  private async chatHasActiveBinding(chatId: number): Promise<boolean> {
+    return (await this.store.getBindingsByChatId(chatId)).some((binding) => binding.status !== "revoked");
+  }
+
+  private async chatUserHasRevokedBinding(chatId: number, userId: number): Promise<boolean> {
+    return (await this.store.getBindingsByChatId(chatId)).some((binding) => binding.status === "revoked" && binding.userId === userId);
+  }
+
+  private async activeBindingForMessage(chatId: number, userId: number): Promise<TelegramBindingMetadata | undefined> {
+    const bindings = (await this.store.getBindingsByChatId(chatId))
+      .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    if (bindings.length === 0) return undefined;
+    const activeKey = this.activeSessionByChatUser.get(this.activeSessionKey(chatId, userId));
+    const active = activeKey ? bindings.find((binding) => binding.sessionKey === activeKey) : undefined;
+    return active ?? bindings.find((binding) => this.routes.has(binding.sessionKey)) ?? bindings[0];
+  }
+
+  private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
+    const persisted = (await this.store.getBindingsByChatId(chatId))
+      .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    const byKey = new Map<string, SessionListEntry>();
+    for (const binding of persisted) {
+      const route = this.routes.get(binding.sessionKey);
+      if (route) {
+        byKey.set(binding.sessionKey, {
+          sessionKey: route.sessionKey,
+          sessionId: route.sessionId,
+          sessionFile: route.sessionFile,
+          sessionLabel: route.sessionLabel,
+          alias: route.binding?.alias ?? binding.alias,
+          online: true,
+          busy: !isEffectivelyIdle(route),
+          paused: Boolean(route.binding?.paused ?? binding.paused),
+          modelId: statusSnapshotForRoute(route, { online: true, busy: !isEffectivelyIdle(route) }).modelId,
+          lastActivityAt: route.lastActivityAt,
+        });
+        continue;
+      }
+      byKey.set(binding.sessionKey, {
+        sessionKey: binding.sessionKey,
+        sessionId: binding.sessionId,
+        sessionFile: binding.sessionFile,
+        sessionLabel: binding.sessionLabel,
+        alias: binding.alias,
+        online: false,
+        busy: false,
+        paused: Boolean(binding.paused),
+        lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+      });
+    }
+
+    for (const route of this.routes.values()) {
+      if (route.binding?.chatId !== chatId || route.binding.userId !== userId || byKey.has(route.sessionKey)) continue;
+      byKey.set(route.sessionKey, {
+        sessionKey: route.sessionKey,
+        sessionId: route.sessionId,
+        sessionFile: route.sessionFile,
+        sessionLabel: route.sessionLabel,
+        alias: route.binding.alias,
+        online: true,
+        busy: !isEffectivelyIdle(route),
+        paused: Boolean(route.binding.paused),
+        modelId: statusSnapshotForRoute(route, { online: true, busy: !isEffectivelyIdle(route) }).modelId,
+        lastActivityAt: route.lastActivityAt,
+      });
+    }
+    return [...byKey.values()];
+  }
+
+  private parseProgressModeArg(args: string) {
+    return normalizeProgressMode(args);
+  }
+
+  private statusTextForRoute(route: SessionRoute, online: boolean): string {
+    const status = this.statusOf(route, online);
+    return [
+      `Session: ${status.binding?.alias || status.sessionLabel}`,
+      status.binding?.alias ? `Label: ${status.sessionLabel}` : undefined,
+      `Binding: ${statusLineForBinding(status.binding)}`,
+      `Online: ${status.online ? "yes" : "no"}`,
+      `Busy: ${status.busy ? "yes" : "no"}`,
+      `Model: ${status.modelId ?? "unknown"}`,
+      `Progress mode: ${displayProgressMode(status.binding?.progressMode ?? this.config.progressMode)}`,
+      `Last activity: ${status.lastActivityAt ? new Date(status.lastActivityAt).toLocaleString() : "unknown"}`,
+    ].filter(Boolean).join("\n");
+  }
+
+  private dashboardKeyboardForRoute(route: SessionRoute) {
+    return buildSessionDashboardKeyboard("current", {
+      paused: Boolean(route.binding?.paused),
+      busy: !isEffectivelyIdle(route),
+      hasOutput: Boolean(route.notification.lastAssistantText),
+      hasImages: Boolean(route.notification.latestImages?.count),
+    });
+  }
+
+  private async sendTextWithKeyboard(chatId: number, text: string, keyboard: ReturnType<typeof buildSessionDashboardKeyboard>): Promise<void> {
+    const maybeApi = this.api as TelegramApiClient & { sendPlainTextWithKeyboard?: TelegramApiClient["sendPlainTextWithKeyboard"] };
+    if (typeof maybeApi.sendPlainTextWithKeyboard === "function") {
+      await maybeApi.sendPlainTextWithKeyboard(chatId, text, keyboard);
+      return;
+    }
+    await this.api.sendPlainText(chatId, text);
+  }
+
+  private async sendRecentActivity(route: SessionRoute, chatId: number): Promise<void> {
+    await this.api.sendPlainText(chatId, formatRecentActivity(route.notification.recentActivity, { limit: recentActivityLimit(this.config) }));
+  }
+
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {
     return statusSnapshotForRoute(route, { online, busy: !isEffectivelyIdle(route) });
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.clearActivityIndicator(route);
+    this.clearProgressState(route);
     this.clearAnswerStateForRoute(route);
     if (!route.binding || route.binding.paused) return;
     const notification = route.notification;

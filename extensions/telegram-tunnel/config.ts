@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { DEFAULT_STATE_DIR, getDefaultConfigPath } from "./paths.js";
 import type { ConfigLoadResult, TelegramTunnelConfig } from "./types.js";
+import { DEFAULT_MAX_PROGRESS_MESSAGE_CHARS, DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_MODE, DEFAULT_RECENT_ACTIVITY_LIMIT, DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS, normalizeProgressMode } from "./progress.js";
 import { getDefaultRedactionPatterns } from "./utils.js";
 
 interface ConfigFileShape {
@@ -23,6 +24,11 @@ interface ConfigFileShape {
   maxOutboundImageBytes?: number;
   maxLatestImages?: number;
   allowedImageMimeTypes?: string[];
+  progressMode?: string;
+  progressIntervalMs?: number;
+  verboseProgressIntervalMs?: number;
+  recentActivityLimit?: number;
+  maxProgressMessageChars?: number;
 }
 
 export class ConfigError extends Error {}
@@ -144,6 +150,24 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   const allowedImageMimeTypes = parseStringList(process.env.PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES)
     ?? fileConfig?.allowedImageMimeTypes
     ?? ["image/jpeg", "image/png", "image/webp"];
+  const rawProgressMode = process.env.PI_TELEGRAM_TUNNEL_PROGRESS_MODE ?? fileConfig?.progressMode;
+  const progressMode = rawProgressMode === undefined ? DEFAULT_PROGRESS_MODE : normalizeProgressMode(rawProgressMode);
+  const progressIntervalMs = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS,
+    fileConfig?.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS,
+  );
+  const verboseProgressIntervalMs = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS,
+    fileConfig?.verboseProgressIntervalMs ?? DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS,
+  );
+  const recentActivityLimit = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT,
+    fileConfig?.recentActivityLimit ?? DEFAULT_RECENT_ACTIVITY_LIMIT,
+  );
+  const maxProgressMessageChars = parseNumber(
+    process.env.PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS,
+    fileConfig?.maxProgressMessageChars ?? DEFAULT_MAX_PROGRESS_MESSAGE_CHARS,
+  );
 
   if (pairingExpiryMs < 30_000) {
     throw new ConfigError("pairingExpiryMs must be at least 30000.");
@@ -163,6 +187,21 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   if (allowedImageMimeTypes.length === 0) {
     throw new ConfigError("allowedImageMimeTypes must include at least one MIME type.");
   }
+  if (!normalizeProgressMode(progressMode)) {
+    throw new ConfigError("progressMode must be quiet, normal, verbose, completion-only, or completionOnly.");
+  }
+  if (progressIntervalMs < 5_000 || progressIntervalMs > 10 * 60_000) {
+    throw new ConfigError("progressIntervalMs must be between 5000 and 600000.");
+  }
+  if (verboseProgressIntervalMs < 2_000 || verboseProgressIntervalMs > 10 * 60_000) {
+    throw new ConfigError("verboseProgressIntervalMs must be between 2000 and 600000.");
+  }
+  if (recentActivityLimit < 1 || recentActivityLimit > 50) {
+    throw new ConfigError("recentActivityLimit must be between 1 and 50.");
+  }
+  if (maxProgressMessageChars < 120 || maxProgressMessageChars > 1500) {
+    throw new ConfigError("maxProgressMessageChars must be between 120 and 1500.");
+  }
 
   const config: TelegramTunnelConfig = {
     botToken,
@@ -181,6 +220,11 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     maxOutboundImageBytes,
     maxLatestImages,
     allowedImageMimeTypes,
+    progressMode,
+    progressIntervalMs,
+    verboseProgressIntervalMs,
+    recentActivityLimit,
+    maxProgressMessageChars,
   };
 
   return { config, warnings };

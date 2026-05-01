@@ -78,12 +78,14 @@ Check:
 
 1. Pair one Pi session with `/telegram-tunnel connect docs`.
 2. Pair a second Pi session to the same Telegram chat with `/telegram-tunnel connect api`.
-3. Use `/sessions` and verify the list shows numbers, stable visual markers, labels, active marker, online/offline state, and idle/busy state.
-4. Use `/use <number|label>` in Telegram and verify ordinary prompts route to the selected active session.
+3. Use `/sessions` and verify the list shows numbers, stable visual markers, aliases/labels, active marker, online/offline state, idle/busy state, model, last activity, and dashboard buttons.
+4. Use `/use <number|alias|label>` in Telegram and verify ordinary prompts route to the selected active session.
 5. Use `/to <session> <prompt>` and verify the prompt reaches the target session without changing the active session.
 6. Pair two sessions with the same label and verify `/use <label>` asks for numeric disambiguation.
 7. Disconnect one session locally and verify `/use <number>` reports it as offline while the remaining session still works.
-8. Reconnect the disconnected session and verify local prompts still work there too.
+8. Use `/use docs`, then set `/alias phone`, and verify `/sessions` and selectors use the alias while retaining the original label for disambiguation.
+9. Use `/progress quiet`, `/progress verbose`, and `/recent` during a run and verify safe progress noise changes without suppressing terminal completion/failure/abort notifications.
+10. Reconnect the disconnected session and verify local prompts still work there too.
 
 ## 5. Image bridge behavior
 
