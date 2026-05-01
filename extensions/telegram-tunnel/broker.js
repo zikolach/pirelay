@@ -71,6 +71,7 @@ const relayPipelineProtocolVersion = requiredNumber(relayMiddlewareModule, './re
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
+const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
 }
@@ -1847,7 +1848,7 @@ const server = net.createServer((socket) => {
 
 server.listen(socketPath, async () => {
   await ensureSetup().catch(() => undefined);
-  void pollLoop();
+  if (!skipPolling) void pollLoop();
 });
 
 const shutdown = async () => {

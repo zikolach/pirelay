@@ -38,8 +38,9 @@ describe("telegram broker process", () => {
         TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
           botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
           stateDir,
-          pollingTimeoutSeconds: 0.001,
+          pollingTimeoutSeconds: 1,
         }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
       },
     });
     children.push(child);
