@@ -1,0 +1,93 @@
+import { describe, expect, it, vi } from "vitest";
+import { TelegramChannelAdapter, telegramCapabilities, telegramUpdateToChannelEvent, toTelegramKeyboard, type TelegramApiOperations } from "../extensions/telegram-tunnel/telegram-adapter.js";
+import type { TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+
+function config(): TelegramTunnelConfig {
+  return {
+    botToken: "token",
+    stateDir: "/tmp/pi-telegram-test",
+    pairingExpiryMs: 300_000,
+    busyDeliveryMode: "followUp",
+    allowUserIds: [],
+    summaryMode: "deterministic",
+    maxTelegramMessageChars: 1234,
+    sendRetryCount: 1,
+    sendRetryBaseMs: 1,
+    pollingTimeoutSeconds: 1,
+    redactionPatterns: [],
+    maxInboundImageBytes: 100,
+    maxOutboundImageBytes: 200,
+    maxLatestImages: 2,
+    allowedImageMimeTypes: ["image/png"],
+  };
+}
+
+describe("telegram channel adapter", () => {
+  it("declares Telegram transport capabilities from tunnel config", () => {
+    expect(telegramCapabilities(config())).toMatchObject({
+      inlineButtons: true,
+      callbacks: true,
+      maxTextChars: 1234,
+      maxDocumentBytes: 200,
+      supportedImageMimeTypes: ["image/png"],
+    });
+  });
+
+  it("converts Telegram messages and callbacks into channel events", () => {
+    const message = telegramUpdateToChannelEvent({
+      kind: "message",
+      updateId: 10,
+      messageId: 20,
+      text: "hello",
+      images: [{ kind: "photo", fileId: "file-1", mimeType: "image/jpeg", supported: true }],
+      chat: { id: 30, type: "private" },
+      user: { id: 40, username: "owner", firstName: "Own" },
+    });
+    expect(message).toMatchObject({
+      kind: "message",
+      channel: "telegram",
+      updateId: "10",
+      messageId: "20",
+      text: "hello",
+      conversation: { id: "30", kind: "private" },
+      sender: { userId: "40", username: "owner" },
+      attachments: [{ id: "file-1", kind: "image" }],
+    });
+
+    const callback = telegramUpdateToChannelEvent({
+      kind: "callback",
+      updateId: 11,
+      callbackQueryId: "cb-1",
+      messageId: 21,
+      data: "act:1",
+      chat: { id: 30, type: "private" },
+      user: { id: 40 },
+    });
+    expect(callback).toMatchObject({ kind: "action", actionId: "cb-1", actionData: "act:1", messageId: "21" });
+  });
+
+  it("maps outbound payloads to Telegram API operations", async () => {
+    const sent: string[] = [];
+    const api: TelegramApiOperations = {
+      getUpdates: vi.fn(async () => []),
+      sendPlainTextWithKeyboard: vi.fn(async (_chatId, text) => { sent.push(`text:${text}`); }),
+      sendDocumentData: vi.fn(async (_chatId, filename, data, caption) => { sent.push(`doc:${filename}:${data.byteLength}:${caption ?? ""}`); }),
+      answerCallbackQuery: vi.fn(async (id, text) => { sent.push(`answer:${id}:${text ?? ""}`); }),
+      sendChatAction: vi.fn(async (_chatId, action) => { sent.push(`activity:${action ?? "typing"}`); }),
+    };
+    const adapter = new TelegramChannelAdapter(config(), api);
+    const address = { channel: "telegram", conversationId: "30", userId: "40" };
+
+    await adapter.send({ kind: "text", address, text: "hello", buttons: [[{ label: "OK", actionData: "ok" }]] });
+    await adapter.send({ kind: "document", address, file: { fileName: "out.md", mimeType: "text/markdown", data: Buffer.from("abc") }, caption: "cap" });
+    await adapter.send({ kind: "activity", address, activity: "typing" });
+    await adapter.send({ kind: "action-answer", channel: "telegram", actionId: "cb-1", text: "done" });
+
+    expect(api.sendPlainTextWithKeyboard).toHaveBeenCalledWith(30, "hello", [[{ text: "OK", callbackData: "ok" }]]);
+    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "activity:typing", "answer:cb-1:done"]);
+  });
+
+  it("converts channel button layout to Telegram inline keyboard", () => {
+    expect(toTelegramKeyboard([[{ label: "One", actionData: "1" }]])).toEqual([[{ text: "One", callbackData: "1" }]]);
+  });
+});

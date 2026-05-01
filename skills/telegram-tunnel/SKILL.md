@@ -12,6 +12,7 @@ Use the extension command for all runtime actions:
 - `/telegram-tunnel connect [name]` generates the QR code + Telegram deep link for the current session with an optional display label
 - `/telegram-tunnel disconnect` revokes the active binding
 - `/telegram-tunnel status` shows local tunnel state
+- `/relay ...` is a generic local alias for the same setup/connect/disconnect/status workflow
 
 ## Setup
 

@@ -131,10 +131,15 @@ export class TelegramApiClient {
 
   async sendMarkdownDocument(chatId: number, filename: string, text: string, caption?: string): Promise<void> {
     const redacted = redactSecret(text, this.config.redactionPatterns);
+    await this.sendDocumentData(chatId, filename, Buffer.from(redacted, "utf8"), caption);
+  }
+
+  async sendDocumentData(chatId: number, filename: string, data: Uint8Array, caption?: string): Promise<void> {
+    const redactedCaption = caption ? redactSecret(caption, this.config.redactionPatterns) : undefined;
     await this.withRetry(() => this.api.sendDocument(
       chatId,
-      new InputFile(Buffer.from(redacted, "utf8"), filename),
-      caption ? { caption } : undefined,
+      new InputFile(Buffer.from(data), filename),
+      redactedCaption ? { caption: redactedCaption } : undefined,
     ));
   }
 
