@@ -1,0 +1,45 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":prHourlyLimit2",
+    ":prConcurrentLimit5"
+  ],
+  "dependencyDashboard": true,
+  "labels": ["dependencies"],
+  "schedule": ["before 9am on monday"],
+  "minimumReleaseAge": "3 days",
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Pi runtime peers are provided by the host Pi installation.",
+      "matchPackageNames": ["/^@mariozechner\\/pi-/"],
+      "enabled": false
+    },
+    {
+      "description": "Group safe development tooling updates and automerge them after CI passes.",
+      "groupName": "dev tooling",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Keep runtime dependency updates visible for review.",
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": false
+    },
+    {
+      "description": "Major updates always require explicit review.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "major"]
+    }
+  ]
+}
