@@ -1,13 +1,16 @@
 import type { StructuredAnswerMetadata } from "./answer-workflow.js";
 import type { TelegramInlineKeyboard } from "./types.js";
 
+export type DashboardAction = "use" | "status" | "full" | "images" | "pause" | "resume" | "abort" | "compact" | "recent";
+
 export type TelegramActionCallback =
   | { kind: "answer-option"; turnId: string; optionId: string }
   | { kind: "answer-custom"; turnId: string }
   | { kind: "answer-ambiguity"; turnId: string; token: string; resolution: "prompt" | "answer" | "cancel" }
   | { kind: "full-chat"; turnId: string }
   | { kind: "full-markdown"; turnId: string }
-  | { kind: "latest-images"; turnId: string };
+  | { kind: "latest-images"; turnId: string }
+  | { kind: "dashboard"; sessionRef: string; action: DashboardAction };
 
 const MAX_BUTTON_LABEL = 56;
 const FULL_OUTPUT_ACTION_MIN_CHARS = 320;
@@ -55,8 +58,19 @@ export function buildLatestImagesCallbackData(turnId: string): string {
   return `imgs:${encodePart(turnId)}`;
 }
 
+export function buildDashboardCallbackData(sessionRef: string, action: DashboardAction): string {
+  return `dash:${encodePart(sessionRef)}:${action}`;
+}
+
 export function parseTelegramActionCallbackData(data: string): TelegramActionCallback | undefined {
   const parts = data.split(":");
+  if (parts[0] === "dash" && parts.length === 3) {
+    const sessionRef = decodePart(parts[1]);
+    const action = parts[2] as DashboardAction;
+    if (!sessionRef || !["use", "status", "full", "images", "pause", "resume", "abort", "compact", "recent"].includes(action)) return undefined;
+    return { kind: "dashboard", sessionRef, action };
+  }
+
   if (parts[0] === "ans" && parts.length >= 3) {
     const turnId = decodePart(parts[1]);
     if (!turnId) return undefined;
@@ -110,6 +124,35 @@ export function buildFullOutputKeyboard(turnId: string): TelegramInlineKeyboard 
 export function buildLatestImagesKeyboard(turnId: string, count?: number): TelegramInlineKeyboard {
   const label = count && count > 1 ? `🖼 Download ${count} images` : "🖼 Download image";
   return [[{ text: label, callbackData: buildLatestImagesCallbackData(turnId) }]];
+}
+
+export function buildSessionDashboardKeyboard(sessionRef: string, options: { paused?: boolean; busy?: boolean; hasOutput?: boolean; hasImages?: boolean } = {}): TelegramInlineKeyboard {
+  const rows: TelegramInlineKeyboard = [
+    [
+      { text: "🔄 Status", callbackData: buildDashboardCallbackData(sessionRef, "status") },
+      { text: "🕘 Recent", callbackData: buildDashboardCallbackData(sessionRef, "recent") },
+    ],
+  ];
+  const outputRow: TelegramInlineKeyboard[number] = [];
+  if (options.hasOutput) outputRow.push({ text: "📄 Full", callbackData: buildDashboardCallbackData(sessionRef, "full") });
+  if (options.hasImages) outputRow.push({ text: "🖼 Images", callbackData: buildDashboardCallbackData(sessionRef, "images") });
+  if (outputRow.length > 0) rows.push(outputRow);
+  rows.push([
+    { text: options.paused ? "▶️ Resume" : "⏸ Pause", callbackData: buildDashboardCallbackData(sessionRef, options.paused ? "resume" : "pause") },
+    { text: "🧹 Compact", callbackData: buildDashboardCallbackData(sessionRef, "compact") },
+  ]);
+  if (options.busy) rows.push([{ text: "⏹ Abort", callbackData: buildDashboardCallbackData(sessionRef, "abort") }]);
+  return rows;
+}
+
+export function buildSessionListDashboardKeyboard(entries: Array<{ online: boolean; sessionKey: string }>, maxRows = 8): TelegramInlineKeyboard {
+  return entries.slice(0, maxRows).map((entry, index) => {
+    const sessionRef = `i${index + 1}`;
+    return [
+      { text: entry.online ? `Use ${index + 1}` : `Offline ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "use") },
+      { text: `Recent ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "recent") },
+    ];
+  });
 }
 
 export function shouldOfferFullOutputActions(text: string | undefined): boolean {

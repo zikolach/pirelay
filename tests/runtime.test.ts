@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData } from "../extensions/telegram-tunnel/telegram-actions.js";
+import { createProgressActivity } from "../extensions/telegram-tunnel/progress.js";
 import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
 import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
@@ -1109,6 +1110,48 @@ describe("InProcessTunnelRuntime", () => {
     expect(images).toEqual(["preview.png", "preview.png"]);
     expect(callbacks).toEqual(["This action is no longer current.", "Sending image outputs."]);
     expect(sent).toContain("That image action belongs to an older Pi output. Use the latest buttons or /images.");
+  });
+
+  it("coalesces rate-limited progress updates and respects quiet mode", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1_000;
+    config.verboseProgressIntervalMs = 100;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress:/tmp/session-progress.jsonl",
+      sessionId: "session-progress",
+      sessionFile: "/tmp/session-progress.jsonl",
+      sessionLabel: "session-progress.jsonl",
+      chatId: 1007,
+      userId: 27,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "verbose",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    route.notification.progressEvent = createProgressActivity({ id: "p1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    route.notification.progressEvent = createProgressActivity({ id: "p2", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(sent[0]).toContain("Running tests (2×)");
+    expect(route.notification.recentActivity).toHaveLength(2);
+
+    sent.length = 0;
+    binding.progressMode = "quiet";
+    route.notification.progressEvent = createProgressActivity({ id: "p3", kind: "tool", text: "Editing files", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    expect(sent).toEqual([]);
   });
 
   it("sends explicit workspace image paths and explains empty latest image states", async () => {

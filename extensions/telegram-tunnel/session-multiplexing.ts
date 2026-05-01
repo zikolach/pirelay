@@ -3,9 +3,12 @@ export interface SessionListEntry {
   sessionId: string;
   sessionLabel: string;
   sessionFile?: string;
+  alias?: string;
   online: boolean;
   busy?: boolean;
   paused?: boolean;
+  modelId?: string;
+  lastActivityAt?: number;
 }
 
 export type SessionSelectorResult =
@@ -110,15 +113,20 @@ function normalizeSelector(value: string): string {
   return value.trim().toLowerCase();
 }
 
+export function displaySessionLabel(entry: Pick<SessionListEntry, "sessionLabel" | "alias">): string {
+  return entry.alias?.trim() || entry.sessionLabel;
+}
+
 export function disambiguatedSessionLabel(entry: SessionListEntry, duplicateLabels: Set<string>): string {
-  if (!duplicateLabels.has(entry.sessionLabel.toLowerCase())) return entry.sessionLabel;
-  return `${entry.sessionLabel} [${shortSessionId(entry)}]`;
+  const label = displaySessionLabel(entry);
+  if (!duplicateLabels.has(label.toLowerCase())) return label;
+  return `${label} [${shortSessionId(entry)}]`;
 }
 
 export function duplicateSessionLabels(entries: SessionListEntry[]): Set<string> {
   const counts = new Map<string, number>();
   for (const entry of entries) {
-    const key = entry.sessionLabel.toLowerCase();
+    const key = displaySessionLabel(entry).toLowerCase();
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([label]) => label));
@@ -142,16 +150,20 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
     const state = entry.online ? "online" : "offline";
     const activity = entry.online ? ` — ${entry.busy ? "busy" : "idle"}` : "";
     const paused = entry.paused ? " — paused" : "";
-    lines.push(`${index + 1}. ${markers.get(sessionMarkerIdentity(entry)) ?? sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)} — ${state}${activity}${paused}${active}`);
+    const model = entry.modelId ? ` — ${entry.modelId}` : "";
+    const lastActivity = entry.lastActivityAt ? ` — ${new Date(entry.lastActivityAt).toLocaleString()}` : "";
+    const alias = entry.alias?.trim() ? ` (${entry.sessionLabel})` : "";
+    lines.push(`${index + 1}. ${markers.get(sessionMarkerIdentity(entry)) ?? sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)}${alias} — ${state}${activity}${paused}${model}${lastActivity}${active}`);
   });
-  lines.push("", "Use /use <number|label> to switch, /to <session> <prompt> for a one-shot prompt, or /forget <session> to remove an offline session.");
+  lines.push("", "Use /use <number|alias|label> to switch, /to <session> <prompt> for a one-shot prompt, /alias <name> to rename the active session, or /forget <session> to remove an offline session.");
   return lines.join("\n");
 }
 
 function selectorMatches(entry: SessionListEntry, selector: string): boolean {
   const lowered = normalizeSelector(selector);
   if (!lowered) return false;
-  return entry.sessionLabel.toLowerCase() === lowered
+  return displaySessionLabel(entry).toLowerCase() === lowered
+    || entry.sessionLabel.toLowerCase() === lowered
     || entry.sessionId.toLowerCase().startsWith(lowered)
     || entry.sessionKey.toLowerCase().startsWith(lowered);
 }

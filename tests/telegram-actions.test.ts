@@ -11,6 +11,8 @@ import {
   buildFullOutputKeyboard,
   buildLatestImagesCallbackData,
   buildLatestImagesKeyboard,
+  buildSessionDashboardKeyboard,
+  buildSessionListDashboardKeyboard,
   parseTelegramActionCallbackData,
   shouldOfferFullOutputActions,
 } from "../extensions/telegram-tunnel/telegram-actions.js";
@@ -78,6 +80,19 @@ describe("telegram action callbacks", () => {
       [{ text: "B. Archive without syncing", callbackData: "ans:abc123:opt:B" }],
       [{ text: "✍️ Custom answer", callbackData: "ans:abc123:custom" }],
     ]);
+  });
+
+  it("builds dashboard callback keyboards", () => {
+    const keyboard = buildSessionDashboardKeyboard("current", { busy: true, paused: false, hasOutput: true, hasImages: true });
+    expect(parseTelegramActionCallbackData(keyboard[0]![0]!.callbackData)).toEqual({ kind: "dashboard", sessionRef: "current", action: "status" });
+    expect(keyboard.flat()).toContainEqual({ text: "⏹ Abort", callbackData: "dash:current:abort" });
+
+    const listKeyboard = buildSessionListDashboardKeyboard([
+      { online: true, sessionKey: "one" },
+      { online: false, sessionKey: "two" },
+    ]);
+    expect(parseTelegramActionCallbackData(listKeyboard[1]![0]!.callbackData)).toEqual({ kind: "dashboard", sessionRef: "i2", action: "use" });
+    expect(parseTelegramActionCallbackData("dash:current:unknown")).toBeUndefined();
   });
 
   it("only offers full-output actions when the inline summary is truncated", () => {

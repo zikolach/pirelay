@@ -12,6 +12,7 @@ const [
   sessionMultiplexingModule,
   relayTelegramMiddlewareModule,
   relayMiddlewareModule,
+  progressModule,
 ] = await Promise.all([
   jiti.import('./answer-workflow.ts'),
   jiti.import('./telegram-actions.ts'),
@@ -20,6 +21,7 @@ const [
   jiti.import('./session-multiplexing.ts'),
   jiti.import('./relay-telegram-middleware.ts'),
   jiti.import('./relay-middleware.ts'),
+  jiti.import('./progress.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -52,6 +54,8 @@ const buildAnswerAmbiguityKeyboard = requiredFunction(telegramActionsModule, './
 const buildAnswerActionKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildAnswerActionKeyboard');
 const buildFullOutputKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildFullOutputKeyboard');
 const buildLatestImagesKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildLatestImagesKeyboard');
+const buildSessionDashboardKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildSessionDashboardKeyboard');
+const buildSessionListDashboardKeyboard = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'buildSessionListDashboardKeyboard');
 const parseTelegramActionCallbackData = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'parseTelegramActionCallbackData');
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
@@ -68,6 +72,15 @@ const commandIntentFromPipeline = requiredFunction(relayTelegramMiddlewareModule
 const runTelegramIngressPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'runTelegramIngressPipeline');
 const telegramActionFromPipelineResult = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'telegramActionFromPipelineResult');
 const relayPipelineProtocolVersion = requiredNumber(relayMiddlewareModule, './relay-middleware.ts', 'relayPipelineProtocolVersion');
+const appendRecentActivity = requiredFunction(progressModule, './progress.ts', 'appendRecentActivity');
+const displayProgressMode = requiredFunction(progressModule, './progress.ts', 'displayProgressMode');
+const formatProgressUpdate = requiredFunction(progressModule, './progress.ts', 'formatProgressUpdate');
+const formatRecentActivity = requiredFunction(progressModule, './progress.ts', 'formatRecentActivity');
+const normalizeProgressMode = requiredFunction(progressModule, './progress.ts', 'normalizeProgressMode');
+const progressIntervalMsFor = requiredFunction(progressModule, './progress.ts', 'progressIntervalMsFor');
+const progressModeFor = requiredFunction(progressModule, './progress.ts', 'progressModeFor');
+const recentActivityLimit = requiredFunction(progressModule, './progress.ts', 'recentActivityLimit');
+const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progress.ts', 'shouldSendNonTerminalProgress');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
@@ -87,6 +100,7 @@ const answerFlows = new Map();
 const pendingCustomAnswers = new Map();
 const pendingAnswerAmbiguities = new Map();
 const activityIndicators = new Map();
+const progressStates = new Map();
 const statePath = `${config.stateDir}/state.json`;
 let updateOffset;
 let shuttingDown = false;
@@ -94,8 +108,11 @@ let shuttingDown = false;
 const HELP_TEXT = [
   'Telegram tunnel commands:',
   '/help - show commands',
-  '/status - session and tunnel status',
+  '/status - session and tunnel dashboard',
   '/sessions - list available paired sessions',
+  '/progress <quiet|normal|verbose|completion-only> - set progress notifications',
+  '/alias <name|clear> - set the active session alias',
+  '/recent - show recent safe activity',
   '/use <session> - select an active session',
   '/forget <session> - remove an offline session from the list',
   '/to <session> <prompt> - send one prompt without switching sessions',
@@ -398,9 +415,12 @@ function routeToSessionEntry(route) {
     sessionId: route.sessionId,
     sessionFile: route.sessionFile,
     sessionLabel: route.sessionLabel,
+    alias: route.binding?.alias,
     online: true,
     busy: isEffectivelyBusy(route),
     paused: Boolean(route.binding?.paused),
+    modelId: route.modelId,
+    lastActivityAt: route.lastActivityAt,
   };
 }
 
@@ -410,6 +430,7 @@ function bindingToSessionEntry(binding) {
     sessionId: binding.sessionId,
     sessionFile: binding.sessionFile,
     sessionLabel: binding.sessionLabel,
+    alias: binding.alias,
     online: false,
     busy: false,
     paused: Boolean(binding.paused),
@@ -762,6 +783,69 @@ async function trySendActivityIndicator(chatId) {
   }
 }
 
+function getProgressKey(route) {
+  return route?.binding ? `${route.sessionKey}:${route.binding.chatId}` : undefined;
+}
+
+function clearAllProgressStates() {
+  for (const state of progressStates.values()) {
+    if (state.timer) clearTimeout(state.timer);
+  }
+  progressStates.clear();
+}
+
+function clearProgressState(route) {
+  const key = getProgressKey(route);
+  if (!key) return;
+  const state = progressStates.get(key);
+  if (state?.timer) clearTimeout(state.timer);
+  progressStates.delete(key);
+}
+
+function syncProgressDelivery(route) {
+  const event = route?.notification?.progressEvent;
+  const key = getProgressKey(route);
+  if (!key || !event || !route?.binding || route.binding.paused || route.notification?.lastStatus !== 'running') {
+    if (route?.notification?.lastStatus && isTerminalStatus(route.notification.lastStatus)) clearProgressState(route);
+    return;
+  }
+  const mode = progressModeFor(route.binding, config);
+  if (!shouldSendNonTerminalProgress(mode)) return;
+  let state = progressStates.get(key);
+  if (!state) {
+    state = { pending: [] };
+    progressStates.set(key, state);
+  }
+  if (state.lastEventId === event.id) return;
+  state.lastEventId = event.id;
+  appendRecentActivity(route.notification, event, recentActivityLimit(config));
+  state.pending.push(event);
+  if (state.timer) return;
+  const interval = progressIntervalMsFor(mode, config);
+  const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
+  const delay = Math.max(0, interval - elapsed);
+  state.timer = setTimeout(() => {
+    void flushProgress(route.sessionKey, route.binding.chatId, key);
+  }, delay);
+  unrefTimer(state.timer);
+}
+
+async function flushProgress(sessionKey, chatId, key) {
+  const state = progressStates.get(key);
+  if (!state) return;
+  state.timer = undefined;
+  const route = routes.get(sessionKey);
+  if (!route || !route.binding || route.binding.chatId !== chatId || route.binding.paused || route.notification?.lastStatus !== 'running') {
+    if (route) clearProgressState(route);
+    else progressStates.delete(key);
+    return;
+  }
+  const text = formatProgressUpdate(state.pending.splice(0), config);
+  if (!text) return;
+  state.lastSentAt = Date.now();
+  await sendPlainText(chatId, `${sourcePrefixForRoute(route)}${text}`);
+}
+
 async function consumePendingPairing(nonce) {
   const { createHash } = await import('node:crypto');
   const nonceHash = createHash('sha256').update(nonce).digest('hex');
@@ -857,7 +941,7 @@ async function handlePairStart(message, nonce) {
 
 async function handleSessionsCommand(message) {
   const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
-  await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))));
+  await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))), buildSessionListDashboardKeyboard(entries));
 }
 
 async function sendSelectorResolutionError(message, result, usageText, noMatchText = 'No matching session found. Use /sessions to list available sessions.') {
@@ -1187,6 +1271,32 @@ async function sendImageByPath(message, route, path) {
   await sendImageDocument(message.chat.id, image, 'Pi image file');
 }
 
+function statusTextForRoute(route) {
+  return [
+    `Session: ${route.binding?.alias || route.sessionLabel}`,
+    route.binding?.alias ? `Label: ${route.sessionLabel}` : undefined,
+    'Online: yes',
+    `Busy: ${isEffectivelyBusy(route) ? 'yes' : 'no'}`,
+    `Model: ${route.modelId || 'unknown'}`,
+    `Progress mode: ${displayProgressMode(route.binding?.progressMode || config.progressMode)}`,
+    `Last activity: ${route.lastActivityAt ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
+    `Paused: ${route.binding?.paused ? 'yes' : 'no'}`,
+  ].filter(Boolean).join('\n');
+}
+
+function dashboardKeyboardForRoute(route) {
+  return buildSessionDashboardKeyboard('current', {
+    paused: Boolean(route.binding?.paused),
+    busy: isEffectivelyBusy(route),
+    hasOutput: Boolean(route.notification?.lastAssistantText),
+    hasImages: Boolean(route.notification?.latestImages?.count),
+  });
+}
+
+async function sendRecentActivity(message, route) {
+  await sendPlainText(message.chat.id, formatRecentActivity(route?.notification?.recentActivity, { limit: recentActivityLimit(config) }));
+}
+
 async function sendLatestImages(message, route) {
   const latest = route?.notification?.latestImages;
   const images = route ? await getLatestImages(route) : [];
@@ -1251,22 +1361,44 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     return;
   }
-  if (binding.paused && !['resume', 'status', 'help', 'disconnect', 'sessions', 'use', 'forget'].includes(command)) {
+  if (binding.paused && !['resume', 'status', 'help', 'disconnect', 'sessions', 'use', 'forget', 'progress', 'notify', 'alias', 'recent', 'activity'].includes(command)) {
     await sendPlainText(message.chat.id, 'The tunnel is currently paused. Use /resume or disconnect locally.');
     return;
   }
 
   switch (command) {
     case 'status': {
-      const lines = [
-        `Session: ${route.sessionLabel}`,
-        `Online: yes`,
-        `Busy: ${isEffectivelyBusy(route) ? 'yes' : 'no'}`,
-        `Model: ${route.modelId || 'unknown'}`,
-        `Last activity: ${route.lastActivityAt ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
-        `Paused: ${binding.paused ? 'yes' : 'no'}`,
-      ];
-      await sendPlainText(message.chat.id, lines.join('\n'));
+      await sendPlainText(message.chat.id, statusTextForRoute(route), dashboardKeyboardForRoute(route));
+      return;
+    }
+    case 'progress':
+    case 'notify': {
+      const mode = normalizeProgressMode(args);
+      if (!mode) {
+        await sendPlainText(message.chat.id, `Progress mode: ${displayProgressMode(binding.progressMode || config.progressMode)}\nUsage: /progress <quiet|normal|verbose|completion-only>`);
+        return;
+      }
+      route.binding = { ...binding, progressMode: mode, lastSeenAt: nowIso() };
+      await upsertBinding(route.binding);
+      await requestClient(route, 'persistBinding', { binding: route.binding, revoked: false });
+      await sendPlainText(message.chat.id, `Progress notifications set to ${displayProgressMode(mode)}.`);
+      return;
+    }
+    case 'alias': {
+      const alias = String(args || '').trim();
+      route.binding = {
+        ...binding,
+        alias: alias && alias.toLowerCase() !== 'clear' && alias.toLowerCase() !== 'reset' ? alias.slice(0, 64) : undefined,
+        lastSeenAt: nowIso(),
+      };
+      await upsertBinding(route.binding);
+      await requestClient(route, 'persistBinding', { binding: route.binding, revoked: false });
+      await sendPlainText(message.chat.id, route.binding.alias ? `Session alias set to ${route.binding.alias}.` : 'Session alias cleared.');
+      return;
+    }
+    case 'recent':
+    case 'activity': {
+      await sendRecentActivity(message, route);
       return;
     }
     case 'summary': {
@@ -1337,6 +1469,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     case 'pause': {
       route.binding = { ...binding, paused: true, lastSeenAt: nowIso() };
       clearActivityIndicator(route);
+      clearProgressState(route);
       await upsertBinding(route.binding);
       await requestClient(route, 'persistBinding', { binding: route.binding, revoked: false });
       await sendPlainText(message.chat.id, 'Tunnel paused. Remote prompts and notifications are suspended until /resume.');
@@ -1352,6 +1485,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     case 'disconnect': {
       clearAnswerStateForRoute(route);
       clearActivityIndicator(route);
+      clearProgressState(route);
       route.binding = undefined;
       await revokeBinding(route.sessionKey);
       await requestClient(route, 'persistBinding', { binding: null, revoked: true });
@@ -1497,6 +1631,70 @@ async function processInbound(message) {
   await handleAuthorizedText(message, route);
 }
 
+async function handleDashboardAction(callback, route, action) {
+  if (!route?.binding) {
+    await answerCallbackQuery(callback.callbackQueryId, 'This session is not paired.');
+    return;
+  }
+  switch (action) {
+    case 'use':
+      activeSessionByChatId.set(String(callback.chat.id), route.sessionKey);
+      await answerCallbackQuery(callback.callbackQueryId, 'Active session selected.');
+      await sendPlainText(callback.chat.id, `Active session set to ${route.binding.alias || route.sessionLabel}.`);
+      return;
+    case 'status':
+      await answerCallbackQuery(callback.callbackQueryId, 'Showing status.');
+      await sendPlainText(callback.chat.id, statusTextForRoute(route), dashboardKeyboardForRoute(route));
+      return;
+    case 'recent':
+      await answerCallbackQuery(callback.callbackQueryId, 'Showing recent activity.');
+      await sendRecentActivity(callback, route);
+      return;
+    case 'full':
+      await answerCallbackQuery(callback.callbackQueryId, route.notification?.lastAssistantText ? 'Sending full output.' : 'No output available.');
+      await sendPlainText(callback.chat.id, route.notification?.lastAssistantText || 'No completed assistant output is available yet for this session.');
+      return;
+    case 'images':
+      await answerCallbackQuery(callback.callbackQueryId, 'Sending image outputs.');
+      await sendLatestImages(callback, route);
+      return;
+    case 'pause':
+      route.binding = { ...route.binding, paused: true, lastSeenAt: nowIso() };
+      clearActivityIndicator(route);
+      clearProgressState(route);
+      await upsertBinding(route.binding);
+      await requestClient(route, 'persistBinding', { binding: route.binding, revoked: false });
+      await answerCallbackQuery(callback.callbackQueryId, 'Tunnel paused.');
+      await sendPlainText(callback.chat.id, 'Tunnel paused. Remote prompts and notifications are suspended until /resume.');
+      return;
+    case 'resume':
+      route.binding = { ...route.binding, paused: false, lastSeenAt: nowIso() };
+      await upsertBinding(route.binding);
+      await requestClient(route, 'persistBinding', { binding: route.binding, revoked: false });
+      await answerCallbackQuery(callback.callbackQueryId, 'Tunnel resumed.');
+      await sendPlainText(callback.chat.id, 'Tunnel resumed.');
+      return;
+    case 'abort':
+      if (!isEffectivelyBusy(route)) {
+        await answerCallbackQuery(callback.callbackQueryId, 'Session is idle.');
+        await sendPlainText(callback.chat.id, 'The Pi session is already idle.');
+        return;
+      }
+      route.notification = { ...(route.notification || {}), abortRequested: true };
+      await requestClient(route, 'abort', { auditMessage: `Telegram ${getUserLabel(callback.user)} requested abort from dashboard.` });
+      await answerCallbackQuery(callback.callbackQueryId, 'Abort requested.');
+      await sendPlainText(callback.chat.id, 'Abort requested.');
+      return;
+    case 'compact':
+      await requestClient(route, 'compact', { auditMessage: `Telegram ${getUserLabel(callback.user)} requested compaction from dashboard.` });
+      await answerCallbackQuery(callback.callbackQueryId, 'Compaction requested.');
+      await sendPlainText(callback.chat.id, 'Compaction requested.');
+      return;
+    default:
+      await answerCallbackQuery(callback.callbackQueryId, 'Unknown dashboard action.');
+  }
+}
+
 async function processCallback(callback) {
   const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config });
   const action = telegramActionFromPipelineResult(initialPipeline.result) || parseTelegramActionCallbackData(callback.data);
@@ -1506,8 +1704,28 @@ async function processCallback(callback) {
   }
 
   const live = getLiveRoutesForChat(callback.chat.id, callback.user.id);
-  const route = live.find((candidate) => getCurrentTurnId(candidate) === action.turnId)
-    || live.find((candidate) => candidate.sessionKey === activeSessionByChatId.get(String(callback.chat.id)));
+  let route;
+  if (action.kind === 'dashboard' && /^i\d+$/.test(action.sessionRef)) {
+    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id);
+    const index = Number(action.sessionRef.slice(1)) - 1;
+    const entry = entries[index];
+    if (!entry) {
+      await answerCallbackQuery(callback.callbackQueryId, 'This dashboard is stale.');
+      await sendPlainText(callback.chat.id, 'That session dashboard is stale. Use /sessions for the latest list.');
+      return;
+    }
+    route = entry.online ? routes.get(entry.sessionKey) : undefined;
+    if (!route) {
+      await answerCallbackQuery(callback.callbackQueryId, 'Pi session is offline.');
+      await sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
+      return;
+    }
+  } else {
+    route = action.kind !== 'dashboard'
+      ? live.find((candidate) => getCurrentTurnId(candidate) === action.turnId)
+      : undefined;
+    route = route || live.find((candidate) => candidate.sessionKey === activeSessionByChatId.get(String(callback.chat.id)));
+  }
 
   if (!route) {
     const persisted = await getPersistedBindingsForChat(callback.chat.id, callback.user.id);
@@ -1520,6 +1738,11 @@ async function processCallback(callback) {
 
   if (!routeIsAuthorized(route, callback.user)) {
     await answerCallbackQuery(callback.callbackQueryId, 'Unauthorized.');
+    return;
+  }
+
+  if (action.kind === 'dashboard') {
+    await handleDashboardAction(callback, route, action.action);
     return;
   }
 
@@ -1723,6 +1946,7 @@ function removeClient(socket) {
     if (existing) {
       clearAnswerStateForRoute(existing);
       clearActivityIndicator(existing);
+      clearProgressState(existing);
     }
     routes.delete(sessionKey);
   }
@@ -1757,6 +1981,7 @@ async function handleClientRequest(socket, message) {
         const nextRoute = { ...route, socket };
         if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
           clearActivityIndicator(previousRoute);
+          clearProgressState(previousRoute);
         }
         routes.set(route.sessionKey, nextRoute);
         if (previousRoute && getCurrentTurnId(previousRoute) !== getCurrentTurnId(nextRoute)) {
@@ -1766,6 +1991,7 @@ async function handleClientRequest(socket, message) {
         }
         clearStaleCustomAnswers(nextRoute);
         syncActivityIndicator(nextRoute);
+        syncProgressDelivery(nextRoute);
         if (nextRoute.binding) {
           await upsertBinding(nextRoute.binding);
           if (!activeSessionByChatId.has(String(nextRoute.binding.chatId))) activeSessionByChatId.set(String(nextRoute.binding.chatId), nextRoute.sessionKey);
@@ -1780,6 +2006,7 @@ async function handleClientRequest(socket, message) {
         if (existing) {
           clearAnswerStateForRoute(existing);
           clearActivityIndicator(existing);
+          clearProgressState(existing);
         }
         routes.delete(message.sessionKey);
         respond(true, true);
@@ -1854,6 +2081,7 @@ server.listen(socketPath, async () => {
 const shutdown = async () => {
   shuttingDown = true;
   clearAllActivityIndicators();
+  clearAllProgressStates();
   server.close();
   try { await unlink(socketPath); } catch {}
   process.exit(0);

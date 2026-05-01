@@ -29,6 +29,11 @@ Environment variables win over file values.
   "maxOutboundImageBytes": 10485760,
   "maxLatestImages": 4,
   "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"],
+  "progressMode": "normal",
+  "progressIntervalMs": 30000,
+  "verboseProgressIntervalMs": 10000,
+  "recentActivityLimit": 10,
+  "maxProgressMessageChars": 700,
   "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
 }
 ```
@@ -50,13 +55,19 @@ Environment variables win over file values.
 - `PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES`
 - `PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES`
 - `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES`
+- `PI_TELEGRAM_TUNNEL_PROGRESS_MODE`
+- `PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS`
+- `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
+- `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
+- `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
 
-`PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS` and `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES` are comma-separated lists.
+`PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS` and `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES` are comma-separated lists. `progressMode` can be `quiet`, `normal`, `verbose`, or `completionOnly`; Telegram users can override it per binding with `/progress`.
 
 ## Troubleshooting
 
 - invalid token format: check `TELEGRAM_BOT_TOKEN`
 - no Telegram response: run `/telegram-tunnel setup` and confirm the bot username resolves
+- too many progress messages: use `/progress quiet` for the paired session or increase `progressIntervalMs`
 - image prompt rejected: switch Pi to a model with image input support, reduce file size, or use one of the configured MIME types
 - `/images` finds no image after Pi saved a file: make sure the latest Pi reply mentioned the relative workspace path, or use `/send-image <relative-path>`; absolute, hidden, traversal, symlink-outside-workspace, oversized, and non-image files are rejected
 - pairing expires: rerun `/telegram-tunnel connect`

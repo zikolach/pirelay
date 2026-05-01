@@ -156,7 +156,13 @@ export function telegramActionFromPipelineResult(result: RelayPipelineResult): T
 function isTelegramActionCallback(value: unknown): value is TelegramActionCallback {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
-  if (typeof candidate.kind !== "string" || typeof candidate.turnId !== "string") return false;
+  if (typeof candidate.kind !== "string") return false;
+  if (candidate.kind === "dashboard") {
+    return typeof candidate.sessionRef === "string"
+      && typeof candidate.action === "string"
+      && ["use", "status", "full", "images", "pause", "resume", "abort", "compact", "recent"].includes(candidate.action);
+  }
+  if (typeof candidate.turnId !== "string") return false;
   switch (candidate.kind) {
     case "answer-option":
       return typeof candidate.optionId === "string";
