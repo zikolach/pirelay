@@ -96,6 +96,20 @@ describe("relay middleware pipeline", () => {
     expect(mediaMiddleware.run).not.toHaveBeenCalled();
   });
 
+  it("traces fatal missing capabilities as blocked", async () => {
+    const ctx = context();
+    const result = await createRelayPipeline([{
+      id: "needs-buttons",
+      phases: ["outbound"],
+      capabilities: { adapter: ["callbacks"] },
+      failure: "fatal",
+      run: async () => ({ kind: "continue" }),
+    }]).run(event({ adapter: { channel: "telegram", capabilities: { callbacks: false } } }), ctx);
+
+    expect(result).toMatchObject({ kind: "blocked", reason: "missing-adapter-capability:callbacks" });
+    expect(ctx.trace).toContainEqual(expect.objectContaining({ middlewareId: "needs-buttons", outcome: "blocked" }));
+  });
+
   it("continues after recoverable failures and stops on fatal failures", async () => {
     const recoverable = createRelayPipeline([
       { id: "recoverable", phases: ["inbound"], failure: "recoverable", run: async () => { throw new Error("secret token"); } },

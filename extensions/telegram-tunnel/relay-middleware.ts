@@ -150,7 +150,7 @@ export function createRelayPipeline(middleware: RelayMiddleware[]): RelayPipelin
             const result: RelayPipelineResult = item.failure === "fatal"
               ? { kind: "blocked", reason: unavailable, safety: "safe", event: currentEvent }
               : { kind: "continue", event: currentEvent };
-            context.emitTrace({ middlewareId: item.id, phase, outcome: "skipped", message: unavailable });
+            context.emitTrace({ middlewareId: item.id, phase, outcome: result.kind === "blocked" ? "blocked" : "skipped", message: unavailable });
             if (result.kind === "blocked") return result;
             continue;
           }

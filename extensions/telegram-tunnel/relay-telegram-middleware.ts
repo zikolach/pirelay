@@ -152,7 +152,23 @@ export function telegramActionFromPipelineResult(result: RelayPipelineResult): T
 }
 
 function isTelegramActionCallback(value: unknown): value is TelegramActionCallback {
-  return typeof value === "object" && value !== null && "kind" in value && "turnId" in value;
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.kind !== "string" || typeof candidate.turnId !== "string") return false;
+  switch (candidate.kind) {
+    case "answer-option":
+      return typeof candidate.optionId === "string";
+    case "answer-custom":
+    case "full-chat":
+    case "full-markdown":
+    case "latest-images":
+      return true;
+    case "answer-ambiguity":
+      return typeof candidate.token === "string"
+        && (candidate.resolution === "prompt" || candidate.resolution === "answer" || candidate.resolution === "cancel");
+    default:
+      return false;
+  }
 }
 
 function isMessageEvent(event: ChannelInboundEvent | undefined): event is Extract<ChannelInboundEvent, { kind: "message" }> {

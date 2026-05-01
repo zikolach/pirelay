@@ -682,6 +682,18 @@ describe("Telegram tunnel integration behavior", () => {
       expect(deliveries).toEqual([{ text: "remote follow-up from broker", deliverAs: "followUp" }]);
       expect(audits).toEqual(["Telegram @owner queued a follow-up."]);
 
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-invalid-version",
+        protocolVersion: "1",
+        channel: "telegram",
+        action: "deliverPrompt",
+        sessionKey: route.sessionKey,
+        text: "should be rejected",
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-invalid-version"));
+      expect(clientResponses.find((message) => message.requestId === "broker-invalid-version")).toMatchObject({ ok: false, error: "Invalid broker protocol version." });
+
       const multimodalContent = [
         { type: "text", text: "look at this" },
         { type: "image", data: Buffer.from("img").toString("base64"), mimeType: "image/png" },
