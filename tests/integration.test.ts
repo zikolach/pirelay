@@ -707,6 +707,19 @@ describe("Telegram tunnel integration behavior", () => {
       await waitFor(() => clientResponses.some((message) => message.requestId === "broker-invalid-pipeline"));
       expect(clientResponses.find((message) => message.requestId === "broker-invalid-pipeline")).toMatchObject({ ok: false, error: "Invalid relay pipeline protocol version." });
 
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-missing-pipeline-version",
+        protocolVersion: 1,
+        channel: "telegram",
+        pipeline: {},
+        action: "deliverPrompt",
+        sessionKey: route.sessionKey,
+        text: "should be rejected",
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-missing-pipeline-version"));
+      expect(clientResponses.find((message) => message.requestId === "broker-missing-pipeline-version")).toMatchObject({ ok: false, error: "Invalid relay pipeline protocol version." });
+
       const multimodalContent = [
         { type: "text", text: "look at this" },
         { type: "image", data: Buffer.from("img").toString("base64"), mimeType: "image/png" },

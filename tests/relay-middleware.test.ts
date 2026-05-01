@@ -152,13 +152,18 @@ describe("relay middleware pipeline", () => {
   });
 
   it("provides future audio accessibility extension point helpers", () => {
-    expect(transcriptPrompt("please summarize", { mediaId: "voice-1" })).toMatchObject({
+    expect(transcriptPrompt("please summarize", { mediaId: "voice-1", accessibility: "other" })).toMatchObject({
       content: "please summarize",
       safety: "redacted",
       metadata: { accessibility: "transcript", mediaId: "voice-1" },
     });
-    expect(spokenOutputEvent("safe answer")).toMatchObject({ kind: "spoken-output", text: "safe answer", safety: "safe-for-speech" });
-    expect(readLastAction()).toMatchObject({ type: "read-last", safety: "safe", metadata: { accessibility: "read-last" } });
+    expect(spokenOutputEvent("safe answer", { accessibility: "other" })).toMatchObject({
+      kind: "spoken-output",
+      text: "safe answer",
+      safety: "safe-for-speech",
+      metadata: { accessibility: "spoken-output" },
+    });
+    expect(readLastAction({ accessibility: "other" })).toMatchObject({ type: "read-last", safety: "safe", metadata: { accessibility: "read-last" } });
     expect(confirmationRequiredAction({ type: "abort", safety: "requires-confirmation" })).toMatchObject({
       type: "abort",
       requiresConfirmation: true,

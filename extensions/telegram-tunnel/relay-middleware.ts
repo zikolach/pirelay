@@ -260,11 +260,17 @@ function requiresAuthorizationBeforeWork(middleware: RelayMiddleware): boolean {
     || middleware.safety === "extraction";
 }
 
+type AccessibilityMetadataTag = "transcript" | "spoken-output" | "read-last";
+
+function taggedAccessibilityMetadata(tag: AccessibilityMetadataTag, metadata: Record<string, unknown>): Record<string, unknown> {
+  return { ...metadata, accessibility: tag };
+}
+
 export function transcriptPrompt(transcript: string, metadata: Record<string, unknown> = {}): RelayPrompt {
   return {
     content: transcript,
     safety: "redacted",
-    metadata: { accessibility: "transcript", ...metadata },
+    metadata: taggedAccessibilityMetadata("transcript", metadata),
   };
 }
 
@@ -273,7 +279,7 @@ export function spokenOutputEvent(text: string, metadata: Record<string, unknown
     kind: "spoken-output",
     text,
     safety: "safe-for-speech",
-    metadata: { accessibility: "spoken-output", ...metadata },
+    metadata: taggedAccessibilityMetadata("spoken-output", metadata),
   };
 }
 
@@ -281,7 +287,7 @@ export function readLastAction(metadata: Record<string, unknown> = {}): RelayAct
   return {
     type: "read-last",
     safety: "safe",
-    metadata: { accessibility: "read-last", ...metadata },
+    metadata: taggedAccessibilityMetadata("read-last", metadata),
   };
 }
 
