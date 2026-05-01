@@ -21,10 +21,44 @@ export function sessionKeyOf(sessionId: string, sessionFile?: string): string {
   return `${sessionId}:${sessionFile ?? "memory"}`;
 }
 
+export const MAX_SESSION_LABEL_LENGTH = 48;
+
+export function normalizeSessionLabel(label: string | undefined | null, fallback = "Pi session"): string {
+  const normalized = String(label ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim();
+  const bounded = normalized.length > MAX_SESSION_LABEL_LENGTH
+    ? `${normalized.slice(0, MAX_SESSION_LABEL_LENGTH - 1).trimEnd()}…`
+    : normalized;
+  return bounded || fallback;
+}
+
+export function deriveSessionLabel(input: {
+  explicitLabel?: string | null;
+  sessionName?: string | null;
+  cwd?: string | null;
+  sessionFile?: string;
+  sessionId: string;
+}): string {
+  const explicit = normalizeSessionLabel(input.explicitLabel, "");
+  if (explicit) return explicit;
+
+  const sessionName = normalizeSessionLabel(input.sessionName, "");
+  if (sessionName) return sessionName;
+
+  const cwdBase = input.cwd ? normalizeSessionLabel(basename(input.cwd), "") : "";
+  if (cwdBase) return cwdBase;
+
+  const fileBase = input.sessionFile ? normalizeSessionLabel(basename(input.sessionFile), "") : "";
+  if (fileBase) return fileBase;
+
+  return normalizeSessionLabel(`session-${input.sessionId.slice(0, 8)}`);
+}
+
 export function sessionLabelOf(sessionId: string, sessionFile?: string, sessionName?: string | null): string {
-  if (sessionName?.trim()) return sessionName.trim();
-  if (sessionFile) return basename(sessionFile);
-  return `session-${sessionId.slice(0, 8)}`;
+  return deriveSessionLabel({ sessionId, sessionFile, sessionName });
 }
 
 export function sha256(value: string): string {

@@ -341,6 +341,49 @@ describe("Telegram tunnel integration behavior", () => {
     expect(pi.sentMessages.map((message) => message.customType)).toContain("telegram-tunnel-audit");
   });
 
+  it("uses explicit connect labels for pending pairing and route registration", async () => {
+    const config = await createRuntimeConfig("pi-telegram-extension-label-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("explicit-label-session");
+    telegramTunnelExtension(pi.api as any);
+
+    await pi.runCommand("telegram-tunnel", "connect docs team", context);
+    const route = [...registeredRoutes.values()][0];
+    expect(route?.sessionLabel).toBe("docs team");
+
+    const store = new TunnelStateStore(config.stateDir);
+    const pending = Object.values((await store.load()).pendingPairings)[0];
+    expect(pending?.sessionLabel).toBe("docs team");
+  });
+
   it("tracks latest tool-result images without echoing input images", async () => {
     const config = await createRuntimeConfig("pi-telegram-extension-images-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);

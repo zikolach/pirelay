@@ -2,7 +2,8 @@ import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { base64ByteLength, chunkTelegramText, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
+import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
 
 const tempDirs: string[] = [];
 
@@ -23,6 +24,84 @@ describe("telegram utils", () => {
   it("selects busy delivery mode only while busy", () => {
     expect(resolveBusyDeliveryMode("followUp", false)).toBeUndefined();
     expect(resolveBusyDeliveryMode("steer", true)).toBe("steer");
+  });
+
+  it("derives and normalizes human-friendly session labels", () => {
+    expect(normalizeSessionLabel("  docs\napi\t ")).toBe("docs api");
+    expect(normalizeSessionLabel("x".repeat(80))).toHaveLength(48);
+    expect(deriveSessionLabel({ explicitLabel: " docs ", sessionName: "named", cwd: "/work/project", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("docs");
+    expect(deriveSessionLabel({ sessionName: "named", cwd: "/work/project", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("named");
+    expect(deriveSessionLabel({ sessionName: "", cwd: "/work/project", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("project");
+    expect(deriveSessionLabel({ sessionName: "", cwd: "", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("session.jsonl");
+  });
+
+  it("formats and resolves multiplexed session selections", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "api", online: true, busy: false },
+      { sessionKey: "b:/tmp/b", sessionId: "bcdefa222222", sessionLabel: "api", online: true, busy: true },
+      { sessionKey: "c:/tmp/c", sessionId: "cdefab333333", sessionLabel: "docs", online: false },
+    ];
+
+    const markers = sessionMarkersFor(entries);
+    const list = formatSessionList(entries, entries[0]!.sessionKey);
+    expect(list).toContain(`1. ${markers.get(entries[0]!.sessionKey)} api [abcdef11] — online — idle — active`);
+    expect(list).toContain(`2. ${markers.get(entries[1]!.sessionKey)} api [bcdefa22] — online — busy`);
+    expect(list).toContain(`3. ${markers.get(entries[2]!.sessionKey)} docs — offline`);
+    expect(list).toContain("/forget <session>");
+
+    expect(resolveSessionSelector(entries, "1")).toMatchObject({ kind: "matched", index: 0 });
+    expect(resolveSessionSelector(entries, "docs")).toMatchObject({ kind: "offline", index: 2 });
+    expect(resolveSessionSelector(entries, "api")).toMatchObject({ kind: "ambiguous" });
+    expect(resolveSessionSelector(entries, "abcdef")).toMatchObject({ kind: "matched", index: 0 });
+    expect(resolveSessionSelector(entries, "missing")).toMatchObject({ kind: "no-match" });
+    expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("assigns stable lightweight markers from session identity", () => {
+    const entry = { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "api", online: true };
+    expect(sessionMarkerFor(entry)).toBe(sessionMarkerFor({ sessionKey: entry.sessionKey, sessionId: entry.sessionId }));
+    expect(sessionMarkerFor(entry)).toMatch(/^./u);
+  });
+
+  it("deduplicates session markers within a session list", () => {
+    const entries = [
+      { sessionKey: "s9", sessionId: "s9", sessionLabel: "api", online: true },
+      { sessionKey: "s12", sessionId: "s12", sessionLabel: "docs", online: true },
+    ];
+    expect(sessionMarkerFor(entries[0]!)).toBe(sessionMarkerFor(entries[1]!));
+
+    const markers = sessionMarkersFor(entries);
+    expect(markers.get(entries[0]!.sessionKey)).toBe(sessionMarkerFor(entries[0]!));
+    expect(markers.get(entries[1]!.sessionKey)).not.toBe(sessionMarkerFor(entries[0]!));
+    expect(formatSessionList(entries)).toContain(`2. ${markers.get(entries[1]!.sessionKey)} docs — online — idle`);
+    expect(sessionMarkersFor([...entries].reverse())).toEqual(markers);
+  });
+
+  it("builds a source prefix only when multiple live sessions share a chat", () => {
+    const first: BoundSessionIdentity = { sessionKey: "a", sessionId: "a", sessionLabel: "api", binding: { chatId: 1, userId: 2 } };
+    const second: BoundSessionIdentity = { sessionKey: "b", sessionId: "b", sessionLabel: "docs", binding: { chatId: 1, userId: 2 } };
+    const otherChat: BoundSessionIdentity = { sessionKey: "c", sessionId: "c", sessionLabel: "cloud", binding: { chatId: 9, userId: 2 } };
+
+    expect(sessionSourcePrefixForRoute(first, [first, otherChat])).toBe("");
+    expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkersFor([first, second]).get(first.sessionKey)} api\n\n`);
+  });
+
+  it("distinguishes missing and unmatched session selectors", () => {
+    expect(resolveSessionSelector([], "1")).toMatchObject({ kind: "empty" });
+    expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "")).toMatchObject({ kind: "missing" });
+    expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "docs")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("resolves one-shot target arguments with quoted and multi-word labels", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "docs team", online: true, busy: false },
+      { sessionKey: "b:/tmp/b", sessionId: "bcdefa222222", sessionLabel: "api", online: true, busy: false },
+    ];
+
+    expect(resolveSessionTargetArgs(entries, '"docs team" run tests')).toMatchObject({ selector: "docs team", prompt: "run tests", result: { kind: "matched", index: 0 } });
+    expect(resolveSessionTargetArgs(entries, "docs team run tests")).toMatchObject({ selector: "docs team", prompt: "run tests", result: { kind: "matched", index: 0 } });
+    expect(resolveSessionTargetArgs(entries, "api run tests")).toMatchObject({ selector: "api", prompt: "run tests", result: { kind: "matched", index: 1 } });
+    expect(resolveSessionTargetArgs(entries, "missing run tests")).toMatchObject({ selector: "missing", prompt: "run tests", result: { kind: "no-match" } });
   });
 
   it("chunks oversized Telegram output", () => {

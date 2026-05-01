@@ -179,7 +179,7 @@ PiRelay adds the following Pi-side commands:
 | Command | Purpose |
 |---|---|
 | `/telegram-tunnel setup` | validate the bot token and cache the bot username |
-| `/telegram-tunnel connect` | create a QR/deep-link pairing flow for the current session |
+| `/telegram-tunnel connect [name]` | create a QR/deep-link pairing flow for the current session with an optional display label |
 | `/telegram-tunnel disconnect` | revoke the active binding |
 | `/telegram-tunnel status` | show local tunnel status |
 
@@ -191,8 +191,10 @@ Once paired, the Telegram bot supports:
 |---|---|
 | `/help` | show available Telegram tunnel commands |
 | `/status` | show session identity, online/offline state, busy/idle state, model, and activity |
-| `/sessions` | list online paired Pi sessions for this chat |
-| `/use <session>` | switch the active session for this chat |
+| `/sessions` | list paired Pi sessions for this chat with number, label, online/offline state, and active marker |
+| `/use <session>` | switch the active session by number, label, or session id prefix |
+| `/forget <session>` | remove an offline paired session from `/sessions` |
+| `/to <session> <prompt>` | send a one-shot prompt to a session without changing the active session |
 | `/summary` | show the latest concise summary |
 | `/full` | show the latest assistant output in Telegram-sized chunks |
 | `/images` | download latest captured image outputs or safe image files referenced by the latest completed turn |
@@ -303,13 +305,26 @@ When the chat view contains Markdown tables, PiRelay reformats them into aligned
 
 ## Multi-session behavior
 
-PiRelay uses a local singleton broker per bot token so multiple active Pi sessions can share one Telegram bot safely.
+PiRelay uses one local authoritative broker per bot token so multiple active Pi sessions on the same machine can share one Telegram bot safely.
 
-If one Telegram chat is paired to multiple live sessions:
-- use `/sessions` to list them
-- use `/use <session>` to pick the active target
+Pair sessions with short labels when useful:
 
-This avoids Telegram polling conflicts and keeps routing explicit.
+```text
+/telegram-tunnel connect docs
+/telegram-tunnel connect api
+```
+
+When no label is provided, PiRelay uses the Pi session name when available, then the project folder name, then the session file basename, then a short session id fallback.
+
+If one Telegram chat is paired to multiple sessions:
+- use `/sessions` to list numbered sessions with stable visual markers, labels, active marker, online/offline state, and idle/busy state
+- use `/use <number|label>` to pick the active target
+- use `/forget <number|label>` to remove an offline paired session from the list
+- use `/to <session> <prompt>` for a one-shot prompt without changing the active session; quote labels that contain spaces, for example `/to "docs team" run tests`
+
+Duplicate labels are allowed; `/sessions` adds short identifiers when needed and numeric selection always works. Lightweight markers such as `🔵` or `🟢` are derived from stable session identity and de-duplicated within the current session list when possible, so multi-session notifications are easier to distinguish without storing extra state. Ordinary prompts are not guessed when multiple live sessions exist without a selected active session.
+
+This avoids Telegram polling conflicts and keeps routing explicit. Multiple independent brokers on different machines must not poll the same bot token concurrently; a laptop-plus-cloud shared-chat setup would require a future relay hub architecture.
 
 ## Configuration
 
