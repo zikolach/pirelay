@@ -32,6 +32,7 @@ export interface BoundSessionIdentity {
   binding?: {
     chatId: number;
     userId: number;
+    alias?: string;
   };
 }
 
@@ -106,7 +107,8 @@ export function sessionSourcePrefixForRoute(route: BoundSessionIdentity, candida
   const peers = [...candidates].filter((candidate) => candidate.binding?.chatId === route.binding?.chatId && candidate.binding?.userId === route.binding?.userId);
   if (peers.length <= 1) return "";
   const marker = sessionMarkersFor(peers).get(sessionMarkerIdentity(route)) ?? sessionMarkerFor(route);
-  return `${marker} ${route.sessionLabel}\n\n`;
+  const label = route.binding.alias?.trim() || route.sessionLabel;
+  return `${marker} ${label}\n\n`;
 }
 
 function normalizeSelector(value: string): string {

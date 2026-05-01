@@ -95,6 +95,13 @@ describe("telegram utils", () => {
     expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkersFor([first, second]).get(first.sessionKey)} api\n\n`);
   });
 
+  it("uses aliases in multi-session source prefixes", () => {
+    const first: BoundSessionIdentity = { sessionKey: "a", sessionId: "a", sessionLabel: "api-local", binding: { chatId: 1, userId: 2, alias: "phone" } };
+    const second: BoundSessionIdentity = { sessionKey: "b", sessionId: "b", sessionLabel: "docs", binding: { chatId: 1, userId: 2 } };
+
+    expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkersFor([first, second]).get(first.sessionKey)} phone\n\n`);
+  });
+
   it("distinguishes missing and unmatched session selectors", () => {
     expect(resolveSessionSelector([], "1")).toMatchObject({ kind: "empty" });
     expect(resolveSessionSelector([{ sessionKey: "a", sessionId: "abc", sessionLabel: "api", online: true }], "")).toMatchObject({ kind: "missing" });
