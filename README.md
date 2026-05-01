@@ -322,7 +322,7 @@ If one Telegram chat is paired to multiple sessions:
 - use `/forget <number|label>` to remove an offline paired session from the list
 - use `/to <session> <prompt>` for a one-shot prompt without changing the active session; quote labels that contain spaces, for example `/to "docs team" run tests`
 
-Duplicate labels are allowed; `/sessions` adds short identifiers when needed and numeric selection always works. Lightweight markers such as `🟦` or `🟩` are derived from stable session identity and de-duplicated within the current session list when possible, so multi-session notifications are easier to distinguish without storing extra state. Ordinary prompts are not guessed when multiple live sessions exist without a selected active session.
+Duplicate labels are allowed; `/sessions` adds short identifiers when needed and numeric selection always works. Lightweight markers such as `🔵` or `🟢` are derived from stable session identity and de-duplicated within the current session list when possible, so multi-session notifications are easier to distinguish without storing extra state. Ordinary prompts are not guessed when multiple live sessions exist without a selected active session.
 
 This avoids Telegram polling conflicts and keeps routing explicit. Multiple independent brokers on different machines must not poll the same bot token concurrently; a laptop-plus-cloud shared-chat setup would require a future relay hub architecture.
 

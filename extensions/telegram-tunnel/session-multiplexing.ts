@@ -32,8 +32,8 @@ export interface BoundSessionIdentity {
   };
 }
 
-const BASE_SESSION_MARKERS = ["🟦", "🟩", "🟧", "🟪", "🟨", "🟥", "⬜", "⬛"];
-const EXTRA_SESSION_MARKERS = ["🔵", "🟢", "🟠", "🟣", "🟡", "🔴", "⚪", "⚫"];
+const BASE_SESSION_MARKERS = ["🔵", "🟢", "🟠", "🟣", "🟡", "🔴", "⚪", "⚫"];
+const EXTRA_SESSION_MARKERS = ["🔷", "🟩", "🔶", "🟪", "🟨", "🟥", "⬜", "⬛"];
 const SESSION_MARKERS = [...BASE_SESSION_MARKERS, ...EXTRA_SESSION_MARKERS];
 
 function stableHash(value: string): number {
