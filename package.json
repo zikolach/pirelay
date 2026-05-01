@@ -1,6 +1,6 @@
 {
   "name": "pirelay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi package that pairs a Telegram chat to the active Pi session for notifications and remote control.",
   "type": "module",
   "license": "MIT",
