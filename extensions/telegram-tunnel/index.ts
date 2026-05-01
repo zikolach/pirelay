@@ -8,7 +8,7 @@ import { getOrCreateTunnelRuntime, sendSessionNotification } from "./runtime.js"
 import { TunnelStateStore } from "./state-store.js";
 import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { extractStructuredAnswerMetadata } from "./answer-workflow.js";
-import { createTurnId, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, sessionLabelOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
+import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
 
 const BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
 const AUDIT_MESSAGE_TYPE = "telegram-tunnel-audit";
@@ -96,7 +96,7 @@ function getCommandHelp(): string {
     "",
     "Subcommands:",
     "  setup       Validate the bot token and cache the bot username",
-    "  connect     Generate a QR pairing link for this session",
+    "  connect [name]  Generate a QR pairing link with an optional session label",
     "  disconnect  Revoke the active Telegram binding",
     "  status      Show current local tunnel state",
   ].join("\n");
@@ -169,10 +169,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     pi.appendEntry<BindingEntryData>(BINDING_ENTRY_TYPE, data);
   }
 
-  function buildRoute(ctx: ExtensionContext, binding?: TelegramBindingMetadata): SessionRoute {
+  function buildRoute(ctx: ExtensionContext, binding?: TelegramBindingMetadata, explicitLabel?: string): SessionRoute {
     const sessionId = ctx.sessionManager.getSessionId();
     const sessionFile = ctx.sessionManager.getSessionFile();
-    const sessionLabel = sessionLabelOf(sessionId, sessionFile, ctx.sessionManager.getSessionName());
+    const sessionLabel = binding?.sessionLabel ?? deriveSessionLabel({
+      explicitLabel,
+      sessionName: ctx.sessionManager.getSessionName(),
+      cwd: ctx.cwd,
+      sessionFile,
+      sessionId,
+    });
     return {
       sessionKey: sessionKeyOf(sessionId, sessionFile),
       sessionId,
@@ -198,7 +204,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           if (!latestContext?.hasUI) return false;
           return latestContext.ui.confirm(
             "Telegram Pairing Request",
-            `Allow ${getTelegramUserLabel(identity)} to control ${sessionLabel}?`,
+            `Allow ${getTelegramUserLabel(identity)} to control ${currentRoute?.sessionLabel ?? sessionLabel}?`,
           );
         },
         abort: () => latestContext?.abort(),
@@ -274,7 +280,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(`Telegram bot ready: @${setup.botUsername} (${setup.botDisplayName})`, "info");
   }
 
-  async function handleConnect(ctx: ExtensionContext): Promise<void> {
+  async function handleConnect(ctx: ExtensionContext, explicitLabel?: string): Promise<void> {
     const config = await ensureConfig(ctx, true);
     const tunnelRuntime = await ensureRuntime(ctx);
     const setup = await tunnelRuntime.ensureSetup();
@@ -283,6 +289,17 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     if (!currentRoute) {
       throw new Error("Failed to initialize the current Pi session route.");
+    }
+    if (explicitLabel?.trim()) {
+      const sessionLabel = deriveSessionLabel({
+        explicitLabel,
+        sessionName: ctx.sessionManager.getSessionName(),
+        cwd: ctx.cwd,
+        sessionFile: currentRoute.sessionFile,
+        sessionId: currentRoute.sessionId,
+      });
+      currentRoute.sessionLabel = sessionLabel;
+      if (currentRoute.binding) currentRoute.binding = { ...currentRoute.binding, sessionLabel };
     }
     await tunnelRuntime.registerRoute(currentRoute);
 
@@ -362,14 +379,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     },
     handler: async (args, ctx) => {
       latestContext = ctx;
-      const [subcommand] = args.trim().split(/\s+/);
+      const trimmedArgs = args.trim();
+      const [subcommand, ...rest] = trimmedArgs.split(/\s+/);
+      const subcommandArgs = rest.join(" ").trim();
       try {
         switch ((subcommand || "").toLowerCase()) {
           case "setup":
             await handleSetup(ctx);
             return;
           case "connect":
-            await handleConnect(ctx);
+            await handleConnect(ctx, subcommandArgs);
             return;
           case "disconnect":
             await handleDisconnect(ctx);

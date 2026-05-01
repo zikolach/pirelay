@@ -29,6 +29,10 @@ import {
   normalizeImageMimeType,
   safeTelegramImageFilename,
 } from './utils.ts';
+import {
+  formatSessionList,
+  resolveSessionSelector,
+} from './session-multiplexing.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
@@ -55,6 +59,7 @@ const HELP_TEXT = [
   '/status - session and tunnel status',
   '/sessions - list available paired sessions',
   '/use <session> - select an active session',
+  '/to <session> <prompt> - send one prompt without switching sessions',
   '/summary - latest summary/excerpt',
   '/full - latest full assistant output',
   '/images - download latest image outputs or generated image files',
@@ -348,11 +353,28 @@ async function ensureSetup() {
   return setup;
 }
 
-function routeStatusLine(route, online) {
-  const binding = route.binding;
-  if (!binding) return `${route.sessionLabel} (${online ? 'online' : 'offline'}) - not paired`;
-  const paused = binding.paused ? ', paused' : '';
-  return `${route.sessionLabel} (${online ? 'online' : 'offline'}, ${isEffectivelyBusy(route) ? 'busy' : 'idle'}${paused})`;
+function routeToSessionEntry(route) {
+  return {
+    sessionKey: route.sessionKey,
+    sessionId: route.sessionId,
+    sessionFile: route.sessionFile,
+    sessionLabel: route.sessionLabel,
+    online: true,
+    busy: isEffectivelyBusy(route),
+    paused: Boolean(route.binding?.paused),
+  };
+}
+
+function bindingToSessionEntry(binding) {
+  return {
+    sessionKey: binding.sessionKey,
+    sessionId: binding.sessionId,
+    sessionFile: binding.sessionFile,
+    sessionLabel: binding.sessionLabel,
+    online: false,
+    busy: false,
+    paused: Boolean(binding.paused),
+  };
 }
 
 function getLiveRoutesForChat(chatId, userId) {
@@ -363,6 +385,25 @@ async function getPersistedBindingsForChat(chatId, userId) {
   const state = await loadState();
   return Object.values(state.bindings)
     .filter((binding) => binding.chatId === chatId && binding.userId === userId && binding.status !== 'revoked');
+}
+
+async function getSessionEntriesForChat(chatId, userId) {
+  const live = getLiveRoutesForChat(chatId, userId);
+  const persisted = await getPersistedBindingsForChat(chatId, userId);
+  const seen = new Set(live.map((route) => route.sessionKey));
+  return [
+    ...live.map(routeToSessionEntry),
+    ...persisted.filter((binding) => !seen.has(binding.sessionKey)).map(bindingToSessionEntry),
+  ];
+}
+
+async function chatHasMultipleSessions(chatId, userId) {
+  return (await getSessionEntriesForChat(chatId, userId)).length > 1;
+}
+
+async function sourcePrefixForRoute(route) {
+  if (!route?.binding) return '';
+  return await chatHasMultipleSessions(route.binding.chatId, route.binding.userId) ? `Session ${route.sessionLabel}\n\n` : '';
 }
 
 async function resolveRouteForChat(chatId, userId) {
@@ -380,19 +421,11 @@ async function resolveRouteForChat(chatId, userId) {
   return { route: undefined, live, ambiguous: false };
 }
 
-async function chooseRouteForUse(chatId, userId, selector) {
-  const live = getLiveRoutesForChat(chatId, userId);
-  if (live.length === 0) return undefined;
-  const trimmed = selector.trim();
-  if (!trimmed) return undefined;
-  const asNumber = Number(trimmed);
-  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= live.length) {
-    return live[asNumber - 1];
-  }
-  const lowered = trimmed.toLowerCase();
-  return live.find((route) =>
-    route.sessionLabel.toLowerCase().includes(lowered) || route.sessionId.toLowerCase().startsWith(lowered),
-  );
+async function resolveRouteSelectorForChat(chatId, userId, selector) {
+  const entries = await getSessionEntriesForChat(chatId, userId);
+  const result = resolveSessionSelector(entries, selector);
+  const route = result.kind === 'matched' ? routes.get(result.entry.sessionKey) : undefined;
+  return { result, route };
 }
 
 function routeIsAuthorized(route, user) {
@@ -761,39 +794,90 @@ async function handlePairStart(message, nonce) {
 }
 
 async function handleSessionsCommand(message) {
-  const live = getLiveRoutesForChat(message.chat.id, message.user.id);
-  const persisted = await getPersistedBindingsForChat(message.chat.id, message.user.id);
-  const seen = new Set();
-  const lines = ['Paired sessions:'];
-  let index = 1;
-  for (const route of live) {
-    seen.add(route.sessionKey);
-    const active = activeSessionByChatId.get(String(message.chat.id)) === route.sessionKey ? ' *active*' : '';
-    lines.push(`${index}. ${routeStatusLine(route, true)}${active}`);
-    index += 1;
-  }
-  for (const binding of persisted) {
-    if (seen.has(binding.sessionKey)) continue;
-    const active = activeSessionByChatId.get(String(message.chat.id)) === binding.sessionKey ? ' *active*' : '';
-    lines.push(`${index}. ${binding.sessionLabel} (offline)${active}`);
-    index += 1;
-  }
-  if (index === 1) {
-    lines.push('No paired sessions found for this chat.');
-  } else {
-    lines.push('', 'Use /use <number|name> to switch the active session.');
-  }
-  await sendPlainText(message.chat.id, lines.join('\n'));
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+  await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))));
 }
 
 async function handleUseCommand(message, args) {
-  const route = await chooseRouteForUse(message.chat.id, message.user.id, args);
+  const { result, route } = await resolveRouteSelectorForChat(message.chat.id, message.user.id, args);
+  if (result.kind === 'empty') {
+    await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
+    return;
+  }
+  if (result.kind === 'missing') {
+    await sendPlainText(message.chat.id, 'Usage: /use <number|label>. Use /sessions to list available sessions.');
+    return;
+  }
+  if (result.kind === 'ambiguous') {
+    await sendPlainText(message.chat.id, 'That session label is ambiguous. Use /sessions and choose by number.');
+    return;
+  }
+  if (result.kind === 'offline') {
+    await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
+    return;
+  }
   if (!route) {
-    await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available routes.');
+    await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
     return;
   }
   activeSessionByChatId.set(String(message.chat.id), route.sessionKey);
   await sendPlainText(message.chat.id, `Active session set to ${route.sessionLabel}.`);
+}
+
+async function handleToCommand(message, args) {
+  const trimmed = String(args || '').trim();
+  if (!trimmed) {
+    await sendPlainText(message.chat.id, 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.');
+    return;
+  }
+  const [selector, ...promptParts] = trimmed.split(/\s+/);
+  const prompt = promptParts.join(' ').trim();
+  if (!selector || (!prompt && !hasImageAttachments(message))) {
+    await sendPlainText(message.chat.id, 'Usage: /to <session> <prompt>. Use /sessions to list available sessions.');
+    return;
+  }
+
+  const { result, route } = await resolveRouteSelectorForChat(message.chat.id, message.user.id, selector);
+  if (result.kind === 'empty') {
+    await sendPlainText(message.chat.id, 'No paired sessions found for this chat. Run /telegram-tunnel connect [name] locally first.');
+    return;
+  }
+  if (result.kind === 'missing') {
+    await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
+    return;
+  }
+  if (result.kind === 'ambiguous') {
+    await sendPlainText(message.chat.id, 'That session label is ambiguous. Use /sessions and choose by number.');
+    return;
+  }
+  if (result.kind === 'offline') {
+    await sendPlainText(message.chat.id, `Pi session ${result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
+    return;
+  }
+  if (!route || !route.binding) {
+    await sendPlainText(message.chat.id, 'No matching online session. Use /sessions to list available sessions.');
+    return;
+  }
+  if (!routeIsAuthorized(route, message.user)) {
+    await sendPlainText(message.chat.id, 'Unauthorized Telegram identity for this Pi session.');
+    return;
+  }
+  if (route.binding.paused) {
+    await sendPlainText(message.chat.id, `Pi session ${route.sessionLabel} is paused. Use /use ${result.index + 1} then /resume first.`);
+    return;
+  }
+
+  clearAnswerStateForRoute(route);
+  const busy = isEffectivelyBusy(route);
+  const deliverAs = busy ? config.busyDeliveryMode : undefined;
+  await deliverAuthorizedPrompt(message, route, prompt || promptTextForMessage({ ...message, text: '' }), {
+    deliverAs,
+    auditMessage: busy
+      ? `Telegram ${getUserLabel(message.user)} sent a one-shot ${deliverAs} prompt to ${route.sessionLabel}.`
+      : `Telegram ${getUserLabel(message.user)} sent a one-shot prompt to ${route.sessionLabel}.`,
+    busyAck: busy ? `Pi session ${route.sessionLabel} is busy; your message was queued as ${deliverAs}.` : undefined,
+    idleAck: busy ? undefined : `Prompt delivered to ${route.sessionLabel}.`,
+  });
 }
 
 async function startAnswerFlow(message, route) {
@@ -1053,6 +1137,10 @@ async function handleAuthorizedCommand(message, route, command, args) {
     await handleUseCommand(message, args);
     return;
   }
+  if (command === 'to') {
+    await handleToCommand(message, args);
+    return;
+  }
   if (!route || !binding) {
     const persisted = await getPersistedBindingsForChat(message.chat.id, message.user.id);
     if (persisted.length > 0) {
@@ -1277,7 +1365,7 @@ async function processInbound(message) {
     await sendPlainText(message.chat.id, 'Unauthorized Telegram identity for this Pi session.');
     return;
   }
-  if (ambiguous && command?.command !== 'sessions' && command?.command !== 'use') {
+  if (ambiguous && command?.command !== 'sessions' && command?.command !== 'use' && command?.command !== 'to') {
     await sendPlainText(message.chat.id, 'Multiple Pi sessions are paired to this chat. Use /sessions then /use <session> first.');
     return;
   }
@@ -1588,7 +1676,8 @@ async function handleClientRequest(socket, message) {
           return;
         }
         syncActivityIndicator(route);
-        await sendPlainText(route.binding.chatId, message.text, completionActionKeyboardForRoute(route));
+        const sourcePrefix = await sourcePrefixForRoute(route);
+        await sendPlainText(route.binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(
             route.binding.chatId,

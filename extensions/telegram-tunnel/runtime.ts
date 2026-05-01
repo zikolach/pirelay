@@ -220,7 +220,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
-    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, text, this.completionActionKeyboardForRoute(route));
+    const sourcePrefix = await this.sourcePrefixForRoute(route);
+    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
@@ -1197,6 +1198,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     route.actions.appendAudit(auditMessage);
   }
 
+  private async sourcePrefixForRoute(route: SessionRoute): Promise<string> {
+    if (!route.binding) return "";
+    const bindings = (await this.store.getBindingsByChatId(route.binding.chatId))
+      .filter((binding) => binding.status !== "revoked" && binding.userId === route.binding?.userId);
+    return bindings.length > 1 ? `Session ${route.sessionLabel}\n\n` : "";
+  }
+
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {
     return {
       sessionKey: route.sessionKey,
@@ -1220,6 +1228,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const durationMs = notification.startedAt ? Date.now() - notification.startedAt : undefined;
     const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : "unknown time";
 
+    const sourcePrefix = await this.sourcePrefixForRoute(route);
+
     if (status === "completed" && notification.lastAssistantText) {
       const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
       notification.lastSummary = summary;
@@ -1233,7 +1243,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         : "";
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
-        `✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
+        `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
         actionKeyboard,
       );
       if (notification.structuredAnswer) {
@@ -1249,12 +1259,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     if (status === "aborted") {
-      await this.api.sendPlainText(route.binding.chatId, `⏹️ Pi task aborted after ${durationLabel}.`);
+      await this.api.sendPlainText(route.binding.chatId, `${sourcePrefix}⏹️ Pi task aborted after ${durationLabel}.`);
       return;
     }
 
     const failure = notification.lastFailure || "The Pi task ended without a final assistant response.";
-    await this.api.sendPlainText(route.binding.chatId, `❌ Pi task failed after ${durationLabel}\n\n${failure}`);
+    await this.api.sendPlainText(route.binding.chatId, `${sourcePrefix}❌ Pi task failed after ${durationLabel}\n\n${failure}`);
   }
 }
 

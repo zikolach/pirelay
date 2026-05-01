@@ -2,7 +2,8 @@ import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { base64ByteLength, chunkTelegramText, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
+import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
+import { formatSessionList, resolveSessionSelector, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
 
 const tempDirs: string[] = [];
 
@@ -23,6 +24,33 @@ describe("telegram utils", () => {
   it("selects busy delivery mode only while busy", () => {
     expect(resolveBusyDeliveryMode("followUp", false)).toBeUndefined();
     expect(resolveBusyDeliveryMode("steer", true)).toBe("steer");
+  });
+
+  it("derives and normalizes human-friendly session labels", () => {
+    expect(normalizeSessionLabel("  docs\napi\t ")).toBe("docs api");
+    expect(normalizeSessionLabel("x".repeat(80))).toHaveLength(48);
+    expect(deriveSessionLabel({ explicitLabel: " docs ", sessionName: "named", cwd: "/work/project", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("docs");
+    expect(deriveSessionLabel({ sessionName: "named", cwd: "/work/project", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("named");
+    expect(deriveSessionLabel({ sessionName: "", cwd: "/work/project", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("project");
+    expect(deriveSessionLabel({ sessionName: "", cwd: "", sessionFile: "/tmp/session.jsonl", sessionId: "abcdef123456" })).toBe("session.jsonl");
+  });
+
+  it("formats and resolves multiplexed session selections", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "api", online: true, busy: false },
+      { sessionKey: "b:/tmp/b", sessionId: "bcdefa222222", sessionLabel: "api", online: true, busy: true },
+      { sessionKey: "c:/tmp/c", sessionId: "cdefab333333", sessionLabel: "docs", online: false },
+    ];
+
+    const list = formatSessionList(entries, entries[0]!.sessionKey);
+    expect(list).toContain("1. api [abcdef11] — online — idle — active");
+    expect(list).toContain("2. api [bcdefa22] — online — busy");
+    expect(list).toContain("3. docs — offline");
+
+    expect(resolveSessionSelector(entries, "1")).toMatchObject({ kind: "matched", index: 0 });
+    expect(resolveSessionSelector(entries, "docs")).toMatchObject({ kind: "offline", index: 2 });
+    expect(resolveSessionSelector(entries, "api")).toMatchObject({ kind: "ambiguous" });
+    expect(resolveSessionSelector(entries, "abcdef")).toMatchObject({ kind: "matched", index: 0 });
   });
 
   it("chunks oversized Telegram output", () => {
