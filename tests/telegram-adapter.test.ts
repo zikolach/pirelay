@@ -28,7 +28,8 @@ describe("telegram channel adapter", () => {
       inlineButtons: true,
       callbacks: true,
       maxTextChars: 1234,
-      maxDocumentBytes: 200,
+      maxDocumentBytes: undefined,
+      maxImageBytes: 200,
       supportedImageMimeTypes: ["image/png"],
     });
   });
@@ -82,7 +83,7 @@ describe("telegram channel adapter", () => {
       getUpdates: vi.fn(async () => []),
       sendPlainTextWithKeyboard: vi.fn(async (_chatId, text) => { sent.push(`text:${text}`); }),
       sendDocumentData: vi.fn(async (_chatId, filename, data, caption) => { sent.push(`doc:${filename}:${data.byteLength}:${caption ?? ""}`); }),
-      answerCallbackQuery: vi.fn(async (id, text) => { sent.push(`answer:${id}:${text ?? ""}`); }),
+      answerCallbackQuery: vi.fn(async (id, text, alert) => { sent.push(`answer:${id}:${text ?? ""}:${alert ? "alert" : "silent"}`); }),
       sendChatAction: vi.fn(async (_chatId, action) => { sent.push(`activity:${action ?? "typing"}`); }),
     };
     const adapter = new TelegramChannelAdapter(config(), api);
@@ -93,10 +94,38 @@ describe("telegram channel adapter", () => {
     await adapter.send({ kind: "activity", address, activity: "typing" });
     await adapter.send({ kind: "activity", address, activity: "uploading" });
     await adapter.send({ kind: "activity", address, activity: "recording" });
-    await adapter.send({ kind: "action-answer", channel: "telegram", actionId: "cb-1", text: "done" });
+    await adapter.send({ kind: "action-answer", channel: "telegram", actionId: "cb-1", text: "done", alert: true });
 
     expect(api.sendPlainTextWithKeyboard).toHaveBeenCalledWith(30, "hello", [[{ text: "OK", callbackData: "ok" }]]);
-    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "activity:typing", "activity:upload_document", "activity:record_video", "answer:cb-1:done"]);
+    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "activity:typing", "activity:upload_document", "activity:record_video", "answer:cb-1:done:alert"]);
+  });
+
+  it("retries updates when a handler fails before advancing offset", async () => {
+    vi.useFakeTimers();
+    try {
+      const update = { kind: "message" as const, updateId: 5, messageId: 2, text: "retry", chat: { id: 3, type: "private" }, user: { id: 4 } };
+      const api: TelegramApiOperations = {
+        getUpdates: vi.fn(async () => [update]),
+        sendPlainTextWithKeyboard: vi.fn(async () => undefined),
+        sendDocumentData: vi.fn(async () => undefined),
+        answerCallbackQuery: vi.fn(async () => undefined),
+        sendChatAction: vi.fn(async () => undefined),
+      };
+      const adapter = new TelegramChannelAdapter(config(), api);
+      const handler = vi.fn()
+        .mockRejectedValueOnce(new Error("handler failed"))
+        .mockImplementationOnce(async () => { await adapter.stopPolling(); });
+      const polling = adapter.startPolling(handler);
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      await polling;
+
+      expect(api.getUpdates).toHaveBeenNthCalledWith(1, undefined);
+      expect(api.getUpdates).toHaveBeenNthCalledWith(2, undefined);
+      expect(handler).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps polling after transient update errors", async () => {

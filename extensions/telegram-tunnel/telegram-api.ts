@@ -193,8 +193,9 @@ export class TelegramApiClient {
     ));
   }
 
-  async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
-    await this.withRetry(() => this.api.answerCallbackQuery(callbackQueryId, text ? { text } : undefined));
+  async answerCallbackQuery(callbackQueryId: string, text?: string, alert = false): Promise<void> {
+    const options = text || alert ? { text, show_alert: alert } : undefined;
+    await this.withRetry(() => this.api.answerCallbackQuery(callbackQueryId, options));
   }
 
   async sendChatAction(chatId: number, action: "typing" | "upload_document" | "record_video" = "typing"): Promise<void> {

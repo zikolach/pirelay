@@ -30,7 +30,7 @@ export interface TelegramApiOperations {
   getUpdates(offset: number | undefined): Promise<Array<TelegramInboundMessage | TelegramInboundCallback>>;
   sendPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void>;
   sendDocumentData(chatId: number, filename: string, data: Uint8Array, caption?: string): Promise<void>;
-  answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
+  answerCallbackQuery(callbackQueryId: string, text?: string, alert?: boolean): Promise<void>;
   sendChatAction(chatId: number, action?: "typing" | "upload_document" | "record_video"): Promise<void>;
 }
 
@@ -54,8 +54,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       try {
         const updates = await this.api.getUpdates(offset);
         for (const update of updates) {
-          offset = Math.max(offset ?? 0, update.updateId + 1);
           await handler(telegramUpdateToChannelEvent(update));
+          offset = Math.max(offset ?? 0, update.updateId + 1);
         }
       } catch {
         if (this.polling) await sleep(1_500);
@@ -108,7 +108,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async answerAction(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void> {
-    await this.api.answerCallbackQuery(actionId, options?.text);
+    await this.api.answerCallbackQuery(actionId, options?.text, options?.alert);
   }
 }
 
@@ -123,7 +123,7 @@ export function telegramCapabilities(config: TelegramTunnelConfig): ChannelCapab
     privateChats: true,
     groupChats: false,
     maxTextChars: config.maxTelegramMessageChars,
-    maxDocumentBytes: config.maxOutboundImageBytes,
+    maxDocumentBytes: undefined,
     maxImageBytes: config.maxOutboundImageBytes,
     supportedImageMimeTypes: config.allowedImageMimeTypes,
     supportsMarkdown: false,
