@@ -34,6 +34,26 @@ Environment variables win over file values.
   "verboseProgressIntervalMs": 10000,
   "recentActivityLimit": 10,
   "maxProgressMessageChars": 700,
+  "discord": {
+    "enabled": false,
+    "botToken": "<discord-bot-token>",
+    "allowUserIds": ["123456789012345678"],
+    "allowGuildChannels": false,
+    "maxTextChars": 2000,
+    "maxFileBytes": 8388608,
+    "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"]
+  },
+  "slack": {
+    "enabled": false,
+    "botToken": "xoxb-...",
+    "signingSecret": "<slack-signing-secret>",
+    "workspaceId": "T012345",
+    "allowUserIds": ["U012345"],
+    "allowChannelMessages": false,
+    "maxTextChars": 3000,
+    "maxFileBytes": 10485760,
+    "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"]
+  },
   "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
 }
 ```
@@ -60,8 +80,26 @@ Environment variables win over file values.
 - `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
 - `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
 - `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
+- `PI_RELAY_DISCORD_ENABLED`
+- `PI_RELAY_DISCORD_BOT_TOKEN`
+- `PI_RELAY_DISCORD_ALLOW_USER_IDS`
+- `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
+- `PI_RELAY_DISCORD_MAX_TEXT_CHARS`
+- `PI_RELAY_DISCORD_MAX_FILE_BYTES`
+- `PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES`
+- `PI_RELAY_SLACK_ENABLED`
+- `PI_RELAY_SLACK_BOT_TOKEN`
+- `PI_RELAY_SLACK_SIGNING_SECRET`
+- `PI_RELAY_SLACK_WORKSPACE_ID`
+- `PI_RELAY_SLACK_ALLOW_USER_IDS`
+- `PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES`
+- `PI_RELAY_SLACK_MAX_TEXT_CHARS`
+- `PI_RELAY_SLACK_MAX_FILE_BYTES`
+- `PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES`
 
-`PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS` and `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES` are comma-separated lists. `progressMode` can be `quiet`, `normal`, `verbose`, or `completionOnly`; Telegram users can override it per binding with `/progress`.
+`PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS`, Discord/Slack allow-user lists, and image MIME-type variables are comma-separated lists. `progressMode` can be `quiet`, `normal`, `verbose`, or `completionOnly`; Telegram users can override it per binding with `/progress`.
+
+Discord and Slack configuration is intentionally namespaced so tokens/signing secrets are not confused with Telegram credentials. The current package includes DM-first adapter foundations with mockable platform clients; Telegram remains the default live runtime until a platform client is wired by an integration.
 
 ## Troubleshooting
 

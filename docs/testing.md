@@ -101,7 +101,22 @@ Check:
 10. Try `/send-image ../secret.png`, an absolute path, a hidden path, an oversized image, and a renamed non-image; verify each is rejected with an actionable message.
 11. Verify input images are not echoed back by `/images` unless a tool emitted them separately as output.
 
-## 6. Regression notes to capture
+## 6. Discord and Slack adapter smoke checklist
+
+These adapter foundations are DM-first and use channel-specific credentials/config namespaces. For a live integration or mocked platform client, verify:
+
+1. Discord config uses `discord.botToken` or `PI_RELAY_DISCORD_BOT_TOKEN`; Slack config uses `slack.botToken` plus `slack.signingSecret` or the matching env vars.
+2. Discord DM messages normalize to `channel: discord`, private conversations, stable user ids, and supported image attachments.
+3. Discord guild-channel messages are rejected unless guild-channel control is explicitly enabled by the integration.
+4. Discord long output is chunked to the adapter max, buttons map to components, and latest images/files respect configured size/MIME limits.
+5. Slack HTTP/event requests with invalid signature or stale timestamp are rejected before route lookup or prompt injection.
+6. Slack DM messages normalize to `channel: slack`, private conversations, workspace/user identity metadata, and supported file/image attachments.
+7. Slack public/private channel events are rejected unless channel control is explicitly enabled by the integration.
+8. Slack long output is chunked, buttons map to Block Kit button values, and uploads respect configured size/MIME limits.
+9. Simultaneous Telegram, Discord, and Slack adapters produce channel-qualified binding keys such as `telegram:<session>`, `discord:<session>`, and `slack:<session>`.
+10. Exported/shared session history contains only non-secret binding metadata, never bot tokens, Slack signing secrets, OAuth tokens, or active pairing secrets.
+
+## 7. Regression notes to capture
 
 When a test fails, record:
 - Telegram client and platform

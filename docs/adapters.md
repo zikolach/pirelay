@@ -50,6 +50,10 @@ Example future accessible audio flow:
 4. outbound middleware can request spoken output only from content classified as safe for speech and after configured redaction
 5. sensitive actions use `requires-confirmation` before Pi delivery or control actions
 
+## Discord and Slack foundations
+
+Discord and Slack adapters are DM-first foundations with mockable platform operations. They normalize direct-message text, action callbacks, files/images, identity metadata, and platform limits into the shared channel contract. Discord guild messages and Slack channel events remain rejected by default unless an integration explicitly enables those broader scopes. Slack request signatures are verified before events are accepted.
+
 ## Future adapters
 
 A new adapter should implement the channel adapter interface, declare capabilities honestly, and avoid duplicating relay semantics. Authorization must happen before media download, transcription, prompt injection, callbacks, or control actions.

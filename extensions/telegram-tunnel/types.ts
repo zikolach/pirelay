@@ -14,6 +14,28 @@ export interface ProgressActivityEntry {
   at: number;
 }
 
+export interface DiscordRelayConfig {
+  enabled?: boolean;
+  botToken?: string;
+  allowUserIds?: string[];
+  allowGuildChannels?: boolean;
+  maxTextChars?: number;
+  maxFileBytes?: number;
+  allowedImageMimeTypes?: string[];
+}
+
+export interface SlackRelayConfig {
+  enabled?: boolean;
+  botToken?: string;
+  signingSecret: string;
+  workspaceId?: string;
+  allowUserIds?: string[];
+  allowChannelMessages?: boolean;
+  maxTextChars?: number;
+  maxFileBytes?: number;
+  allowedImageMimeTypes?: string[];
+}
+
 export interface TelegramTunnelConfig {
   botToken: string;
   configPath?: string;
@@ -36,6 +58,8 @@ export interface TelegramTunnelConfig {
   verboseProgressIntervalMs?: number;
   recentActivityLimit?: number;
   maxProgressMessageChars?: number;
+  discord?: DiscordRelayConfig;
+  slack?: SlackRelayConfig;
 }
 
 export interface ConfigLoadResult {

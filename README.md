@@ -311,7 +311,7 @@ When the chat view contains Markdown tables, PiRelay reformats them into aligned
 
 PiRelay uses one local authoritative broker per bot token so multiple active Pi sessions on the same machine can share one Telegram bot safely.
 
-Internally, PiRelay is moving toward channel adapters and interaction middleware so Telegram-specific transport stays separate from reusable session routing, authorization, output retrieval, guided answer, media, redaction, progress, and future accessibility behavior. Telegram remains fully compatible; future adapters can plug into the same relay core. See [docs/adapters.md](docs/adapters.md) for the adapter and middleware boundaries.
+Internally, PiRelay uses channel adapters and interaction middleware so Telegram-specific transport stays separate from reusable session routing, authorization, output retrieval, guided answer, media, redaction, progress, and future accessibility behavior. Telegram remains fully compatible. Discord and Slack adapter foundations are available for DM-first relay integrations with injected/mockable platform clients; Telegram remains the default packaged runtime. See [docs/adapters.md](docs/adapters.md) for the adapter and middleware boundaries.
 
 Pair sessions with short labels when useful:
 
@@ -357,6 +357,20 @@ Supported configuration keys include:
   "verboseProgressIntervalMs": 10000,
   "recentActivityLimit": 10,
   "maxProgressMessageChars": 700,
+  "discord": {
+    "enabled": false,
+    "botToken": "<discord-bot-token>",
+    "allowUserIds": ["123456789012345678"],
+    "allowGuildChannels": false
+  },
+  "slack": {
+    "enabled": false,
+    "botToken": "xoxb-...",
+    "signingSecret": "<slack-signing-secret>",
+    "workspaceId": "T012345",
+    "allowUserIds": ["U012345"],
+    "allowChannelMessages": false
+  },
   "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
 }
 ```
@@ -383,6 +397,22 @@ Environment variables:
 - `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
 - `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
 - `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
+- `PI_RELAY_DISCORD_ENABLED`
+- `PI_RELAY_DISCORD_BOT_TOKEN`
+- `PI_RELAY_DISCORD_ALLOW_USER_IDS`
+- `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
+- `PI_RELAY_DISCORD_MAX_TEXT_CHARS`
+- `PI_RELAY_DISCORD_MAX_FILE_BYTES`
+- `PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES`
+- `PI_RELAY_SLACK_ENABLED`
+- `PI_RELAY_SLACK_BOT_TOKEN`
+- `PI_RELAY_SLACK_SIGNING_SECRET`
+- `PI_RELAY_SLACK_WORKSPACE_ID`
+- `PI_RELAY_SLACK_ALLOW_USER_IDS`
+- `PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES`
+- `PI_RELAY_SLACK_MAX_TEXT_CHARS`
+- `PI_RELAY_SLACK_MAX_FILE_BYTES`
+- `PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES`
 
 For more detail, see [docs/config.md](docs/config.md).
 
@@ -392,7 +422,7 @@ Please treat PiRelay as a convenience/control channel, not a secret-safe transpo
 
 Important points:
 
-- only **private Telegram chats** are supported
+- only **private Telegram chats** are supported in the default runtime; Discord/Slack adapter foundations are DM-first and reject guild/channel control unless explicitly enabled by future runtime wiring
 - Telegram Bot API traffic is **not end-to-end encrypted**
 - bot tokens are not stored in Pi session history
 - exported/shared Pi sessions only contain non-secret tunnel metadata

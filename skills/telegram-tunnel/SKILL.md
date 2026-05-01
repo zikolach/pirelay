@@ -53,6 +53,8 @@ During long-running turns, PiRelay sends safe, rate-limited progress updates by 
 
 One bot token has one authoritative local broker. Multiple same-machine Pi sessions can share it, but multiple independent brokers on different machines must not poll the same bot token concurrently; cross-machine hub mode is future work.
 
+Discord and Slack adapter foundations are present for DM-first relay integrations with injected platform clients. Keep their credentials in `discord.*` / `slack.*` config namespaces or `PI_RELAY_DISCORD_*` / `PI_RELAY_SLACK_*` environment variables; do not mix those secrets with Telegram config or session history. Telegram remains the default live runtime exposed by this skill.
+
 ## Guided Telegram answer flow
 
 If the latest Pi output contains numbered options or explicit questions, Telegram preserves that trailing decision block and supports a lightweight guided answer flow:

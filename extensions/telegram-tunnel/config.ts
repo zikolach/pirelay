@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { DEFAULT_STATE_DIR, getDefaultConfigPath } from "./paths.js";
-import type { ConfigLoadResult, TelegramTunnelConfig } from "./types.js";
+import type { ConfigLoadResult, DiscordRelayConfig, SlackRelayConfig, TelegramTunnelConfig } from "./types.js";
 import { DEFAULT_MAX_PROGRESS_MESSAGE_CHARS, DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_MODE, DEFAULT_RECENT_ACTIVITY_LIMIT, DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS, normalizeProgressMode } from "./progress.js";
 import { getDefaultRedactionPatterns } from "./utils.js";
 
@@ -29,6 +29,8 @@ interface ConfigFileShape {
   verboseProgressIntervalMs?: number;
   recentActivityLimit?: number;
   maxProgressMessageChars?: number;
+  discord?: DiscordRelayConfig;
+  slack?: SlackRelayConfig;
 }
 
 export class ConfigError extends Error {}
@@ -59,6 +61,14 @@ function parseStringList(value: string | undefined): string[] | undefined {
     .filter(Boolean);
 }
 
+function parseBoolean(value: string | undefined, fallback: boolean | undefined): boolean | undefined {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
 async function readConfigFile(configPath: string): Promise<ConfigFileShape | undefined> {
   try {
     await access(configPath, constants.R_OK);
@@ -69,6 +79,42 @@ async function readConfigFile(configPath: string): Promise<ConfigFileShape | und
   const raw = await readFile(configPath, "utf8");
   const parsed = JSON.parse(raw) as ConfigFileShape;
   return parsed;
+}
+
+function resolveDiscordConfig(fileConfig: DiscordRelayConfig | undefined, defaultImageMimeTypes: string[]): DiscordRelayConfig | undefined {
+  const botToken = process.env.PI_RELAY_DISCORD_BOT_TOKEN ?? fileConfig?.botToken;
+  const enabled = parseBoolean(process.env.PI_RELAY_DISCORD_ENABLED, fileConfig?.enabled ?? Boolean(botToken));
+  if (!enabled && !botToken) return undefined;
+  return {
+    enabled,
+    botToken,
+    allowUserIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? fileConfig?.allowUserIds ?? [],
+    allowGuildChannels: parseBoolean(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS, fileConfig?.allowGuildChannels ?? false),
+    maxTextChars: parseNumber(process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS, fileConfig?.maxTextChars ?? 2_000),
+    maxFileBytes: parseNumber(process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES, fileConfig?.maxFileBytes ?? 8 * 1024 * 1024),
+    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES) ?? fileConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
+  };
+}
+
+function resolveSlackConfig(fileConfig: SlackRelayConfig | undefined, defaultImageMimeTypes: string[]): SlackRelayConfig | undefined {
+  const botToken = process.env.PI_RELAY_SLACK_BOT_TOKEN ?? fileConfig?.botToken;
+  const signingSecret = process.env.PI_RELAY_SLACK_SIGNING_SECRET ?? fileConfig?.signingSecret;
+  const enabled = parseBoolean(process.env.PI_RELAY_SLACK_ENABLED, fileConfig?.enabled ?? Boolean(botToken && signingSecret));
+  if (!enabled && !botToken && !signingSecret) return undefined;
+  if (!signingSecret) {
+    return undefined;
+  }
+  return {
+    enabled,
+    botToken,
+    signingSecret,
+    workspaceId: process.env.PI_RELAY_SLACK_WORKSPACE_ID ?? fileConfig?.workspaceId,
+    allowUserIds: parseStringList(process.env.PI_RELAY_SLACK_ALLOW_USER_IDS) ?? fileConfig?.allowUserIds ?? [],
+    allowChannelMessages: parseBoolean(process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES, fileConfig?.allowChannelMessages ?? false),
+    maxTextChars: parseNumber(process.env.PI_RELAY_SLACK_MAX_TEXT_CHARS, fileConfig?.maxTextChars ?? 3_000),
+    maxFileBytes: parseNumber(process.env.PI_RELAY_SLACK_MAX_FILE_BYTES, fileConfig?.maxFileBytes ?? 10 * 1024 * 1024),
+    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES) ?? fileConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
+  };
 }
 
 async function collectFileWarnings(configPath: string, warnings: string[]): Promise<void> {
@@ -168,6 +214,8 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     process.env.PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS,
     fileConfig?.maxProgressMessageChars ?? DEFAULT_MAX_PROGRESS_MESSAGE_CHARS,
   );
+  const discord = resolveDiscordConfig(fileConfig?.discord, allowedImageMimeTypes);
+  const slack = resolveSlackConfig(fileConfig?.slack, allowedImageMimeTypes);
 
   if (pairingExpiryMs < 30_000) {
     throw new ConfigError("pairingExpiryMs must be at least 30000.");
@@ -225,6 +273,8 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     verboseProgressIntervalMs,
     recentActivityLimit,
     maxProgressMessageChars,
+    discord,
+    slack,
   };
 
   return { config, warnings };
