@@ -78,20 +78,31 @@ function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams
     const deadline = Date.now() + 10_000;
     let settled = false;
 
+    const cleanup = () => {
+      child.off("exit", onExit);
+      child.off("error", onError);
+    };
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
+      cleanup();
       reject(error);
     };
     const succeed = () => {
       if (settled) return;
       settled = true;
+      cleanup();
       resolve();
     };
-
-    child.once("exit", (code, signal) => {
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       fail(new Error(`Broker exited before opening socket (code=${code}, signal=${signal}).${stderr ? `\n${stderr}` : ""}`));
-    });
+    };
+    const onError = (error: Error) => {
+      fail(new Error(`Broker failed before opening socket: ${error.message}.${stderr ? `\n${stderr}` : ""}`));
+    };
+
+    child.once("exit", onExit);
+    child.once("error", onError);
 
     const tryConnect = () => {
       if (settled) return;
