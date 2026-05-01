@@ -22,6 +22,16 @@ export interface SessionTargetResolution {
   result: SessionSelectorResult;
 }
 
+export interface BoundSessionIdentity {
+  sessionKey: string;
+  sessionId: string;
+  sessionLabel: string;
+  binding?: {
+    chatId: number;
+    userId: number;
+  };
+}
+
 const SESSION_MARKERS = ["🟦", "🟩", "🟧", "🟪", "🟨", "🟥", "⬜", "⬛"];
 
 function stableHash(value: string): number {
@@ -40,6 +50,21 @@ export function shortSessionId(entry: Pick<SessionListEntry, "sessionId" | "sess
 export function sessionMarkerFor(entry: Pick<SessionListEntry, "sessionKey" | "sessionId">): string {
   const identity = entry.sessionKey || entry.sessionId;
   return SESSION_MARKERS[stableHash(identity) % SESSION_MARKERS.length]!;
+}
+
+export function hasMultipleBoundSessionsForRoute(route: BoundSessionIdentity, candidates: Iterable<BoundSessionIdentity>): boolean {
+  if (!route.binding) return false;
+  let count = 0;
+  for (const candidate of candidates) {
+    if (candidate.binding?.chatId !== route.binding.chatId || candidate.binding?.userId !== route.binding.userId) continue;
+    count += 1;
+    if (count > 1) return true;
+  }
+  return false;
+}
+
+export function sessionSourcePrefixForRoute(route: BoundSessionIdentity, candidates: Iterable<BoundSessionIdentity>): string {
+  return hasMultipleBoundSessionsForRoute(route, candidates) ? `${sessionMarkerFor(route)} ${route.sessionLabel}\n\n` : "";
 }
 
 function normalizeSelector(value: string): string {

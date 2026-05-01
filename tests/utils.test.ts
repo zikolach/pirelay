@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
 
 const tempDirs: string[] = [];
 
@@ -59,6 +59,15 @@ describe("telegram utils", () => {
     const entry = { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "api", online: true };
     expect(sessionMarkerFor(entry)).toBe(sessionMarkerFor({ sessionKey: entry.sessionKey, sessionId: entry.sessionId }));
     expect(sessionMarkerFor(entry)).toMatch(/^./u);
+  });
+
+  it("builds a source prefix only when multiple live sessions share a chat", () => {
+    const first: BoundSessionIdentity = { sessionKey: "a", sessionId: "a", sessionLabel: "api", binding: { chatId: 1, userId: 2 } };
+    const second: BoundSessionIdentity = { sessionKey: "b", sessionId: "b", sessionLabel: "docs", binding: { chatId: 1, userId: 2 } };
+    const otherChat: BoundSessionIdentity = { sessionKey: "c", sessionId: "c", sessionLabel: "cloud", binding: { chatId: 9, userId: 2 } };
+
+    expect(sessionSourcePrefixForRoute(first, [first, otherChat])).toBe("");
+    expect(sessionSourcePrefixForRoute(first, [first, second])).toBe(`${sessionMarkerFor(first)} api\n\n`);
   });
 
   it("distinguishes missing and unmatched session selectors", () => {

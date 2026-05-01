@@ -41,7 +41,7 @@ import type {
   TunnelRuntime,
   TelegramUserSummary,
 } from "./types.js";
-import { sessionMarkerFor } from "./session-multiplexing.js";
+import { sessionSourcePrefixForRoute } from "./session-multiplexing.js";
 import {
   buildImagePromptContent,
   createTurnId,
@@ -226,9 +226,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
         route.binding.chatId,
-        summarizeTailForTelegram(route.notification.structuredAnswer, {
+        `${sourcePrefix}${summarizeTailForTelegram(route.notification.structuredAnswer, {
           includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
-        }),
+        })}`,
         this.answerActionKeyboardForRoute(route),
       );
     }
@@ -1199,19 +1199,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     route.actions.appendAudit(auditMessage);
   }
 
-  private hasMultipleLiveSessionsForRoute(route: SessionRoute): boolean {
-    if (!route.binding) return false;
-    let count = 0;
-    for (const candidate of this.routes.values()) {
-      if (candidate.binding?.chatId !== route.binding.chatId || candidate.binding?.userId !== route.binding.userId) continue;
-      count += 1;
-      if (count > 1) return true;
-    }
-    return false;
-  }
-
   private sourcePrefixForRoute(route: SessionRoute): string {
-    return this.hasMultipleLiveSessionsForRoute(route) ? `${sessionMarkerFor(route)} ${route.sessionLabel}\n\n` : "";
+    return sessionSourcePrefixForRoute(route, this.routes.values());
   }
 
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {
@@ -1258,9 +1247,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       if (notification.structuredAnswer) {
         await this.api.sendPlainTextWithKeyboard(
           route.binding.chatId,
-          summarizeTailForTelegram(notification.structuredAnswer, {
+          `${sourcePrefix}${summarizeTailForTelegram(notification.structuredAnswer, {
             includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
-          }),
+          })}`,
           this.answerActionKeyboardForRoute(route),
         );
       }

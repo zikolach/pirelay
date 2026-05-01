@@ -33,7 +33,7 @@ import {
   formatSessionList,
   resolveSessionSelector,
   resolveSessionTargetArgs,
-  sessionMarkerFor,
+  sessionSourcePrefixForRoute,
 } from './session-multiplexing.ts';
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
@@ -399,19 +399,8 @@ async function getSessionEntriesForChat(chatId, userId) {
   ];
 }
 
-function chatHasMultipleLiveSessions(chatId, userId) {
-  let count = 0;
-  for (const route of routes.values()) {
-    if (route.binding?.chatId !== chatId || route.binding?.userId !== userId) continue;
-    count += 1;
-    if (count > 1) return true;
-  }
-  return false;
-}
-
 function sourcePrefixForRoute(route) {
-  if (!route?.binding) return '';
-  return chatHasMultipleLiveSessions(route.binding.chatId, route.binding.userId) ? `${sessionMarkerFor(route)} ${route.sessionLabel}\n\n` : '';
+  return route ? sessionSourcePrefixForRoute(route, routes.values()) : '';
 }
 
 async function resolveRouteForChat(chatId, userId) {
@@ -1690,9 +1679,9 @@ async function handleClientRequest(socket, message) {
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(
             route.binding.chatId,
-            summarizeTailForTelegram(route.notification.structuredAnswer, {
+            `${sourcePrefix}${summarizeTailForTelegram(route.notification.structuredAnswer, {
               includeFullOutputActions: shouldOfferFullOutputActionsForRoute(route),
-            }),
+            })}`,
             answerActionKeyboardForRoute(route),
           );
         }
