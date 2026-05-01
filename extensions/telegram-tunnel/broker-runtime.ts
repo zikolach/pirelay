@@ -31,6 +31,10 @@ interface BrokerProtocolResponse {
   error?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export class BrokerTunnelRuntime implements TunnelRuntime {
   private readonly clientId = randomUUID();
   private readonly socketPath: string;
@@ -193,7 +197,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
         await respond({ ok: false, error: `Unsupported broker protocol version: ${request.protocolVersion}` });
         return;
       }
-      const pipeline = request.pipeline as { protocolVersion?: unknown } | undefined;
+      const pipeline = request.pipeline;
+      if (pipeline !== undefined && !isRecord(pipeline)) {
+        await respond({ ok: false, error: "Invalid relay pipeline protocol version." });
+        return;
+      }
       if (pipeline && "protocolVersion" in pipeline && typeof pipeline.protocolVersion !== "number") {
         await respond({ ok: false, error: "Invalid relay pipeline protocol version." });
         return;

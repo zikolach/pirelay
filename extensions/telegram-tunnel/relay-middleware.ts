@@ -106,10 +106,14 @@ export interface RelayPipelineContext {
   emitTrace(entry: RelayTraceEntry): void;
 }
 
+export type BooleanChannelCapabilityKey = {
+  [Key in keyof ChannelCapabilities]-?: NonNullable<ChannelCapabilities[Key]> extends boolean ? Key : never;
+}[keyof ChannelCapabilities];
+
 export interface RelayMiddlewareCapabilityDeclaration {
   produces?: string[];
   requires?: string[];
-  adapter?: Array<keyof ChannelCapabilities>;
+  adapter?: BooleanChannelCapabilityKey[];
 }
 
 export interface RelayMiddlewareOrdering {
@@ -204,9 +208,13 @@ export function orderMiddleware(middleware: RelayMiddleware[]): RelayMiddleware[
   const dependencies = new Map<string, Set<string>>();
   for (const item of middleware) {
     const itemDependencies = dependencies.get(item.id) ?? new Set<string>();
-    for (const dependency of item.ordering?.after ?? []) itemDependencies.add(dependency);
+    for (const dependency of item.ordering?.after ?? []) {
+      if (!byId.has(dependency)) throw new Error(`Unknown middleware ordering reference: ${item.id} after ${dependency}`);
+      itemDependencies.add(dependency);
+    }
     dependencies.set(item.id, itemDependencies);
     for (const target of item.ordering?.before ?? []) {
+      if (!byId.has(target)) throw new Error(`Unknown middleware ordering reference: ${item.id} before ${target}`);
       const targetDependencies = dependencies.get(target) ?? new Set<string>();
       targetDependencies.add(item.id);
       dependencies.set(target, targetDependencies);
@@ -240,7 +248,7 @@ function missingRequirements(middleware: RelayMiddleware, produced: Set<string>,
     if (!produced.has(required)) return `missing-capability:${required}`;
   }
   for (const adapterCapability of middleware.capabilities?.adapter ?? []) {
-    if (!capabilities[adapterCapability]) return `missing-adapter-capability:${String(adapterCapability)}`;
+    if (capabilities[adapterCapability] !== true) return `missing-adapter-capability:${String(adapterCapability)}`;
   }
   return undefined;
 }

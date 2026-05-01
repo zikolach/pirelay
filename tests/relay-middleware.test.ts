@@ -42,6 +42,17 @@ function context(): RelayPipelineContext {
   };
 }
 
+const invalidAdapterRequirement: RelayMiddleware = {
+  id: "invalid-adapter-requirement",
+  phases: ["inbound"],
+  capabilities: {
+    // @ts-expect-error adapter requirements are limited to boolean channel capabilities.
+    adapter: ["maxTextChars"],
+  },
+  run: async () => ({ kind: "continue" }),
+};
+void invalidAdapterRequirement;
+
 describe("relay middleware pipeline", () => {
   it("exports a protocol version for broker envelopes", () => {
     expect(relayPipelineProtocolVersion).toBe(1);
@@ -65,6 +76,15 @@ describe("relay middleware pipeline", () => {
       { id: "duplicate", phases: ["inbound"], run: async () => ({ kind: "continue" }) },
       { id: "duplicate", phases: ["intent"], run: async () => ({ kind: "continue" }) },
     ])).toThrow("Duplicate middleware id: duplicate");
+  });
+
+  it("rejects unknown middleware ordering references", () => {
+    expect(() => createRelayPipeline([
+      { id: "source", phases: ["inbound"], ordering: { after: ["missing"] }, run: async () => ({ kind: "continue" }) },
+    ])).toThrow("Unknown middleware ordering reference: source after missing");
+    expect(() => createRelayPipeline([
+      { id: "source", phases: ["inbound"], ordering: { before: ["missing"] }, run: async () => ({ kind: "continue" }) },
+    ])).toThrow("Unknown middleware ordering reference: source before missing");
   });
 
   it("honors before ordering constraints regardless of input order", async () => {
