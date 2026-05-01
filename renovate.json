@@ -24,6 +24,8 @@
     {
       "description": "Show Node runtime and workflow updates in the dashboard before opening PRs.",
       "matchDatasources": ["node-version"],
+      "matchPackageNames": ["node"],
+      "matchDepTypes": ["engines", "uses-with"],
       "dependencyDashboardApproval": true
     },
     {
