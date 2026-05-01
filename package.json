@@ -50,7 +50,7 @@
     "@mariozechner/pi-tui": "*"
   },
   "dependencies": {
-    "grammy": "^1.38.3",
+    "grammy": "^1.42.0",
     "proper-lockfile": "^4.1.2",
     "qrcode-terminal": "^0.12.0"
   },
