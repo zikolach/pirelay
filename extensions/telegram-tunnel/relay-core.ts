@@ -17,6 +17,7 @@ export interface RelayRouteState {
 }
 
 export function statusSnapshotForRoute(route: SessionRoute, options: { online: boolean; busy: boolean }): SessionStatusSnapshot {
+  const model = route.actions.getModel();
   return {
     sessionKey: route.sessionKey,
     sessionLabel: route.sessionLabel,
@@ -24,7 +25,7 @@ export function statusSnapshotForRoute(route: SessionRoute, options: { online: b
     sessionFile: route.sessionFile,
     online: options.online,
     busy: options.busy,
-    modelId: formatModelId(route.actions.getModel()),
+    modelId: formatModelId(model),
     lastActivityAt: route.lastActivityAt,
     binding: route.binding,
     notification: route.notification,
@@ -32,6 +33,7 @@ export function statusSnapshotForRoute(route: SessionRoute, options: { online: b
 }
 
 export function relayRouteStateForRoute(route: SessionRoute, options: { channel: ChannelAdapterKind; busy: boolean }): RelayRouteState {
+  const model = route.actions.getModel();
   return {
     channel: options.channel,
     sessionKey: route.sessionKey,
@@ -40,8 +42,8 @@ export function relayRouteStateForRoute(route: SessionRoute, options: { channel:
     sessionLabel: route.sessionLabel,
     binding: route.binding,
     busy: options.busy,
-    modelId: formatModelId(route.actions.getModel()),
-    imageInputSupported: Boolean(route.actions.getModel()?.input?.includes("image")),
+    modelId: formatModelId(model),
+    imageInputSupported: Boolean(model?.input?.includes("image")),
     lastActivityAt: route.lastActivityAt,
     notification: route.notification,
   };

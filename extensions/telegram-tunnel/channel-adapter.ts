@@ -1,5 +1,5 @@
 import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
-import type { DeliveryMode, ImageFileLoadResult, LatestTurnImage, SessionRoute, TelegramBindingMetadata } from "./types.js";
+import type { DeliveryMode, ImageFileLoadResult, LatestTurnImage, SessionRoute } from "./types.js";
 
 export type ChannelAdapterKind = "telegram" | "discord" | "slack" | "signal" | "matrix" | (string & {});
 export type ChannelMessageId = string;
@@ -28,6 +28,22 @@ export interface ChannelRouteAddress {
   channel: ChannelAdapterKind;
   conversationId: ChannelConversationId;
   userId: ChannelUserId;
+}
+
+export interface ChannelBinding {
+  channel: ChannelAdapterKind;
+  conversationId: ChannelConversationId;
+  userId: ChannelUserId;
+  sessionKey: string;
+  sessionId: string;
+  sessionFile?: string;
+  sessionLabel: string;
+  boundAt: string;
+  lastSeenAt: string;
+  revokedAt?: string;
+  paused?: boolean;
+  identity?: Omit<ChannelIdentity, "channel" | "userId">;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ChannelInboundFile {
@@ -188,7 +204,7 @@ export interface RelayRouteResolution {
   route?: SessionRoute;
   liveRoutes: SessionRoute[];
   ambiguous: boolean;
-  binding?: TelegramBindingMetadata;
+  binding?: ChannelBinding;
 }
 
 export interface RelayOutboundContext {
@@ -200,7 +216,7 @@ export interface RelayOutboundContext {
 export interface RelayCoreRouteBoundary {
   resolveRoute(event: ChannelInboundEvent): Promise<RelayRouteResolution>;
   isAuthorized(route: SessionRoute, identity: ChannelIdentity): boolean;
-  persistRouteBinding(route: SessionRoute, binding: TelegramBindingMetadata | null, revoked?: boolean): Promise<void>;
+  persistRouteBinding(route: SessionRoute, binding: ChannelBinding | null, revoked?: boolean): Promise<void>;
 }
 
 export interface RelayCoreDeliveryBoundary {

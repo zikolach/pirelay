@@ -197,7 +197,7 @@ export class TelegramApiClient {
     await this.withRetry(() => this.api.answerCallbackQuery(callbackQueryId, text ? { text } : undefined));
   }
 
-  async sendChatAction(chatId: number, action: "typing" = "typing"): Promise<void> {
+  async sendChatAction(chatId: number, action: "typing" | "upload_document" | "record_video" = "typing"): Promise<void> {
     await this.withRetry(() => this.api.sendChatAction(chatId, action));
   }
 

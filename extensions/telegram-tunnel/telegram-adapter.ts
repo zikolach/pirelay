@@ -31,7 +31,7 @@ export interface TelegramApiOperations {
   sendPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void>;
   sendDocumentData(chatId: number, filename: string, data: Uint8Array, caption?: string): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
-  sendChatAction(chatId: number, action?: "typing"): Promise<void>;
+  sendChatAction(chatId: number, action?: "typing" | "upload_document" | "record_video"): Promise<void>;
 }
 
 export class TelegramChannelAdapter implements ChannelAdapter {
@@ -51,10 +51,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.polling = true;
     let offset: number | undefined;
     while (this.polling) {
-      const updates = await this.api.getUpdates(offset);
-      for (const update of updates) {
-        offset = Math.max(offset ?? 0, update.updateId + 1);
-        await handler(telegramUpdateToChannelEvent(update));
+      try {
+        const updates = await this.api.getUpdates(offset);
+        for (const update of updates) {
+          offset = Math.max(offset ?? 0, update.updateId + 1);
+          await handler(telegramUpdateToChannelEvent(update));
+        }
+      } catch {
+        if (this.polling) await sleep(1_500);
       }
     }
   }
@@ -99,8 +103,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async sendActivity(address: ChannelRouteAddress, activity: "typing" | "uploading" | "recording"): Promise<void> {
-    if (activity !== "typing") return;
-    await this.api.sendChatAction(Number(address.conversationId), "typing");
+    const telegramAction = activity === "uploading" ? "upload_document" : activity === "recording" ? "record_video" : "typing";
+    await this.api.sendChatAction(Number(address.conversationId), telegramAction);
   }
 
   async answerAction(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void> {
@@ -142,7 +146,7 @@ export function telegramChatToChannelConversation(chat: TelegramChatSummary): Ch
   return {
     channel: TELEGRAM_CHANNEL,
     id: String(chat.id),
-    kind: chat.type === "private" ? "private" : chat.type === "group" || chat.type === "supergroup" ? "group" : "unknown",
+    kind: chat.type === "private" ? "private" : chat.type === "group" || chat.type === "supergroup" ? "group" : chat.type === "channel" ? "channel" : "unknown",
     title: chat.title,
   };
 }
@@ -196,4 +200,8 @@ export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineK
 function outboundFileBytes(file: ChannelOutboundFile): Uint8Array {
   if (typeof file.data !== "string") return file.data;
   return Buffer.from(file.data, "base64");
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

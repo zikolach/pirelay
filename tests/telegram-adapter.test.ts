@@ -64,6 +64,16 @@ describe("telegram channel adapter", () => {
       user: { id: 40 },
     });
     expect(callback).toMatchObject({ kind: "action", actionId: "cb-1", actionData: "act:1", messageId: "21" });
+
+    const channelPost = telegramUpdateToChannelEvent({
+      kind: "message",
+      updateId: 12,
+      messageId: 22,
+      text: "announcement",
+      chat: { id: 31, type: "channel" },
+      user: { id: 41 },
+    });
+    expect(channelPost).toMatchObject({ conversation: { kind: "channel" } });
   });
 
   it("maps outbound payloads to Telegram API operations", async () => {
@@ -81,10 +91,38 @@ describe("telegram channel adapter", () => {
     await adapter.send({ kind: "text", address, text: "hello", buttons: [[{ label: "OK", actionData: "ok" }]] });
     await adapter.send({ kind: "document", address, file: { fileName: "out.md", mimeType: "text/markdown", data: Buffer.from("abc") }, caption: "cap" });
     await adapter.send({ kind: "activity", address, activity: "typing" });
+    await adapter.send({ kind: "activity", address, activity: "uploading" });
+    await adapter.send({ kind: "activity", address, activity: "recording" });
     await adapter.send({ kind: "action-answer", channel: "telegram", actionId: "cb-1", text: "done" });
 
     expect(api.sendPlainTextWithKeyboard).toHaveBeenCalledWith(30, "hello", [[{ text: "OK", callbackData: "ok" }]]);
-    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "activity:typing", "answer:cb-1:done"]);
+    expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "activity:typing", "activity:upload_document", "activity:record_video", "answer:cb-1:done"]);
+  });
+
+  it("keeps polling after transient update errors", async () => {
+    vi.useFakeTimers();
+    try {
+      const api: TelegramApiOperations = {
+        getUpdates: vi.fn()
+          .mockRejectedValueOnce(new Error("temporary"))
+          .mockResolvedValueOnce([{ kind: "message", updateId: 1, messageId: 2, text: "ok", chat: { id: 3, type: "private" }, user: { id: 4 } }]),
+        sendPlainTextWithKeyboard: vi.fn(async () => undefined),
+        sendDocumentData: vi.fn(async () => undefined),
+        answerCallbackQuery: vi.fn(async () => undefined),
+        sendChatAction: vi.fn(async () => undefined),
+      };
+      const adapter = new TelegramChannelAdapter(config(), api);
+      const handler = vi.fn(async () => { await adapter.stopPolling(); });
+      const polling = adapter.startPolling(handler);
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      await polling;
+
+      expect(api.getUpdates).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("converts channel button layout to Telegram inline keyboard", () => {
