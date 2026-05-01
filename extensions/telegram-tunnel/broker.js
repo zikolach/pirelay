@@ -1,7 +1,10 @@
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
+import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
-import {
+
+const jiti = createJiti(import.meta.url);
+const {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
   buildFreeTextChoiceInjection,
@@ -12,35 +15,35 @@ import {
   renderGuidedAnswerPrompt,
   startGuidedAnswerFlow,
   summarizeTailForTelegram,
-} from './answer-workflow.ts';
-import {
+} = await jiti.import('./answer-workflow.ts');
+const {
   buildAnswerAmbiguityKeyboard,
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   buildLatestImagesKeyboard,
   parseTelegramActionCallbackData,
   shouldOfferFullOutputActions,
-} from './telegram-actions.ts';
-import { formatTelegramChatText } from './telegram-format.ts';
-import {
+} = await jiti.import('./telegram-actions.ts');
+const { formatTelegramChatText } = await jiti.import('./telegram-format.ts');
+const {
   base64ByteLength,
   buildImagePromptContent,
   isAllowedImageMimeType,
   normalizeImageMimeType,
   safeTelegramImageFilename,
-} from './utils.ts';
-import {
+} = await jiti.import('./utils.ts');
+const {
   formatSessionList,
   resolveSessionSelector,
   resolveSessionTargetArgs,
   sessionSourcePrefixForRoute,
-} from './session-multiplexing.ts';
-import {
+} = await jiti.import('./session-multiplexing.ts');
+const {
   commandIntentFromPipeline,
   runTelegramIngressPipeline,
   telegramActionFromPipelineResult,
-} from './relay-telegram-middleware.ts';
-import { relayPipelineProtocolVersion } from './relay-middleware.ts';
+} = await jiti.import('./relay-telegram-middleware.ts');
+const { relayPipelineProtocolVersion } = await jiti.import('./relay-middleware.ts');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
