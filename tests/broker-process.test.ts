@@ -51,15 +51,18 @@ describe("telegram broker process", () => {
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      resolve();
-    }, 1_000);
-    timer.unref?.();
-    child.once("exit", () => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       resolve();
-    });
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, 1_000);
+    timer.unref?.();
+    child.once("exit", finish);
     child.kill("SIGTERM");
   });
 }
