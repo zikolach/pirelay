@@ -22,6 +22,7 @@ export interface SlackApiOperations {
   postMessage(payload: SlackPostMessagePayload): Promise<void>;
   uploadFile(payload: SlackUploadFilePayload): Promise<void>;
   postEphemeral(payload: { channel: string; user: string; text: string }): Promise<void>;
+  downloadFile?(url: string): Promise<Uint8Array>;
 }
 
 export interface SlackEnvelope {
@@ -164,6 +165,12 @@ export class SlackChannelAdapter implements ChannelAdapter {
 
   async answerAction(actionId: string, options?: { text?: string }): Promise<void> {
     await this.api.postEphemeral({ channel: actionId, user: "", text: options?.text ?? "Done" });
+  }
+
+  async downloadFile(file: ChannelInboundFile): Promise<Uint8Array> {
+    const url = typeof file.metadata?.url === "string" ? file.metadata.url : undefined;
+    if (!url || !this.api.downloadFile) throw new Error("Slack file download URL is unavailable.");
+    return this.api.downloadFile(url);
   }
 }
 

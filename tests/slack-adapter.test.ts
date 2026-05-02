@@ -57,19 +57,22 @@ describe("SlackChannelAdapter", () => {
     const postMessage = vi.fn(async (_payload: unknown) => undefined);
     const uploadFile = vi.fn(async (_payload: unknown) => undefined);
     const postEphemeral = vi.fn(async (_payload: unknown) => undefined);
-    const adapter = new SlackChannelAdapter(config, { postMessage, uploadFile, postEphemeral });
+    const downloadFile = vi.fn(async (_url: string) => new Uint8Array([8]));
+    const adapter = new SlackChannelAdapter(config, { postMessage, uploadFile, postEphemeral, downloadFile });
     const address = { channel: "slack", conversationId: "D1", userId: "U1" } as const;
 
     await adapter.sendText(address, "x".repeat(95), { buttons: [[{ label: "Full", actionData: "full:t:chat", style: "primary" }]] });
     await adapter.sendDocument(address, { fileName: "out.md", mimeType: "text/markdown", data: new Uint8Array([1]), byteSize: 1 }, { caption: "Latest output" });
     await adapter.sendActivity(address, "typing");
     await adapter.answerAction("trigger-1", { text: "Done" });
+    await expect(adapter.downloadFile({ id: "F1", kind: "image", metadata: { url: "https://slack.test/file" } })).resolves.toEqual(new Uint8Array([8]));
 
     expect(postMessage).toHaveBeenCalledTimes(4);
     expect(postMessage.mock.calls[0]?.[0]).toMatchObject({ channel: "D1", text: "x".repeat(40) });
     expect((postMessage.mock.calls.at(-1)?.[0] as { blocks: Array<Array<unknown>> }).blocks[0]![0]).toMatchObject({ text: "Full", value: "full:t:chat" });
     expect(uploadFile).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", fileName: "out.md", caption: "Latest output" }));
     expect(postEphemeral).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", user: "U1", text: "Pi is working…" }));
+    expect(downloadFile).toHaveBeenCalledWith("https://slack.test/file");
   });
 
   it("checks allow-list/workspace authorization and pairing command text", () => {

@@ -51,13 +51,15 @@ describe("DiscordChannelAdapter", () => {
     const sendFile = vi.fn(async (_payload: unknown) => undefined);
     const sendTyping = vi.fn(async (_channelId: string) => undefined);
     const answerInteraction = vi.fn(async (_interactionId: string, _options?: unknown) => undefined);
-    const adapter = new DiscordChannelAdapter(config, { sendMessage, sendFile, sendTyping, answerInteraction });
+    const downloadFile = vi.fn(async (_url: string) => new Uint8Array([9]));
+    const adapter = new DiscordChannelAdapter(config, { sendMessage, sendFile, sendTyping, answerInteraction, downloadFile });
     const address = { channel: "discord", conversationId: "dm1", userId: "u1" } as const;
 
     await adapter.sendText(address, "x".repeat(120), { buttons: [[{ label: "Full", actionData: "full:t:chat", style: "primary" }]] });
     await adapter.sendImage(address, { fileName: "screen.png", mimeType: "image/png", data: new Uint8Array([1]), byteSize: 1 });
     await adapter.sendActivity(address, "typing");
     await adapter.answerAction("interaction-1", { text: "Done" });
+    await expect(adapter.downloadAttachment({ id: "a1", kind: "image", metadata: { url: "https://cdn.test/file" } })).resolves.toEqual(new Uint8Array([9]));
 
     expect(sendMessage).toHaveBeenCalledTimes(4);
     expect(sendMessage.mock.calls[0]?.[0]).toMatchObject({ channelId: "dm1", content: "x".repeat(50) });
@@ -65,6 +67,7 @@ describe("DiscordChannelAdapter", () => {
     expect(sendFile).toHaveBeenCalledWith(expect.objectContaining({ channelId: "dm1", fileName: "screen.png" }));
     expect(sendTyping).toHaveBeenCalledWith("dm1");
     expect(answerInteraction).toHaveBeenCalledWith("interaction-1", { text: "Done", alert: undefined });
+    expect(downloadFile).toHaveBeenCalledWith("https://cdn.test/file");
   });
 
   it("checks allow-list authorization and pairing command text", () => {

@@ -22,6 +22,7 @@ export interface DiscordApiOperations {
   sendFile(payload: DiscordSendFilePayload): Promise<void>;
   sendTyping(channelId: string): Promise<void>;
   answerInteraction(interactionId: string, options?: { text?: string; alert?: boolean }): Promise<void>;
+  downloadFile?(url: string): Promise<Uint8Array>;
 }
 
 export interface DiscordGatewayEvent {
@@ -157,6 +158,12 @@ export class DiscordChannelAdapter implements ChannelAdapter {
 
   async answerAction(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void> {
     await this.api.answerInteraction(actionId, options);
+  }
+
+  async downloadAttachment(file: ChannelInboundFile): Promise<Uint8Array> {
+    const url = typeof file.metadata?.url === "string" ? file.metadata.url : undefined;
+    if (!url || !this.api.downloadFile) throw new Error("Discord attachment download URL is unavailable.");
+    return this.api.downloadFile(url);
   }
 }
 
