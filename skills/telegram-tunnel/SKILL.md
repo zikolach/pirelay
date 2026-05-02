@@ -12,7 +12,9 @@ Use the extension command for all runtime actions:
 - `/telegram-tunnel connect [name]` generates the QR code + Telegram deep link for the current session with an optional display label
 - `/telegram-tunnel disconnect` revokes the active binding
 - `/telegram-tunnel status` shows local tunnel state
-- `/relay ...` is a generic local alias for the same setup/connect/disconnect/status workflow
+- `/relay setup telegram|discord|slack` shows secret-safe channel setup guidance
+- `/relay connect telegram|discord|slack [name]` creates a time-limited pairing instruction for the selected channel
+- `/relay doctor` checks channel readiness, credentials, allow-lists, unsafe modes, and config/state permissions
 
 ## Setup
 
@@ -53,7 +55,7 @@ During long-running turns, PiRelay sends safe, rate-limited progress updates by 
 
 One bot token has one authoritative local broker. Multiple same-machine Pi sessions can share it, but multiple independent brokers on different machines must not poll the same bot token concurrently; cross-machine hub mode is future work.
 
-Discord and Slack adapter foundations are present for DM-first relay integrations with injected platform clients. Keep their credentials in `discord.*` / `slack.*` config namespaces or `PI_RELAY_DISCORD_*` / `PI_RELAY_SLACK_*` environment variables; do not mix those secrets with Telegram config or session history. Telegram remains the default live runtime exposed by this skill.
+Discord and Slack adapter foundations are present for DM-first relay integrations with injected platform clients. Keep their credentials in `discord.*` / `slack.*` config namespaces or `PI_RELAY_DISCORD_*` / `PI_RELAY_SLACK_*` environment variables; do not mix those secrets with Telegram config or session history. Use `/relay setup discord` for bot-token/client-id invite guidance and `/relay setup slack` for Socket Mode/webhook signing guidance. The setup output links to Telegram BotFather docs (<https://core.telegram.org/bots/features#botfather>), Discord Developer Portal bot docs (<https://discord.com/developers/docs/quick-start/getting-started>), and Slack app setup (<https://api.slack.com/apps>). Telegram remains the default live runtime exposed by this skill.
 
 ## Guided Telegram answer flow
 

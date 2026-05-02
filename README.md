@@ -111,7 +111,7 @@ Or add the package to your Pi package/settings configuration.
 ## Quick start
 
 ### 1. Create a Telegram bot
-Use [@BotFather](https://t.me/BotFather) in Telegram:
+Use [@BotFather](https://t.me/BotFather) in Telegram. Telegram's official BotFather guide is at <https://core.telegram.org/bots/features#botfather>.
 
 1. run `/newbot`
 2. choose a bot name
@@ -152,17 +152,20 @@ chmod 600 ~/.pi/agent/telegram-tunnel/config.json
 In Pi:
 
 ```text
-/telegram-tunnel setup
+/relay doctor
+/relay setup telegram
 ```
 
-This checks the token and caches the bot identity.
+`/relay doctor` checks channel readiness and config/state permissions without printing secrets. `/relay setup telegram` (or `/telegram-tunnel setup`) checks the token and caches the bot identity.
 
 ### 4. Pair the current session
 In Pi:
 
 ```text
-/telegram-tunnel connect
+/relay connect telegram
 ```
+
+The compatible `/telegram-tunnel connect` command works the same way.
 
 Then:
 
@@ -182,7 +185,18 @@ PiRelay adds the following Pi-side commands:
 | `/telegram-tunnel connect [name]` | create a QR/deep-link pairing flow for the current session with an optional display label |
 | `/telegram-tunnel disconnect` | revoke the active binding |
 | `/telegram-tunnel status` | show local tunnel status |
-| `/relay ...` | generic local alias for the same setup/connect/disconnect/status workflow |
+| `/relay setup <telegram\|discord\|slack>` | show secret-safe channel setup guidance and readiness diagnostics |
+| `/relay connect <telegram\|discord\|slack> [name]` | create an expiring pairing instruction for the selected channel |
+| `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, and config/state permissions |
+| `/relay disconnect` / `/relay status` | generic aliases for Telegram disconnect/status compatibility |
+
+Discord and Slack foundations are opt-in. Run `/relay setup discord` or `/relay setup slack` for credential, allow-list, invite, Socket Mode, and webhook-signing guidance. They stay DM-first by default; guild/channel control requires explicit authorization config.
+
+Credential starting points:
+
+- Telegram: create a bot with BotFather, then set `TELEGRAM_BOT_TOKEN` (<https://core.telegram.org/bots/features#botfather>).
+- Discord: create an application/bot in the Discord Developer Portal, copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, and optionally copy the Application ID to `PI_RELAY_DISCORD_CLIENT_ID` or `discord.clientId` for invite URL guidance (<https://discord.com/developers/docs/quick-start/getting-started>).
+- Slack: create a Slack app, install it to your workspace, set the Bot User OAuth Token as `PI_RELAY_SLACK_BOT_TOKEN` or `slack.botToken`, and set the Signing Secret as `PI_RELAY_SLACK_SIGNING_SECRET` or `slack.signingSecret` (<https://api.slack.com/apps>).
 
 ## Telegram commands
 

@@ -860,7 +860,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const pairing = await this.store.consumePendingPairing(nonce);
+    const pairing = await this.store.consumePendingPairing(nonce, { channel: "telegram" });
     if (!pairing) {
       await this.api.sendPlainText(message.chat.id, "This pairing link is invalid or expired. Run /telegram-tunnel connect again in Pi.");
       return;

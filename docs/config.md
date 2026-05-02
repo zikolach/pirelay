@@ -8,7 +8,7 @@ The tunnel loads configuration from:
 2. `~/.pi/agent/telegram-tunnel/config.json`
 3. overrides from `PI_TELEGRAM_TUNNEL_CONFIG` or `PI_TELEGRAM_TUNNEL_STATE_DIR`
 
-Environment variables win over file values.
+Environment variables win over file values. For compatibility with `TELEGRAM_BOT_TOKEN` in the config file, top-level env-style Discord/Slack keys such as `PI_RELAY_DISCORD_BOT_TOKEN` and `PI_RELAY_SLACK_SIGNING_SECRET` are also accepted in the JSON config file, although the namespaced `discord.*` / `slack.*` form is easier to read.
 
 ## Keys
 
@@ -37,6 +37,7 @@ Environment variables win over file values.
   "discord": {
     "enabled": false,
     "botToken": "<discord-bot-token>",
+    "clientId": "123456789012345678",
     "allowUserIds": ["123456789012345678"],
     "allowGuildChannels": false,
     "allowGuildIds": [],
@@ -48,6 +49,7 @@ Environment variables win over file values.
     "enabled": false,
     "botToken": "xoxb-...",
     "signingSecret": "<slack-signing-secret>",
+    "eventMode": "socket",
     "workspaceId": "T012345",
     "allowUserIds": ["U012345"],
     "allowChannelMessages": false,
@@ -58,6 +60,12 @@ Environment variables win over file values.
   "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
 }
 ```
+
+## Messenger credential setup links
+
+- Telegram: create a bot with BotFather (<https://core.telegram.org/bots/features#botfather>), then set `TELEGRAM_BOT_TOKEN` or `botToken`.
+- Discord: create an application/bot in the Discord Developer Portal (<https://discord.com/developers/docs/quick-start/getting-started>), copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, and copy the Application ID to `PI_RELAY_DISCORD_CLIENT_ID` or `discord.clientId` if you want `/relay setup discord` to print an invite URL.
+- Slack: create a Slack app (<https://api.slack.com/apps>), install it to the workspace, copy the Bot User OAuth Token to `PI_RELAY_SLACK_BOT_TOKEN` or `slack.botToken`, and copy the Signing Secret from **Basic Information > App Credentials** to `PI_RELAY_SLACK_SIGNING_SECRET` or `slack.signingSecret`.
 
 ## Environment variables
 
@@ -83,6 +91,7 @@ Environment variables win over file values.
 - `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
 - `PI_RELAY_DISCORD_ENABLED`
 - `PI_RELAY_DISCORD_BOT_TOKEN`
+- `PI_RELAY_DISCORD_CLIENT_ID`
 - `PI_RELAY_DISCORD_ALLOW_USER_IDS`
 - `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
 - `PI_RELAY_DISCORD_ALLOW_GUILD_IDS`
@@ -92,6 +101,7 @@ Environment variables win over file values.
 - `PI_RELAY_SLACK_ENABLED`
 - `PI_RELAY_SLACK_BOT_TOKEN`
 - `PI_RELAY_SLACK_SIGNING_SECRET`
+- `PI_RELAY_SLACK_EVENT_MODE` (`socket` or `webhook`)
 - `PI_RELAY_SLACK_WORKSPACE_ID`
 - `PI_RELAY_SLACK_ALLOW_USER_IDS`
 - `PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES`
@@ -102,6 +112,10 @@ Environment variables win over file values.
 `PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS`, Discord/Slack allow-user lists, and image MIME-type variables are comma-separated lists. `progressMode` can be `quiet`, `normal`, `verbose`, or `completionOnly`; Telegram users can override it per binding with `/progress`.
 
 Discord and Slack configuration is intentionally namespaced so tokens/signing secrets are not confused with Telegram credentials. The current package includes DM-first adapter foundations with mockable platform clients; Telegram remains the default live runtime until a platform client is wired by an integration.
+
+Use `/relay doctor` to check enabled/disabled channel status, missing credentials, unsafe allow-list/guild/channel modes, and config/state permissions. Use `/relay setup telegram`, `/relay setup discord`, or `/relay setup slack` for platform-specific next steps. Doctor/setup output names missing credential categories but never prints token or signing-secret values.
+
+Discord guild-channel control requires `discord.allowGuildChannels: true` plus explicit `discord.allowGuildIds`. Slack `eventMode: "socket"` is recommended for local Pi use; `eventMode: "webhook"` requires raw-body Slack signature verification with `slack.signingSecret`.
 
 ## Troubleshooting
 

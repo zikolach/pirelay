@@ -101,20 +101,28 @@ Check:
 10. Try `/send-image ../secret.png`, an absolute path, a hidden path, an oversized image, and a renamed non-image; verify each is rejected with an actionable message.
 11. Verify input images are not echoed back by `/images` unless a tool emitted them separately as output.
 
-## 6. Discord and Slack adapter smoke checklist
+## 6. Relay setup wizard, Discord, and Slack smoke checklist
 
 These adapter foundations are DM-first and use channel-specific credentials/config namespaces. For a live integration or mocked platform client, verify:
 
-1. Discord config uses `discord.botToken` or `PI_RELAY_DISCORD_BOT_TOKEN`; Slack config uses `slack.botToken` plus `slack.signingSecret` or the matching env vars.
-2. Discord DM messages normalize to `channel: discord`, private conversations, stable user ids, and supported image attachments.
-3. Discord guild-channel messages are rejected unless guild-channel control is explicitly enabled by the integration.
-4. Discord long output is chunked to the adapter max, buttons map to components, and latest images/files respect configured size/MIME limits.
-5. Slack HTTP/event requests with invalid signature or stale timestamp are rejected before route lookup or prompt injection.
-6. Slack DM messages normalize to `channel: slack`, private conversations, workspace/user identity metadata, and supported file/image attachments.
-7. Slack public/private channel events are rejected unless channel control is explicitly enabled by the integration.
-8. Slack long output is chunked, buttons map to Block Kit button values, and uploads respect configured size/MIME limits.
-9. Simultaneous Telegram, Discord, and Slack adapters produce channel-qualified binding keys such as `telegram:<session>`, `discord:<session>`, and `slack:<session>`.
-10. Exported/shared session history contains only non-secret binding metadata, never bot tokens, Slack signing secrets, OAuth tokens, or active pairing secrets.
+1. Run `/relay doctor` with no optional channel config and verify it explains Telegram setup plus Discord/Slack opt-in without printing secrets.
+2. Run `/relay setup telegram` and `/telegram-tunnel setup`; both should validate the same Telegram token path.
+3. Run `/relay connect telegram smoke` and `/telegram-tunnel connect smoke`; both should create the same Telegram pairing style for the current session.
+4. Run `/relay setup matrix` and `/relay connect matrix`; both should list supported channels and should not create pairing state.
+5. Discord config uses `discord.botToken` or `PI_RELAY_DISCORD_BOT_TOKEN`; Slack config uses `slack.botToken` plus `slack.signingSecret` or the matching env vars.
+6. Run `/relay setup discord` with `discord.clientId`/`PI_RELAY_DISCORD_CLIENT_ID` and verify the guidance includes a Discord invite URL, DM-first guidance, and allow-list recommendations.
+7. Enable Discord guild-channel control without `allowGuildIds`; verify `/relay doctor` reports an actionable warning/error and `/relay connect discord` refuses pairing until fixed.
+8. Run `/relay setup slack` for `eventMode: "socket"` and verify it recommends Socket Mode for local use; switch to `eventMode: "webhook"` without a signing secret and verify doctor reports the webhook signing requirement.
+9. Run `/relay connect discord docs` and `/relay connect slack docs` with enabled mock configs and verify the displayed pairing instructions are time-limited and channel-specific.
+10. Discord DM messages normalize to `channel: discord`, private conversations, stable user ids, and supported image attachments.
+11. Discord guild-channel messages are rejected unless guild-channel control is explicitly enabled by the integration.
+12. Discord long output is chunked to the adapter max, buttons map to components, and latest images/files respect configured size/MIME limits.
+13. Slack HTTP/event requests with invalid signature or stale timestamp are rejected before route lookup or prompt injection.
+14. Slack DM messages normalize to `channel: slack`, private conversations, workspace/user identity metadata, and supported file/image attachments.
+15. Slack public/private channel events are rejected unless channel control is explicitly enabled by the integration.
+16. Slack long output is chunked, buttons map to Block Kit button values, and uploads respect configured size/MIME limits.
+17. Simultaneous Telegram, Discord, and Slack adapters produce channel-qualified binding keys such as `telegram:<session>`, `discord:<session>`, and `slack:<session>`.
+18. Exported/shared session history contains only non-secret binding metadata, never bot tokens, Slack signing secrets, OAuth tokens, or active pairing secrets.
 
 ## 7. Regression notes to capture
 

@@ -66,6 +66,7 @@ export class TunnelStateStore {
   }
 
   async createPendingPairing(input: {
+    channel?: PendingPairingRecord["channel"];
     sessionId: string;
     sessionFile?: string;
     sessionLabel: string;
@@ -77,6 +78,7 @@ export class TunnelStateStore {
     const createdAt = toIsoNow();
     const pairing: PendingPairingRecord = {
       nonceHash,
+      channel: input.channel,
       sessionKey,
       sessionId: input.sessionId,
       sessionFile: input.sessionFile,
@@ -95,12 +97,13 @@ export class TunnelStateStore {
     return { nonce, pairing };
   }
 
-  async consumePendingPairing(nonce: string): Promise<PendingPairingRecord | undefined> {
+  async consumePendingPairing(nonce: string, options: { channel?: PendingPairingRecord["channel"] } = {}): Promise<PendingPairingRecord | undefined> {
     const nonceHash = sha256(nonce);
     let found: PendingPairingRecord | undefined;
     await this.update((data) => {
       const pairing = data.pendingPairings[nonceHash];
       if (!pairing) return;
+      if (options.channel && pairing.channel && pairing.channel !== options.channel) return;
       if (pairing.consumedAt) {
         delete data.pendingPairings[nonceHash];
         return;

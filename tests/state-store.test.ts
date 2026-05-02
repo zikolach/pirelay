@@ -33,6 +33,21 @@ describe("TunnelStateStore", () => {
     expect(consumedAgain).toBeUndefined();
   });
 
+  it("keeps channel-scoped pairing nonces from being consumed by the wrong channel", async () => {
+    const store = await createStore();
+    const { nonce } = await store.createPendingPairing({
+      channel: "discord",
+      sessionId: "session-discord",
+      sessionFile: "/tmp/session-discord.jsonl",
+      sessionLabel: "session-discord.jsonl",
+      expiryMs: 60_000,
+    });
+
+    expect(await store.consumePendingPairing(nonce, { channel: "telegram" })).toBeUndefined();
+    const consumed = await store.consumePendingPairing(nonce, { channel: "discord" });
+    expect(consumed).toMatchObject({ channel: "discord", sessionId: "session-discord" });
+  });
+
   it("rejects expired pairing nonces", async () => {
     const store = await createStore();
     const { nonce } = await store.createPendingPairing({

@@ -9,6 +9,7 @@ import { TunnelStateStore } from "./state-store.js";
 import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "./types.js";
 import { extractStructuredAnswerMetadata } from "./answer-workflow.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "./progress.js";
+import { collectRelaySetupFacts, completeRelayLocalCommand, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, supportedRelayChannels, type RelaySetupChannel } from "./relay-setup.js";
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "./utils.js";
 
 const BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -92,12 +93,24 @@ class PairingQrScreen {
 }
 
 function getCommandHelp(commandName = "telegram-tunnel"): string {
+  if (commandName === "relay") {
+    return [
+      "Usage: /relay <subcommand>",
+      "",
+      "Subcommands:",
+      "  setup [telegram|discord|slack]  Show channel setup guidance",
+      "  connect [telegram|discord|slack] [name]  Create a channel pairing instruction",
+      "  doctor      Diagnose configured relay channels",
+      "  disconnect  Revoke the active Telegram binding",
+      "  status      Show current local tunnel state",
+    ].join("\n");
+  }
   return [
     `Usage: /${commandName} <subcommand>`,
     "",
     "Subcommands:",
-    "  setup       Validate the bot token and cache the bot username",
-    "  connect [name]  Generate a QR pairing link with an optional session label",
+    "  setup       Validate the Telegram bot token and cache the bot username",
+    "  connect [name]  Generate a Telegram QR pairing link with an optional session label",
     "  disconnect  Revoke the active Telegram binding",
     "  status      Show current local tunnel state",
   ].join("\n");
@@ -297,6 +310,42 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(`Telegram bot ready: @${setup.botUsername} (${setup.botDisplayName})`, "info");
   }
 
+  async function handleRelaySetup(ctx: ExtensionContext, channel: RelaySetupChannel): Promise<void> {
+    try {
+      if (channel === "telegram") {
+        await handleSetup(ctx);
+      }
+      const config = await ensureConfig(ctx, true);
+      const facts = await collectRelaySetupFacts(config);
+      const findings = relaySetupDiagnostics(config, facts).filter((finding) => finding.channel === channel || finding.channel === "all");
+      const lines = [relaySetupGuidance(channel, config)];
+      if (findings.length > 0) {
+        lines.push("", "Diagnostics:", ...findings.map((finding) => `- ${finding.severity}: ${finding.message}`));
+      }
+      ctx.ui.notify(redactSecrets(lines.join("\n")), findings.some((finding) => finding.severity === "error") ? "warning" : "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(redactSecrets([relaySetupFallbackGuidance(channel), "", `Config issue: ${message}`].join("\n")), "warning");
+    }
+  }
+
+  async function handleRelayDoctor(ctx: ExtensionContext): Promise<void> {
+    try {
+      const config = await ensureConfig(ctx, true);
+      const facts = await collectRelaySetupFacts(config);
+      ctx.ui.notify(renderRelayDoctorReport(config, relaySetupDiagnostics(config, facts)), "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(redactSecrets([
+        "Relay setup doctor",
+        "",
+        `Could not load relay config: ${message}`,
+        "Minimal Telegram setup: set TELEGRAM_BOT_TOKEN, then run /telegram-tunnel setup and /telegram-tunnel connect.",
+        "Discord and Slack are opt-in via discord.* / slack.* config or PI_RELAY_DISCORD_* / PI_RELAY_SLACK_* environment variables.",
+      ].join("\n")), "warning");
+    }
+  }
+
   async function handleConnect(ctx: ExtensionContext, explicitLabel?: string): Promise<void> {
     const config = await ensureConfig(ctx, true);
     const tunnelRuntime = await ensureRuntime(ctx);
@@ -322,6 +371,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     const store = new TunnelStateStore(config.stateDir);
     const { nonce, pairing } = await store.createPendingPairing({
+      channel: "telegram",
       sessionId: currentRoute.sessionId,
       sessionFile: currentRoute.sessionFile,
       sessionLabel: currentRoute.sessionLabel,
@@ -347,6 +397,48 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     ctx.ui.notify(`Open this Telegram pairing link: ${deepLink}`, "info");
+  }
+
+  async function handleRelayConnect(ctx: ExtensionContext, channel: RelaySetupChannel, explicitLabel?: string): Promise<void> {
+    if (channel === "telegram") {
+      await handleConnect(ctx, explicitLabel);
+      return;
+    }
+    const config = await ensureConfig(ctx, true);
+    if (!relayChannelReady(config, channel)) {
+      const findings = relaySetupDiagnostics(config).filter((finding) => finding.channel === channel && finding.severity === "error");
+      ctx.ui.notify(redactSecrets([
+        `${channel} is not ready for pairing.`,
+        ...findings.map((finding) => `- ${finding.message}`),
+        `Run /relay setup ${channel} or /relay doctor for details.`,
+      ].join("\n")), "warning");
+      return;
+    }
+    if (!currentRoute) await syncRoute(ctx);
+    if (!currentRoute) throw new Error("Failed to initialize the current Pi session route.");
+    if (explicitLabel?.trim()) {
+      currentRoute.sessionLabel = deriveSessionLabel({
+        explicitLabel,
+        sessionName: ctx.sessionManager.getSessionName(),
+        cwd: ctx.cwd,
+        sessionFile: currentRoute.sessionFile,
+        sessionId: currentRoute.sessionId,
+      });
+    }
+    const store = new TunnelStateStore(config.stateDir);
+    const { nonce, pairing } = await store.createPendingPairing({
+      channel,
+      sessionId: currentRoute.sessionId,
+      sessionFile: currentRoute.sessionFile,
+      sessionLabel: currentRoute.sessionLabel,
+      expiryMs: config.pairingExpiryMs,
+    });
+    const expiryMinutes = Math.round((Date.parse(pairing.expiresAt) - Date.now()) / 60_000);
+    ctx.ui.notify(redactSecrets([
+      `${channel} pairing ready for session ${currentRoute.sessionLabel}.`,
+      relayPairingInstruction(channel, nonce),
+      `Expires in about ${expiryMinutes} minute(s).`,
+    ].join("\n")), "info");
   }
 
   async function handleDisconnect(ctx: ExtensionContext): Promise<void> {
@@ -393,22 +485,26 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return {
       description,
       getArgumentCompletions: (prefix) => {
-        const options = ["setup", "connect", "disconnect", "status"];
-        const filtered = options.filter((option) => option.startsWith(prefix));
-        return filtered.length > 0 ? filtered.map((value) => ({ value, label: value })) : null;
+        const completions = completeRelayLocalCommand(prefix, { compatibilityCommand: commandName === "telegram-tunnel" });
+        return completions ? completions.map((value) => ({ value, label: value })) : null;
       },
       handler: async (args, ctx) => {
         latestContext = ctx;
-        const trimmedArgs = args.trim();
-        const [subcommand, ...rest] = trimmedArgs.split(/\s+/);
-        const subcommandArgs = rest.join(" ").trim();
+        const intent = parseRelayLocalCommand(args, { compatibilityCommand: commandName === "telegram-tunnel" });
         try {
-          switch ((subcommand || "").toLowerCase()) {
+          if (intent.unsupportedChannel) {
+            ctx.ui.notify(`Unsupported relay channel: ${intent.unsupportedChannel}. Supported channels: ${supportedRelayChannels().join(", ")}.`, "warning");
+            return;
+          }
+          switch (intent.subcommand) {
             case "setup":
-              await handleSetup(ctx);
+              await handleRelaySetup(ctx, intent.channel ?? "telegram");
               return;
             case "connect":
-              await handleConnect(ctx, subcommandArgs);
+              await handleRelayConnect(ctx, intent.channel ?? "telegram", intent.args);
+              return;
+            case "doctor":
+              await handleRelayDoctor(ctx);
               return;
             case "disconnect":
               await handleDisconnect(ctx);
@@ -421,7 +517,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           }
         } catch (error) {
           const message = error instanceof ConfigError || error instanceof Error ? error.message : String(error);
-          ctx.ui.notify(message, "error");
+          ctx.ui.notify(redactSecrets(message), "error");
         }
       },
     };

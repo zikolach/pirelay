@@ -114,7 +114,7 @@ export class SlackChannelAdapter implements ChannelAdapter {
     const body = rawSlackBody(payload, headers);
     const timestamp = headers["x-slack-request-timestamp"] ?? headers["X-Slack-Request-Timestamp"];
     const signature = headers["x-slack-signature"] ?? headers["X-Slack-Signature"];
-    if (!timestamp || !signature || !verifySlackSignature({ body, timestamp, signature, signingSecret: this.config.signingSecret })) {
+    if (!this.config.signingSecret || !timestamp || !signature || !verifySlackSignature({ body, timestamp, signature, signingSecret: this.config.signingSecret })) {
       throw new Error("Invalid Slack signature.");
     }
     const normalized = slackEnvelopeToChannelEvent(parseSlackWebhookBody(body, payload), this.config);

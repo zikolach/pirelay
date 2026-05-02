@@ -836,13 +836,14 @@ async function flushProgress(sessionKey, chatId, key) {
   await sendPlainText(chatId, `${sourcePrefixForRoute(route)}${text}`);
 }
 
-async function consumePendingPairing(nonce) {
+async function consumePendingPairing(nonce, expectedChannel = 'telegram') {
   const { createHash } = await import('node:crypto');
   const nonceHash = createHash('sha256').update(nonce).digest('hex');
   let found;
   await updateState((state) => {
     const pairing = state.pendingPairings[nonceHash];
     if (!pairing) return;
+    if (expectedChannel && pairing.channel && pairing.channel !== expectedChannel) return;
     if (pairing.consumedAt || Date.parse(pairing.expiresAt) <= Date.now()) {
       delete state.pendingPairings[nonceHash];
       return;
@@ -890,7 +891,7 @@ async function handlePairStart(message, nonce) {
     await sendPlainText(message.chat.id, 'Pairing only works from a private Telegram chat with the bot.');
     return;
   }
-  const pairing = await consumePendingPairing(nonce);
+  const pairing = await consumePendingPairing(nonce, 'telegram');
   if (!pairing) {
     await sendPlainText(message.chat.id, 'This pairing link is invalid or expired. Run /telegram-tunnel connect again in Pi.');
     return;

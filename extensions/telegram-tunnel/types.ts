@@ -17,6 +17,7 @@ export interface ProgressActivityEntry {
 export interface DiscordRelayConfig {
   enabled?: boolean;
   botToken?: string;
+  clientId?: string;
   allowUserIds?: string[];
   allowGuildChannels?: boolean;
   allowGuildIds?: string[];
@@ -28,7 +29,8 @@ export interface DiscordRelayConfig {
 export interface SlackRelayConfig {
   enabled?: boolean;
   botToken?: string;
-  signingSecret: string;
+  signingSecret?: string;
+  eventMode?: "socket" | "webhook";
   workspaceId?: string;
   allowUserIds?: string[];
   allowChannelMessages?: boolean;
@@ -112,6 +114,7 @@ export interface BindingEntryData {
 
 export interface PendingPairingRecord {
   nonceHash: string;
+  channel?: "telegram" | "discord" | "slack";
   sessionKey: string;
   sessionId: string;
   sessionFile?: string;

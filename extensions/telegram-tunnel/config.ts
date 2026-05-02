@@ -10,6 +10,25 @@ import { getDefaultRedactionPatterns } from "./utils.js";
 interface ConfigFileShape {
   botToken?: string;
   TELEGRAM_BOT_TOKEN?: string;
+  PI_RELAY_DISCORD_ENABLED?: string;
+  PI_RELAY_DISCORD_BOT_TOKEN?: string;
+  PI_RELAY_DISCORD_CLIENT_ID?: string;
+  PI_RELAY_DISCORD_ALLOW_USER_IDS?: string;
+  PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS?: string;
+  PI_RELAY_DISCORD_ALLOW_GUILD_IDS?: string;
+  PI_RELAY_DISCORD_MAX_TEXT_CHARS?: string;
+  PI_RELAY_DISCORD_MAX_FILE_BYTES?: string;
+  PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES?: string;
+  PI_RELAY_SLACK_ENABLED?: string;
+  PI_RELAY_SLACK_BOT_TOKEN?: string;
+  PI_RELAY_SLACK_SIGNING_SECRET?: string;
+  PI_RELAY_SLACK_EVENT_MODE?: string;
+  PI_RELAY_SLACK_WORKSPACE_ID?: string;
+  PI_RELAY_SLACK_ALLOW_USER_IDS?: string;
+  PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES?: string;
+  PI_RELAY_SLACK_MAX_TEXT_CHARS?: string;
+  PI_RELAY_SLACK_MAX_FILE_BYTES?: string;
+  PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES?: string;
   stateDir?: string;
   pairingExpiryMs?: number;
   busyDeliveryMode?: "followUp" | "steer";
@@ -61,6 +80,10 @@ function parseStringList(value: string | undefined): string[] | undefined {
     .filter(Boolean);
 }
 
+function configString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 function parseBoolean(value: string | undefined, fallback: boolean | undefined): boolean | undefined {
   if (value === undefined) return fallback;
   const normalized = value.trim().toLowerCase();
@@ -81,40 +104,57 @@ async function readConfigFile(configPath: string): Promise<ConfigFileShape | und
   return parsed;
 }
 
-function resolveDiscordConfig(fileConfig: DiscordRelayConfig | undefined, defaultImageMimeTypes: string[]): DiscordRelayConfig | undefined {
-  const botToken = process.env.PI_RELAY_DISCORD_BOT_TOKEN ?? fileConfig?.botToken;
-  const enabled = parseBoolean(process.env.PI_RELAY_DISCORD_ENABLED, fileConfig?.enabled ?? Boolean(botToken));
+function resolveDiscordConfig(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): DiscordRelayConfig | undefined {
+  const discordConfig = fileConfig?.discord;
+  const botToken = process.env.PI_RELAY_DISCORD_BOT_TOKEN ?? fileConfig?.PI_RELAY_DISCORD_BOT_TOKEN ?? discordConfig?.botToken;
+  const enabled = parseBoolean(
+    process.env.PI_RELAY_DISCORD_ENABLED ?? configString(fileConfig?.PI_RELAY_DISCORD_ENABLED),
+    discordConfig?.enabled ?? Boolean(botToken),
+  );
   if (!enabled && !botToken) return undefined;
   return {
     enabled,
     botToken,
-    allowUserIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? fileConfig?.allowUserIds ?? [],
-    allowGuildChannels: parseBoolean(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS, fileConfig?.allowGuildChannels ?? false),
-    allowGuildIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_IDS) ?? fileConfig?.allowGuildIds ?? [],
-    maxTextChars: parseNumber(process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS, fileConfig?.maxTextChars ?? 2_000),
-    maxFileBytes: parseNumber(process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES, fileConfig?.maxFileBytes ?? 8 * 1024 * 1024),
-    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES) ?? fileConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
+    clientId: process.env.PI_RELAY_DISCORD_CLIENT_ID ?? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID ?? discordConfig?.clientId,
+    allowUserIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS ?? fileConfig?.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? discordConfig?.allowUserIds ?? [],
+    allowGuildChannels: parseBoolean(
+      process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS ?? configString(fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS),
+      discordConfig?.allowGuildChannels ?? false,
+    ),
+    allowGuildIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_IDS ?? fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_IDS) ?? discordConfig?.allowGuildIds ?? [],
+    maxTextChars: parseNumber(process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS ?? fileConfig?.PI_RELAY_DISCORD_MAX_TEXT_CHARS, discordConfig?.maxTextChars ?? 2_000),
+    maxFileBytes: parseNumber(process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES ?? fileConfig?.PI_RELAY_DISCORD_MAX_FILE_BYTES, discordConfig?.maxFileBytes ?? 8 * 1024 * 1024),
+    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES ?? fileConfig?.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES) ?? discordConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
   };
 }
 
-function resolveSlackConfig(fileConfig: SlackRelayConfig | undefined, defaultImageMimeTypes: string[]): SlackRelayConfig | undefined {
-  const botToken = process.env.PI_RELAY_SLACK_BOT_TOKEN ?? fileConfig?.botToken;
-  const signingSecret = process.env.PI_RELAY_SLACK_SIGNING_SECRET ?? fileConfig?.signingSecret;
-  const enabled = parseBoolean(process.env.PI_RELAY_SLACK_ENABLED, fileConfig?.enabled ?? Boolean(botToken && signingSecret));
+function resolveSlackEventMode(value: string | undefined): "socket" | "webhook" {
+  return value === "webhook" ? "webhook" : "socket";
+}
+
+function resolveSlackConfig(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): SlackRelayConfig | undefined {
+  const slackConfig = fileConfig?.slack;
+  const botToken = process.env.PI_RELAY_SLACK_BOT_TOKEN ?? fileConfig?.PI_RELAY_SLACK_BOT_TOKEN ?? slackConfig?.botToken;
+  const signingSecret = process.env.PI_RELAY_SLACK_SIGNING_SECRET ?? fileConfig?.PI_RELAY_SLACK_SIGNING_SECRET ?? slackConfig?.signingSecret;
+  const enabled = parseBoolean(
+    process.env.PI_RELAY_SLACK_ENABLED ?? configString(fileConfig?.PI_RELAY_SLACK_ENABLED),
+    slackConfig?.enabled ?? Boolean(botToken && signingSecret),
+  );
   if (!enabled && !botToken && !signingSecret) return undefined;
-  if (!signingSecret) {
-    return undefined;
-  }
   return {
     enabled,
     botToken,
     signingSecret,
-    workspaceId: process.env.PI_RELAY_SLACK_WORKSPACE_ID ?? fileConfig?.workspaceId,
-    allowUserIds: parseStringList(process.env.PI_RELAY_SLACK_ALLOW_USER_IDS) ?? fileConfig?.allowUserIds ?? [],
-    allowChannelMessages: parseBoolean(process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES, fileConfig?.allowChannelMessages ?? false),
-    maxTextChars: parseNumber(process.env.PI_RELAY_SLACK_MAX_TEXT_CHARS, fileConfig?.maxTextChars ?? 3_000),
-    maxFileBytes: parseNumber(process.env.PI_RELAY_SLACK_MAX_FILE_BYTES, fileConfig?.maxFileBytes ?? 10 * 1024 * 1024),
-    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES) ?? fileConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
+    eventMode: resolveSlackEventMode(process.env.PI_RELAY_SLACK_EVENT_MODE ?? fileConfig?.PI_RELAY_SLACK_EVENT_MODE ?? slackConfig?.eventMode),
+    workspaceId: process.env.PI_RELAY_SLACK_WORKSPACE_ID ?? fileConfig?.PI_RELAY_SLACK_WORKSPACE_ID ?? slackConfig?.workspaceId,
+    allowUserIds: parseStringList(process.env.PI_RELAY_SLACK_ALLOW_USER_IDS ?? fileConfig?.PI_RELAY_SLACK_ALLOW_USER_IDS) ?? slackConfig?.allowUserIds ?? [],
+    allowChannelMessages: parseBoolean(
+      process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES ?? configString(fileConfig?.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES),
+      slackConfig?.allowChannelMessages ?? false,
+    ),
+    maxTextChars: parseNumber(process.env.PI_RELAY_SLACK_MAX_TEXT_CHARS ?? fileConfig?.PI_RELAY_SLACK_MAX_TEXT_CHARS, slackConfig?.maxTextChars ?? 3_000),
+    maxFileBytes: parseNumber(process.env.PI_RELAY_SLACK_MAX_FILE_BYTES ?? fileConfig?.PI_RELAY_SLACK_MAX_FILE_BYTES, slackConfig?.maxFileBytes ?? 10 * 1024 * 1024),
+    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES ?? fileConfig?.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES) ?? slackConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
   };
 }
 
@@ -215,8 +255,8 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     process.env.PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS,
     fileConfig?.maxProgressMessageChars ?? DEFAULT_MAX_PROGRESS_MESSAGE_CHARS,
   );
-  const discord = resolveDiscordConfig(fileConfig?.discord, allowedImageMimeTypes);
-  const slack = resolveSlackConfig(fileConfig?.slack, allowedImageMimeTypes);
+  const discord = resolveDiscordConfig(fileConfig, allowedImageMimeTypes);
+  const slack = resolveSlackConfig(fileConfig, allowedImageMimeTypes);
 
   if (pairingExpiryMs < 30_000) {
     throw new ConfigError("pairingExpiryMs must be at least 30000.");

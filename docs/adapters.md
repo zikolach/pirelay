@@ -27,7 +27,7 @@ Telegram remains the first adapter and keeps existing behavior:
 
 - `/telegram-tunnel` local commands and Telegram slash commands continue to work
 - existing config keys, state directory, binding metadata, and pairing flow are unchanged
-- `/relay` is available as a local command alias for the same setup/connect/disconnect/status workflow
+- `/relay setup telegram`, `/relay connect telegram [name]`, and `/relay doctor` are generic aliases/guidance around the same Telegram authorization and state rules
 
 ## Middleware layer
 
@@ -53,6 +53,14 @@ Example future accessible audio flow:
 ## Discord and Slack foundations
 
 Discord and Slack adapters are DM-first foundations with mockable platform operations. They normalize direct-message text, action callbacks, files/images, identity metadata, and platform limits into the shared channel contract. Discord guild messages and Slack channel events remain rejected by default unless an integration explicitly enables those broader scopes. Slack request signatures are verified before events are accepted.
+
+The local setup wizard exposes these foundations without requiring live platform clients in tests:
+
+- `/relay setup telegram` links to Telegram BotFather docs and reports how to set `TELEGRAM_BOT_TOKEN` (<https://core.telegram.org/bots/features#botfather>).
+- `/relay setup discord` links to Discord Developer Portal bot setup docs, reports missing Discord credentials, DM-first/allow-list guidance, and an invite URL when `discord.clientId` or `PI_RELAY_DISCORD_CLIENT_ID` is configured (<https://discord.com/developers/docs/quick-start/getting-started>).
+- `/relay setup slack` links to Slack app setup docs, reports missing Slack credentials, workspace/user allow-list guidance, and whether Socket Mode or webhook mode is configured (<https://api.slack.com/apps>).
+- `/relay connect discord|slack [name]` creates a time-limited pairing instruction for the current Pi session without persisting token, signing-secret, OAuth, or active pairing-secret values in session history.
+- `/relay doctor` validates credential categories, explicit Discord guild ids for guild-channel control, Slack webhook signing-secret requirements, and secret-safe config/state permission warnings.
 
 ## Future adapters
 
