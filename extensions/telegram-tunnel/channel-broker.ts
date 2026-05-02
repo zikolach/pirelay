@@ -36,12 +36,17 @@ export class ChannelRelayBroker {
     await Promise.all([...this.adapters.values()].map(async (registration) => {
       if (registration.started || !registration.adapter.startPolling) return;
       registration.started = true;
-      await registration.adapter.startPolling(async (event: ChannelInboundEvent) => {
-        if (event.channel !== registration.adapter.id) {
-          throw new Error(`Adapter ${registration.adapter.id} emitted ${event.channel} event.`);
-        }
-        await handler(event);
-      });
+      try {
+        await registration.adapter.startPolling(async (event: ChannelInboundEvent) => {
+          if (event.channel !== registration.adapter.id) {
+            throw new Error(`Adapter ${registration.adapter.id} emitted ${event.channel} event.`);
+          }
+          await handler(event);
+        });
+      } catch (error) {
+        registration.started = false;
+        throw error;
+      }
     }));
   }
 

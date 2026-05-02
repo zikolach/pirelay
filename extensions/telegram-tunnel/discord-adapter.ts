@@ -12,7 +12,7 @@ import type {
   ChannelOutboundPayload,
   ChannelRouteAddress,
 } from "./channel-adapter.js";
-import { channelTextChunks } from "./channel-adapter.js";
+import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "./channel-adapter.js";
 import type { DiscordRelayConfig } from "./types.js";
 
 export interface DiscordApiOperations {
@@ -21,7 +21,7 @@ export interface DiscordApiOperations {
   sendMessage(payload: DiscordSendMessagePayload): Promise<void>;
   sendFile(payload: DiscordSendFilePayload): Promise<void>;
   sendTyping(channelId: string): Promise<void>;
-  answerInteraction(interactionId: string, options?: { text?: string; alert?: boolean }): Promise<void>;
+  answerInteraction(interactionId: string, interactionToken: string | undefined, options?: { text?: string; alert?: boolean }): Promise<void>;
   downloadFile?(url: string): Promise<Uint8Array>;
 }
 
@@ -34,7 +34,8 @@ export interface DiscordMessagePayload {
   id: string;
   channel_id: string;
   guild_id?: string;
-  author: { id: string; username?: string; global_name?: string; discriminator?: string };
+  author: { id: string; username?: string; global_name?: string; discriminator?: string; bot?: boolean };
+  webhook_id?: string;
   content?: string;
   attachments?: DiscordAttachmentPayload[];
 }
@@ -51,10 +52,11 @@ export interface DiscordAttachmentPayload {
 
 export interface DiscordInteractionPayload {
   id: string;
+  token?: string;
   channel_id: string;
   guild_id?: string;
-  user?: { id: string; username?: string; global_name?: string; discriminator?: string };
-  member?: { user?: { id: string; username?: string; global_name?: string; discriminator?: string } };
+  user?: { id: string; username?: string; global_name?: string; discriminator?: string; bot?: boolean };
+  member?: { user?: { id: string; username?: string; global_name?: string; discriminator?: string; bot?: boolean } };
   data?: { custom_id?: string };
   message?: { id?: string };
 }
@@ -99,7 +101,8 @@ export class DiscordChannelAdapter implements ChannelAdapter {
   async startPolling(handler: ChannelInboundHandler): Promise<void> {
     if (!this.api.connect) return;
     await this.api.connect(async (event) => {
-      await handler(discordGatewayEventToChannelEvent(event, this.config));
+      const normalized = discordGatewayEventToChannelEvent(event, this.config);
+      if (normalized) await handler(normalized);
     });
   }
 
@@ -138,17 +141,19 @@ export class DiscordChannelAdapter implements ChannelAdapter {
   }
 
   async sendDocument(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
+    assertCanSendOutboundFile(this, file, "document");
     await this.api.sendFile({
       channelId: address.conversationId,
       fileName: file.fileName,
-      data: outboundFileBytes(file),
+      data: decodeOutboundFileData(file),
       caption: options?.caption,
       mimeType: file.mimeType,
     });
-    if (options?.buttons) await this.sendText(address, "Actions:", { buttons: options.buttons });
+    if (options?.buttons) await this.sendButtonPrompt(address, options.buttons);
   }
 
   async sendImage(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
+    assertCanSendOutboundFile(this, file, "image");
     await this.sendDocument(address, file, options);
   }
 
@@ -157,13 +162,18 @@ export class DiscordChannelAdapter implements ChannelAdapter {
   }
 
   async answerAction(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void> {
-    await this.api.answerInteraction(actionId, options);
+    const parsed = parseDiscordActionId(actionId);
+    await this.api.answerInteraction(parsed.interactionId, parsed.interactionToken, options);
   }
 
   async downloadAttachment(file: ChannelInboundFile): Promise<Uint8Array> {
     const url = typeof file.metadata?.url === "string" ? file.metadata.url : undefined;
     if (!url || !this.api.downloadFile) throw new Error("Discord attachment download URL is unavailable.");
     return this.api.downloadFile(url);
+  }
+
+  private async sendButtonPrompt(address: ChannelRouteAddress, buttons: ChannelButtonLayout): Promise<void> {
+    await this.api.sendMessage({ channelId: address.conversationId, content: "Actions:", components: discordComponentsForButtons(buttons) });
   }
 }
 
@@ -185,15 +195,16 @@ export function discordCapabilities(config: Pick<DiscordRelayConfig, "allowGuild
   };
 }
 
-export function discordGatewayEventToChannelEvent(event: DiscordGatewayEvent, config: DiscordRelayConfig): ChannelInboundEvent {
+export function discordGatewayEventToChannelEvent(event: DiscordGatewayEvent, config: DiscordRelayConfig): ChannelInboundEvent | undefined {
   return event.type === "interaction"
     ? discordInteractionToChannelEvent(event.payload as DiscordInteractionPayload)
     : discordMessageToChannelEvent(event.payload as DiscordMessagePayload, config);
 }
 
-export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage {
+export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
+  if (message.author.bot || message.webhook_id) return undefined;
   const conversation = discordConversation(message.channel_id, message.guild_id);
-  const sender = discordIdentity(message.author);
+  const sender = discordIdentity(message.author, message.guild_id);
   return {
     kind: "message",
     channel: DISCORD_CHANNEL,
@@ -213,11 +224,11 @@ export function discordInteractionToChannelEvent(interaction: DiscordInteraction
     kind: "action",
     channel: DISCORD_CHANNEL,
     updateId: interaction.id,
-    actionId: interaction.id,
+    actionId: buildDiscordActionId(interaction.id, interaction.token),
     messageId: interaction.message?.id,
     actionData: interaction.data?.custom_id ?? "",
     conversation: discordConversation(interaction.channel_id, interaction.guild_id),
-    sender: discordIdentity(user),
+    sender: discordIdentity(user, interaction.guild_id),
     metadata: { guildId: interaction.guild_id },
   };
 }
@@ -226,9 +237,14 @@ export function isDiscordGuildMessage(event: ChannelInboundEvent): boolean {
   return event.channel === DISCORD_CHANNEL && event.conversation.kind !== "private";
 }
 
-export function isDiscordIdentityAllowed(identity: ChannelIdentity, config: Pick<DiscordRelayConfig, "allowUserIds">): boolean {
+export function isDiscordIdentityAllowed(identity: ChannelIdentity, config: Pick<DiscordRelayConfig, "allowUserIds" | "allowGuildChannels" | "allowGuildIds">): boolean {
   const allowed = config.allowUserIds ?? [];
-  return allowed.length === 0 || allowed.includes(identity.userId);
+  if (allowed.length > 0 && !allowed.includes(identity.userId)) return false;
+  const guildId = typeof identity.metadata?.guildId === "string" ? identity.metadata.guildId : undefined;
+  if (!guildId) return true;
+  if (!config.allowGuildChannels) return false;
+  const allowedGuilds = config.allowGuildIds ?? [];
+  return allowedGuilds.length > 0 && allowedGuilds.includes(guildId);
 }
 
 export function discordPairingCommand(code: string): string {
@@ -244,20 +260,20 @@ function discordConversation(channelId: string, guildId?: string): ChannelConver
   };
 }
 
-function discordIdentity(user: { id: string; username?: string; global_name?: string; discriminator?: string }): ChannelIdentity {
+function discordIdentity(user: { id: string; username?: string; global_name?: string; discriminator?: string }, guildId?: string): ChannelIdentity {
   return {
     channel: DISCORD_CHANNEL,
     userId: user.id,
     username: user.username,
     displayName: user.global_name ?? user.username,
-    metadata: { discriminator: user.discriminator },
+    metadata: { discriminator: user.discriminator, guildId },
   };
 }
 
 function discordAttachmentToInboundFile(attachment: DiscordAttachmentPayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundFile {
   const mimeType = attachment.content_type;
   const image = Boolean(mimeType?.startsWith("image/"));
-  const supportedMime = !mimeType || (config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES).includes(mimeType);
+  const supportedMime = !image || !mimeType || (config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES).includes(mimeType);
   const supportedSize = typeof attachment.size !== "number" || attachment.size <= (config.maxFileBytes ?? DEFAULT_DISCORD_MAX_FILE_BYTES);
   return {
     id: attachment.id,
@@ -281,6 +297,11 @@ function discordComponentsForButtons(layout: ChannelButtonLayout): DiscordButton
   })));
 }
 
-function outboundFileBytes(file: ChannelOutboundFile): Uint8Array {
-  return typeof file.data === "string" ? Buffer.from(file.data, "base64") : file.data;
+export function buildDiscordActionId(interactionId: string, interactionToken?: string): string {
+  return interactionToken ? `${interactionId}:${encodeURIComponent(interactionToken)}` : interactionId;
+}
+
+export function parseDiscordActionId(actionId: string): { interactionId: string; interactionToken?: string } {
+  const [interactionId, encodedToken] = actionId.split(":", 2);
+  return { interactionId: interactionId ?? actionId, interactionToken: encodedToken ? decodeURIComponent(encodedToken) : undefined };
 }

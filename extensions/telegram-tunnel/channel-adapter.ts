@@ -255,6 +255,23 @@ export function canSendFile(adapter: Pick<ChannelAdapterMetadata, "capabilities"
   return typeof limit !== "number" || typeof file.byteSize !== "number" || file.byteSize <= limit;
 }
 
+export function assertCanSendOutboundFile(adapter: Pick<ChannelAdapterMetadata, "capabilities" | "displayName">, file: Pick<ChannelOutboundFile, "byteSize" | "mimeType">, kind: "document" | "image"): void {
+  if (!canSendFile(adapter, file, kind)) {
+    throw new Error(`${adapter.displayName} ${kind} is too large for outbound delivery.`);
+  }
+  if (kind === "image" && adapter.capabilities.supportedImageMimeTypes.length > 0 && !adapter.capabilities.supportedImageMimeTypes.includes(file.mimeType)) {
+    throw new Error(`${adapter.displayName} image MIME type is not allowed: ${file.mimeType}`);
+  }
+}
+
+export function decodeOutboundFileData(file: Pick<ChannelOutboundFile, "data">): Uint8Array {
+  if (typeof file.data !== "string") return file.data;
+  if (!isCanonicalBase64(file.data)) {
+    throw new Error("ChannelOutboundFile.data string values must be base64-encoded.");
+  }
+  return Buffer.from(file.data, "base64");
+}
+
 export function requiresTextChunking(adapter: Pick<ChannelAdapterMetadata, "capabilities">, text: string): boolean {
   return text.length > adapter.capabilities.maxTextChars;
 }
@@ -272,4 +289,14 @@ export function channelTextChunks(adapter: Pick<ChannelAdapterMetadata, "capabil
 export function buttonsFallbackText(buttons: ChannelButtonLayout): string {
   const labels = buttons.flat().map((button, index) => `${index + 1}. ${button.label}`);
   return ["Actions:", ...labels].join("\n");
+}
+
+function isCanonicalBase64(data: string): boolean {
+  if (data.length === 0 || data.length % 4 !== 0) return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return false;
+  try {
+    return Buffer.from(data, "base64").toString("base64") === data;
+  } catch {
+    return false;
+  }
 }

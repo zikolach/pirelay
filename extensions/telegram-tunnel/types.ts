@@ -19,6 +19,7 @@ export interface DiscordRelayConfig {
   botToken?: string;
   allowUserIds?: string[];
   allowGuildChannels?: boolean;
+  allowGuildIds?: string[];
   maxTextChars?: number;
   maxFileBytes?: number;
   allowedImageMimeTypes?: string[];

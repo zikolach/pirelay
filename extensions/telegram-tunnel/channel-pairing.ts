@@ -19,7 +19,7 @@ export function completeDiscordPairing(
   event: ChannelInboundMessage,
   pairing: PendingPairingRecord,
   code: string,
-  config: Pick<DiscordRelayConfig, "allowUserIds" | "allowGuildChannels">,
+  config: Pick<DiscordRelayConfig, "allowUserIds" | "allowGuildChannels" | "allowGuildIds">,
   now = Date.now(),
 ): ChannelPairingResult {
   if (event.channel !== "discord") return { ok: false, reason: "wrong-channel" };

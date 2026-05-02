@@ -39,6 +39,7 @@ Environment variables win over file values.
     "botToken": "<discord-bot-token>",
     "allowUserIds": ["123456789012345678"],
     "allowGuildChannels": false,
+    "allowGuildIds": [],
     "maxTextChars": 2000,
     "maxFileBytes": 8388608,
     "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"]
@@ -84,6 +85,7 @@ Environment variables win over file values.
 - `PI_RELAY_DISCORD_BOT_TOKEN`
 - `PI_RELAY_DISCORD_ALLOW_USER_IDS`
 - `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
+- `PI_RELAY_DISCORD_ALLOW_GUILD_IDS`
 - `PI_RELAY_DISCORD_MAX_TEXT_CHARS`
 - `PI_RELAY_DISCORD_MAX_FILE_BYTES`
 - `PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES`

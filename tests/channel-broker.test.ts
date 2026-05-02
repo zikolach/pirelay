@@ -61,6 +61,20 @@ describe("ChannelRelayBroker", () => {
     expect(() => broker.registerAdapter(adapter("discord"))).toThrow("already registered");
   });
 
+  it("allows retry after adapter startup failure", async () => {
+    const failing = adapter("discord");
+    let attempts = 0;
+    failing.startPolling = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary startup failure");
+    });
+    const broker = new ChannelRelayBroker([failing]);
+
+    await expect(broker.start(async () => undefined)).rejects.toThrow("temporary startup failure");
+    await expect(broker.start(async () => undefined)).resolves.toBeUndefined();
+    expect(failing.startPolling).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects events emitted under the wrong channel", async () => {
     const bad = adapter("discord");
     bad.startPolling = vi.fn(async (handler) => {

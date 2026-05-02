@@ -90,6 +90,7 @@ function resolveDiscordConfig(fileConfig: DiscordRelayConfig | undefined, defaul
     botToken,
     allowUserIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? fileConfig?.allowUserIds ?? [],
     allowGuildChannels: parseBoolean(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS, fileConfig?.allowGuildChannels ?? false),
+    allowGuildIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_IDS) ?? fileConfig?.allowGuildIds ?? [],
     maxTextChars: parseNumber(process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS, fileConfig?.maxTextChars ?? 2_000),
     maxFileBytes: parseNumber(process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES, fileConfig?.maxFileBytes ?? 8 * 1024 * 1024),
     allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES) ?? fileConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,

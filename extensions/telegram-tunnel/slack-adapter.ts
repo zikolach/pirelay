@@ -13,7 +13,7 @@ import type {
   ChannelOutboundPayload,
   ChannelRouteAddress,
 } from "./channel-adapter.js";
-import { channelTextChunks } from "./channel-adapter.js";
+import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "./channel-adapter.js";
 import type { SlackRelayConfig } from "./types.js";
 
 export interface SlackApiOperations {
@@ -22,6 +22,7 @@ export interface SlackApiOperations {
   postMessage(payload: SlackPostMessagePayload): Promise<void>;
   uploadFile(payload: SlackUploadFilePayload): Promise<void>;
   postEphemeral(payload: { channel: string; user: string; text: string }): Promise<void>;
+  postResponse?(responseUrl: string, payload: { text: string; replaceOriginal?: boolean; ephemeral?: boolean }): Promise<void>;
   downloadFile?(url: string): Promise<Uint8Array>;
 }
 
@@ -33,6 +34,7 @@ export interface SlackEnvelope {
   channel?: { id: string };
   message?: { ts?: string };
   trigger_id?: string;
+  response_url?: string;
   team?: { id: string };
 }
 
@@ -45,6 +47,8 @@ export interface SlackMessageEvent {
   text?: string;
   ts: string;
   team?: string;
+  bot_id?: string;
+  subtype?: string;
   files?: SlackFilePayload[];
 }
 
@@ -97,7 +101,8 @@ export class SlackChannelAdapter implements ChannelAdapter {
   async startPolling(handler: ChannelInboundHandler): Promise<void> {
     if (!this.api.startSocketMode) return;
     await this.api.startSocketMode(async (envelope) => {
-      await handler(slackEnvelopeToChannelEvent(envelope, this.config));
+      const normalized = slackEnvelopeToChannelEvent(envelope, this.config);
+      if (normalized) await handler(normalized);
     });
   }
 
@@ -106,13 +111,14 @@ export class SlackChannelAdapter implements ChannelAdapter {
   }
 
   async handleWebhook(payload: unknown, headers: Record<string, string>, handler: ChannelInboundHandler): Promise<void> {
-    const body = typeof payload === "string" ? payload : JSON.stringify(payload);
+    const body = rawSlackBody(payload, headers);
     const timestamp = headers["x-slack-request-timestamp"] ?? headers["X-Slack-Request-Timestamp"];
     const signature = headers["x-slack-signature"] ?? headers["X-Slack-Signature"];
     if (!timestamp || !signature || !verifySlackSignature({ body, timestamp, signature, signingSecret: this.config.signingSecret })) {
       throw new Error("Invalid Slack signature.");
     }
-    await handler(slackEnvelopeToChannelEvent(typeof payload === "string" ? JSON.parse(payload) as SlackEnvelope : payload as SlackEnvelope, this.config));
+    const normalized = slackEnvelopeToChannelEvent(parseSlackWebhookBody(body, payload), this.config);
+    if (normalized) await handler(normalized);
   }
 
   async send(payload: ChannelOutboundPayload): Promise<void> {
@@ -145,17 +151,19 @@ export class SlackChannelAdapter implements ChannelAdapter {
   }
 
   async sendDocument(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
+    assertCanSendOutboundFile(this, file, "document");
     await this.api.uploadFile({
       channel: address.conversationId,
       fileName: file.fileName,
-      data: outboundFileBytes(file),
+      data: decodeOutboundFileData(file),
       mimeType: file.mimeType,
       caption: options?.caption,
     });
-    if (options?.buttons) await this.sendText(address, "Actions:", { buttons: options.buttons });
+    if (options?.buttons) await this.sendButtonPrompt(address, options.buttons);
   }
 
   async sendImage(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
+    assertCanSendOutboundFile(this, file, "image");
     await this.sendDocument(address, file, options);
   }
 
@@ -164,13 +172,23 @@ export class SlackChannelAdapter implements ChannelAdapter {
   }
 
   async answerAction(actionId: string, options?: { text?: string }): Promise<void> {
-    await this.api.postEphemeral({ channel: actionId, user: "", text: options?.text ?? "Done" });
+    const target = parseSlackActionId(actionId);
+    const text = options?.text ?? "Done";
+    if (target.responseUrl && this.api.postResponse) {
+      await this.api.postResponse(target.responseUrl, { text, ephemeral: true });
+      return;
+    }
+    await this.api.postEphemeral({ channel: target.channelId, user: target.userId, text });
   }
 
   async downloadFile(file: ChannelInboundFile): Promise<Uint8Array> {
     const url = typeof file.metadata?.url === "string" ? file.metadata.url : undefined;
     if (!url || !this.api.downloadFile) throw new Error("Slack file download URL is unavailable.");
     return this.api.downloadFile(url);
+  }
+
+  private async sendButtonPrompt(address: ChannelRouteAddress, buttons: ChannelButtonLayout): Promise<void> {
+    await this.api.postMessage({ channel: address.conversationId, text: "Actions:", blocks: slackBlocksForButtons(buttons) });
   }
 }
 
@@ -203,7 +221,7 @@ export function verifySlackSignature(input: { body: string; timestamp: string; s
   return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
 }
 
-export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: SlackRelayConfig): ChannelInboundEvent {
+export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: SlackRelayConfig): ChannelInboundEvent | undefined {
   if (envelope.type === "block_actions") {
     const action = envelope.actions?.[0];
     const channelId = envelope.channel?.id ?? "";
@@ -212,10 +230,10 @@ export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: Sla
       kind: "action",
       channel: SLACK_CHANNEL,
       updateId: envelope.trigger_id ?? `${channelId}:${envelope.message?.ts ?? Date.now()}`,
-      actionId: envelope.trigger_id ?? channelId,
+      actionId: buildSlackActionId({ channelId, userId: user.id, responseUrl: envelope.response_url, triggerId: envelope.trigger_id }),
       messageId: envelope.message?.ts,
       actionData: action?.value ?? action?.action_id ?? "",
-      conversation: slackConversation(channelId, "im"),
+      conversation: slackConversationFromId(channelId),
       sender: slackIdentity(user.id, user.username ?? user.name, user.team_id ?? envelope.team?.id),
       metadata: { teamId: envelope.team?.id },
     };
@@ -226,7 +244,7 @@ export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: Sla
 
 export function isSlackIdentityAllowed(identity: ChannelIdentity, config: Pick<SlackRelayConfig, "allowUserIds" | "workspaceId">): boolean {
   const teamId = typeof identity.metadata?.teamId === "string" ? identity.metadata.teamId : undefined;
-  if (config.workspaceId && teamId && config.workspaceId !== teamId) return false;
+  if (config.workspaceId && teamId !== config.workspaceId) return false;
   const allowed = config.allowUserIds ?? [];
   return allowed.length === 0 || allowed.includes(identity.userId);
 }
@@ -235,7 +253,8 @@ export function slackPairingCommand(code: string): string {
   return `/pirelay ${code}`;
 }
 
-export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage {
+export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
+  if (!event.user || event.bot_id || (event.subtype && event.subtype !== "file_share")) return undefined;
   const teamId = event.team;
   return {
     kind: "message",
@@ -245,7 +264,7 @@ export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<
     text: event.text ?? "",
     attachments: (event.files ?? []).map((file) => slackFileToInboundFile(file, config)),
     conversation: slackConversation(event.channel, event.channel_type),
-    sender: slackIdentity(event.user ?? event.username ?? "unknown", event.username, teamId),
+    sender: slackIdentity(event.user, event.username, teamId),
     metadata: { teamId },
   };
 }
@@ -256,6 +275,13 @@ function slackConversation(channel: string, channelType: SlackMessageEvent["chan
     id: channel,
     kind: channelType === "im" ? "private" : channelType === "channel" || channelType === "group" ? "channel" : channelType === "mpim" ? "group" : "unknown",
   };
+}
+
+function slackConversationFromId(channel: string): ChannelConversation {
+  if (channel.startsWith("D")) return slackConversation(channel, "im");
+  if (channel.startsWith("G")) return slackConversation(channel, "group");
+  if (channel.startsWith("C")) return slackConversation(channel, "channel");
+  return slackConversation(channel, undefined);
 }
 
 function slackIdentity(userId: string, username?: string, teamId?: string): ChannelIdentity {
@@ -270,7 +296,7 @@ function slackIdentity(userId: string, username?: string, teamId?: string): Chan
 
 function slackFileToInboundFile(file: SlackFilePayload, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundFile {
   const image = Boolean(file.mimetype?.startsWith("image/"));
-  const supportedMime = !file.mimetype || (config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES).includes(file.mimetype);
+  const supportedMime = !image || !file.mimetype || (config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES).includes(file.mimetype);
   const supportedSize = typeof file.size !== "number" || file.size <= (config.maxFileBytes ?? DEFAULT_SLACK_MAX_FILE_BYTES);
   return {
     id: file.id,
@@ -293,6 +319,49 @@ function slackBlocksForButtons(layout: ChannelButtonLayout): SlackButtonElement[
   })));
 }
 
-function outboundFileBytes(file: ChannelOutboundFile): Uint8Array {
-  return typeof file.data === "string" ? Buffer.from(file.data, "base64") : file.data;
+export interface SlackActionTarget {
+  channelId: string;
+  userId: string;
+  responseUrl?: string;
+  triggerId?: string;
+}
+
+export function buildSlackActionId(target: SlackActionTarget): string {
+  return Buffer.from(JSON.stringify(target), "utf8").toString("base64url");
+}
+
+export function parseSlackActionId(actionId: string): SlackActionTarget {
+  try {
+    const parsed = JSON.parse(Buffer.from(actionId, "base64url").toString("utf8")) as Partial<SlackActionTarget>;
+    if (typeof parsed.channelId === "string" && typeof parsed.userId === "string") {
+      return {
+        channelId: parsed.channelId,
+        userId: parsed.userId,
+        responseUrl: typeof parsed.responseUrl === "string" ? parsed.responseUrl : undefined,
+        triggerId: typeof parsed.triggerId === "string" ? parsed.triggerId : undefined,
+      };
+    }
+  } catch {
+    // Fall through to legacy channel-id action handling.
+  }
+  return { channelId: actionId, userId: "" };
+}
+
+export function parseSlackWebhookBody(rawBody: string, parsedPayload?: unknown): SlackEnvelope {
+  if (typeof parsedPayload === "object" && parsedPayload !== null && !Array.isArray(parsedPayload)) {
+    const payload = (parsedPayload as { payload?: unknown }).payload;
+    if (typeof payload === "string") return JSON.parse(payload) as SlackEnvelope;
+    if (typeof (parsedPayload as { type?: unknown }).type === "string") return parsedPayload as SlackEnvelope;
+  }
+  const params = new URLSearchParams(rawBody);
+  const formPayload = params.get("payload");
+  if (formPayload) return JSON.parse(formPayload) as SlackEnvelope;
+  return JSON.parse(rawBody) as SlackEnvelope;
+}
+
+function rawSlackBody(payload: unknown, headers: Record<string, string>): string {
+  if (typeof payload === "string") return payload;
+  const raw = headers["x-slack-raw-body"] ?? headers["X-Slack-Raw-Body"];
+  if (raw) return raw;
+  throw new Error("Raw Slack request body is required for signature verification.");
 }

@@ -361,7 +361,8 @@ Supported configuration keys include:
     "enabled": false,
     "botToken": "<discord-bot-token>",
     "allowUserIds": ["123456789012345678"],
-    "allowGuildChannels": false
+    "allowGuildChannels": false,
+    "allowGuildIds": []
   },
   "slack": {
     "enabled": false,
@@ -401,6 +402,7 @@ Environment variables:
 - `PI_RELAY_DISCORD_BOT_TOKEN`
 - `PI_RELAY_DISCORD_ALLOW_USER_IDS`
 - `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
+- `PI_RELAY_DISCORD_ALLOW_GUILD_IDS`
 - `PI_RELAY_DISCORD_MAX_TEXT_CHARS`
 - `PI_RELAY_DISCORD_MAX_FILE_BYTES`
 - `PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES`
