@@ -1,13 +1,13 @@
 # Copilot Instructions
 
-PiRelay is a strict TypeScript Pi package for relaying Telegram chats to active Pi sessions.
+PiRelay is a strict TypeScript Pi package for relaying Telegram, Discord, Slack, and future messenger chats to active Pi sessions.
 
 ## What to prioritize
 
 - Preserve authorization and privacy boundaries before prompt injection, media download, callbacks, or control actions.
 - Keep persisted state backward-compatible.
-- Keep Telegram runtime, broker, and pure helper logic separated.
-- Extract shared behavior into helper modules instead of duplicating it between `runtime.ts` and `broker.js`.
+- Keep messenger-specific runtime, broker, and pure helper logic separated.
+- Extract shared behavior into helper modules instead of duplicating it between adapter runtimes and broker code.
 - Add or update tests for behavior changes.
 
 ## TypeScript guidance
@@ -19,12 +19,13 @@ PiRelay is a strict TypeScript Pi package for relaying Telegram chats to active 
 
 ## Project boundaries
 
-- `extensions/telegram-tunnel/index.ts`: Pi extension lifecycle and local `/telegram-tunnel` commands.
-- `extensions/telegram-tunnel/runtime.ts`: in-process Telegram runtime.
-- `extensions/telegram-tunnel/broker-runtime.ts`: broker client bridge.
-- `extensions/telegram-tunnel/broker.js`: detached broker process.
-- `extensions/telegram-tunnel/types.ts`: shared contracts.
-- `extensions/telegram-tunnel/utils.ts` and focused helper modules: pure/shared logic.
+- `extensions/relay/runtime/extension-runtime.ts`: Pi extension lifecycle and local `/relay` commands.
+- `extensions/relay/adapters/<messenger>/`: platform-specific Telegram, Discord, Slack, and future adapter/runtime edges.
+- `extensions/relay/broker/`: detached broker process, broker client bridge, route registry, ownership, and federation.
+- `extensions/relay/core/`: shared contracts and pure helpers.
+- `extensions/relay/config/`, `state/`, `commands/`, `middleware/`, `media/`, `notifications/`, `formatting/`, and `ui/`: focused shared relay modules.
+
+The legacy Telegram-tunnel extension path has been removed. Do not add compatibility shims or imports there.
 
 ## Validation
 

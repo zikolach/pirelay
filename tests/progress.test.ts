@@ -9,8 +9,8 @@ import {
   progressIntervalMsFor,
   progressModeFor,
   shouldSendNonTerminalProgress,
-} from "../extensions/telegram-tunnel/progress.js";
-import type { SessionNotificationState, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+} from "../extensions/relay/notifications/progress.js";
+import type { SessionNotificationState, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars" | "progressIntervalMs" | "verboseProgressIntervalMs" | "progressMode"> = {
   redactionPatterns: ["SECRET_[A-Z]+"],

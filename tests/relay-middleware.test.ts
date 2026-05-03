@@ -10,7 +10,7 @@ import {
   type RelayMiddleware,
   type RelayPipelineContext,
   type RelayPipelineEvent,
-} from "../extensions/telegram-tunnel/relay-middleware.js";
+} from "../extensions/relay/middleware/pipeline.js";
 
 function event(overrides: Partial<RelayPipelineEvent> = {}): RelayPipelineEvent {
   return {

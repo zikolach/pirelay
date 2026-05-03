@@ -2,12 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/telegram-tunnel/telegram-actions.js";
-import { createProgressActivity } from "../extensions/telegram-tunnel/progress.js";
-import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
-import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
+import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
+import { InProcessTunnelRuntime } from "../extensions/relay/adapters/telegram/runtime.js";
+import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 
@@ -39,7 +39,7 @@ async function createRuntimeConfig(): Promise<TelegramTunnelConfig> {
   };
 }
 
-function createRoute(binding: TelegramBindingMetadata, idle = true) {
+function createRoute(binding: TelegramBindingMetadata, idle = true, promptLocalConfirmation: SessionRoute["actions"]["promptLocalConfirmation"] = async () => true) {
   const deliveries: Array<{ text: TelegramPromptContent; deliverAs?: "followUp" | "steer" }> = [];
   const outbound: string[] = [];
   let currentIdle = idle;
@@ -98,7 +98,7 @@ function createRoute(binding: TelegramBindingMetadata, idle = true) {
       getImageByPath: async () => ({ ok: false, error: "Image file not found." }),
       appendAudit: (message) => outbound.push(`audit:${message}`),
       persistBinding: () => undefined,
-      promptLocalConfirmation: async () => true,
+      promptLocalConfirmation,
       abort: () => outbound.push("abort"),
       compact: async () => {
         outbound.push("compact");
@@ -117,6 +117,52 @@ function createRoute(binding: TelegramBindingMetadata, idle = true) {
 }
 
 describe("InProcessTunnelRuntime", () => {
+  it("can trust a Telegram pairing user for future confirmations", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-pair:/tmp/session-pair.jsonl",
+      sessionId: "session-pair",
+      sessionFile: "/tmp/session-pair.jsonl",
+      sessionLabel: "pairing-docs",
+      chatId: 100,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const promptLocalConfirmation = vi.fn(async () => "trust" as const);
+    const { route } = createRoute(binding, true, promptLocalConfirmation);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+    const first = await store.createPendingPairing({ channel: "telegram", sessionId: route.sessionId, sessionFile: route.sessionFile, sessionLabel: route.sessionLabel, expiryMs: 60_000 });
+
+    await (runtime as any).processInbound({
+      updateId: 100,
+      messageId: 100,
+      text: `/start ${first.nonce}`,
+      chat: { id: 100, type: "private" },
+      user: { id: 42, username: "owner", firstName: "Owner" },
+    });
+
+    expect(promptLocalConfirmation).toHaveBeenCalledTimes(1);
+    expect(await store.getTrustedRelayUser("telegram", "42")).toMatchObject({ channel: "telegram", userId: "42", trustedBySessionLabel: "pairing-docs" });
+
+    const second = await store.createPendingPairing({ channel: "telegram", sessionId: route.sessionId, sessionFile: route.sessionFile, sessionLabel: route.sessionLabel, expiryMs: 60_000 });
+    await (runtime as any).processInbound({
+      updateId: 101,
+      messageId: 101,
+      text: `/start ${second.nonce}`,
+      chat: { id: 100, type: "private" },
+      user: { id: 42, username: "owner", firstName: "Owner" },
+    });
+
+    expect(promptLocalConfirmation).toHaveBeenCalledTimes(1);
+    expect(sent.filter((message) => message.includes("Connected to Pi session pairing-docs"))).toHaveLength(2);
+  });
+
   it("rejects unauthorized Telegram users before any Pi injection", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -189,6 +235,41 @@ describe("InProcessTunnelRuntime", () => {
     expect(deliveries).toEqual([{ text: "please summarize the branch", deliverAs: undefined }]);
     expect(actions).toEqual([{ chatId: 555, action: "typing" }]);
     expect(sent).not.toContain("Prompt delivered to Pi.");
+  });
+
+  it("handles relay-prefixed Telegram commands instead of prompting Pi", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-relay-prefix:/tmp/session-relay-prefix.jsonl",
+      sessionId: "session-relay-prefix",
+      sessionFile: "/tmp/session-relay-prefix.jsonl",
+      sessionLabel: "session-relay-prefix.jsonl",
+      chatId: 556,
+      userId: 8,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 22,
+      messageId: 22,
+      text: "relay progress quiet",
+      chat: { id: 556, type: "private" },
+      user: { id: 8, username: "owner" },
+    });
+
+    expect(deliveries).toHaveLength(0);
+    expect(route.binding?.progressMode).toBe("quiet");
+    expect(sent.at(-1)).toContain("Progress notifications set to quiet.");
   });
 
   it("routes busy Telegram text using configured follow-up delivery", async () => {
@@ -810,6 +891,35 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
   });
 
+  it("sends Telegram failure and aborted terminal notifications", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-terminal:/tmp/session-terminal.jsonl",
+      sessionId: "session-terminal",
+      sessionFile: "/tmp/session-terminal.jsonl",
+      sessionLabel: "session-terminal.jsonl",
+      chatId: 1012,
+      userId: 32,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.startedAt = Date.now() - 2_000;
+    route.notification.lastFailure = "The agent finished without a final assistant response.";
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await runtime.notifyTurnCompleted(route, "failed");
+    await runtime.notifyTurnCompleted(route, "aborted");
+
+    expect(sent[0]).toContain("Pi task failed");
+    expect(sent[0]).toContain("without a final assistant response");
+    expect(sent[1]).toContain("Pi task aborted");
+  });
+
   it("treats terminal notification state as idle even if stale busy context remains", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -1225,6 +1335,68 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(first.deliveries).toHaveLength(0);
     expect(second.deliveries).toEqual([{ text: "hello selected session", deliverAs: undefined }]);
+  });
+
+  it("supports text /use, /to, and /forget session controls in-process", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-text-use-1:/tmp/session-text-use-1.jsonl",
+      sessionId: "session-text-use-1",
+      sessionFile: "/tmp/session-text-use-1.jsonl",
+      sessionLabel: "first.jsonl",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-text-use-2:/tmp/session-text-use-2.jsonl",
+      sessionId: "session-text-use-2",
+      sessionFile: "/tmp/session-text-use-2.jsonl",
+      sessionLabel: "second.jsonl",
+      alias: "phone",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const offlineBinding: TelegramBindingMetadata = {
+      sessionKey: "session-text-use-offline:/tmp/session-text-use-offline.jsonl",
+      sessionId: "session-text-use-offline",
+      sessionFile: "/tmp/session-text-use-offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true);
+    const second = createRoute(secondBinding, true);
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    await store.upsertBinding(offlineBinding);
+    (runtime as any).routes.set(first.route.sessionKey, first.route);
+    (runtime as any).routes.set(second.route.sessionKey, second.route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({ updateId: 40, messageId: 40, text: "/use phone", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 41, messageId: 41, text: "hello active", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 42, messageId: 42, text: "/to first.jsonl one shot", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 43, messageId: 43, text: "/forget offline.jsonl", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+
+    expect(second.deliveries).toContainEqual({ text: "hello active", deliverAs: undefined });
+    expect(first.deliveries).toContainEqual({ text: "one shot", deliverAs: undefined });
+    expect(sent.join("\n")).toContain("Forgot offline session offline.jsonl");
+    expect((await store.getBindingBySessionKey(offlineBinding.sessionKey))?.status).toBe("revoked");
   });
 
   it("includes persisted offline sessions in the in-process session list", async () => {

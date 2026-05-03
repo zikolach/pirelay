@@ -2,8 +2,8 @@ import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/telegram-tunnel/utils.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/telegram-tunnel/session-multiplexing.js";
+import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
 
 const tempDirs: string[] = [];
 

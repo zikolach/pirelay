@@ -1,74 +1,109 @@
 # Configuration
 
-## Sources
+PiRelay uses a namespaced configuration file at:
 
-The tunnel loads configuration from:
+```text
+~/.pi/agent/pirelay/config.json
+```
 
-1. environment variables
-2. `~/.pi/agent/telegram-tunnel/config.json`
-3. overrides from `PI_TELEGRAM_TUNNEL_CONFIG` or `PI_TELEGRAM_TUNNEL_STATE_DIR`
+Environment variables can still provide secrets and deployment overrides. Legacy Telegram tunnel env vars and state/config paths are accepted only as migration fallbacks.
 
-Environment variables win over file values.
-
-## Keys
+## Canonical schema
 
 ```json
 {
-  "botToken": "<telegram-bot-token>",
-  "TELEGRAM_BOT_TOKEN": "<telegram-bot-token>",
-  "stateDir": "~/.pi/agent/telegram-tunnel",
-  "pairingExpiryMs": 300000,
-  "busyDeliveryMode": "followUp",
-  "allowUserIds": [123456789],
-  "summaryMode": "deterministic",
-  "maxTelegramMessageChars": 3900,
-  "sendRetryCount": 3,
-  "sendRetryBaseMs": 800,
-  "pollingTimeoutSeconds": 20,
-  "maxInboundImageBytes": 10485760,
-  "maxOutboundImageBytes": 10485760,
-  "maxLatestImages": 4,
-  "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"],
-  "progressMode": "normal",
-  "progressIntervalMs": 30000,
-  "verboseProgressIntervalMs": 10000,
-  "recentActivityLimit": 10,
-  "maxProgressMessageChars": 700,
-  "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
+  "relay": {
+    "machineId": "laptop",
+    "stateDir": "~/.pi/agent/pirelay",
+    "brokerGroup": "personal",
+    "brokerPeers": []
+  },
+  "defaults": {
+    "pairingExpiryMs": 300000,
+    "busyDeliveryMode": "followUp",
+    "maxTextChars": 3900,
+    "maxInboundImageBytes": 10485760,
+    "maxOutboundImageBytes": 10485760,
+    "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"]
+  },
+  "messengers": {
+    "telegram": {
+      "default": {
+        "enabled": true,
+        "tokenEnv": "TELEGRAM_BOT_TOKEN",
+        "allowUserIds": ["123456789"],
+        "ingressPolicy": { "kind": "owner", "machineId": "laptop" }
+      }
+    },
+    "discord": {
+      "personal": {
+        "enabled": true,
+        "tokenEnv": "PI_RELAY_DISCORD_BOT_TOKEN",
+        "applicationId": "123456789012345678",
+        "allowUserIds": ["123456789012345678"]
+      }
+    },
+    "slack": {
+      "work": {
+        "enabled": false,
+        "tokenEnv": "PI_RELAY_SLACK_BOT_TOKEN",
+        "signingSecretEnv": "PI_RELAY_SLACK_SIGNING_SECRET",
+        "workspaceId": "T012345"
+      }
+    }
+  }
 }
 ```
 
-## Environment variables
+Messenger instances are addressed as `<kind>:<instance>`, for example `telegram:default`, `discord:personal`, or `slack:work`. The `:default` suffix can be omitted in commands.
+
+For Discord, `applicationId` is the Discord Developer Portal → General Information → Application ID (`clientId` is accepted as an alias because Discord OAuth URLs call the same value `client_id`). It is used by `/relay setup discord` for the Discord OAuth2 bot invite URL and by `/relay connect discord` to render a QR code to the bot profile/DM link. Short Discord PIN pairing still requires local Pi approval unless the user is listed in `allowUserIds` or trusted locally from a previous approval. Use `/relay trusted` to inspect locally trusted users and `/relay untrust <messenger> <userId>` to revoke that local trust without editing config.
+
+Run `/relay setup <messenger>` in Pi for an interactive read-only setup wizard when TUI is available. The wizard shows checklist status, links, QR/invite helpers, troubleshooting, and copy-paste config/env snippets with placeholders; it does not write secrets. Headless/no-UI runs keep the plain text guidance.
+
+## Commands
+
+```text
+/relay doctor
+/relay setup telegram
+/relay setup discord:personal
+/relay connect telegram docs
+/relay connect discord:personal api
+```
+
+`/telegram-tunnel ...` is removed. Use `/relay ...`.
+
+## Environment fallback
+
+Preferred secret style is `tokenEnv` / `signingSecretEnv` in the namespaced config. PiRelay also recognizes these existing variables as fallbacks:
 
 - `TELEGRAM_BOT_TOKEN`
-- `PI_TELEGRAM_TUNNEL_CONFIG`
-- `PI_TELEGRAM_TUNNEL_STATE_DIR`
-- `PI_TELEGRAM_TUNNEL_PAIRING_EXPIRY_MS`
-- `PI_TELEGRAM_TUNNEL_BUSY_MODE`
-- `PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS`
-- `PI_TELEGRAM_TUNNEL_SUMMARY_MODE`
-- `PI_TELEGRAM_TUNNEL_MAX_MESSAGE_CHARS`
-- `PI_TELEGRAM_TUNNEL_SEND_RETRY_COUNT`
-- `PI_TELEGRAM_TUNNEL_SEND_RETRY_BASE_MS`
-- `PI_TELEGRAM_TUNNEL_POLLING_TIMEOUT_SECONDS`
-- `PI_TELEGRAM_TUNNEL_MAX_INBOUND_IMAGE_BYTES`
-- `PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES`
-- `PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES`
-- `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES`
-- `PI_TELEGRAM_TUNNEL_PROGRESS_MODE`
-- `PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS`
-- `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
-- `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
-- `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
+- `PI_RELAY_DISCORD_BOT_TOKEN`
+- `PI_RELAY_DISCORD_APPLICATION_ID` (`PI_RELAY_DISCORD_CLIENT_ID` is accepted as an alias)
+- `PI_RELAY_SLACK_BOT_TOKEN`
+- `PI_RELAY_SLACK_SIGNING_SECRET`
+- legacy `PI_TELEGRAM_TUNNEL_*` variables during migration
 
-`PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS` and `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES` are comma-separated lists. `progressMode` can be `quiet`, `normal`, `verbose`, or `completionOnly`; Telegram users can override it per binding with `/progress`.
+Diagnostics never print token or signing-secret values.
 
-## Troubleshooting
+## Multi-machine shared bot setup
 
-- invalid token format: check `TELEGRAM_BOT_TOKEN`
-- no Telegram response: run `/telegram-tunnel setup` and confirm the bot username resolves
-- too many progress messages: use `/progress quiet` for the paired session or increase `progressIntervalMs`
-- image prompt rejected: switch Pi to a model with image input support, reduce file size, or use one of the configured MIME types
-- `/images` finds no image after Pi saved a file: make sure the latest Pi reply mentioned the relative workspace path, or use `/send-image <relative-path>`; absolute, hidden, traversal, symlink-outside-workspace, oversized, and non-image files are rejected
-- pairing expires: rerun `/telegram-tunnel connect`
-- permission warning: `chmod 600 ~/.pi/agent/telegram-tunnel/config.json`
+Run one PiRelay broker per machine. If the same bot/account is configured on multiple machines, configure one ingress owner for that messenger instance and broker peers/federation for the other machines. PiRelay blocks ambiguous duplicate polling instead of letting multiple brokers race on the same bot token.
+
+## Migration from legacy Telegram tunnel config/state
+
+Legacy files under `~/.pi/agent/telegram-tunnel` are read as migration input. Active non-secret Telegram bindings migrate to `messengers.telegram.default`; active pairing nonces are not copied, so create a fresh pairing with `/relay connect telegram` when needed.
+
+When `/relay doctor` detects legacy top-level config keys, it asks whether to migrate the config file to the namespaced schema, creates a timestamped backup, and writes the migrated file with `0600` permissions. If the canonical PiRelay config is missing but `~/.pi/agent/telegram-tunnel/config.json` exists, doctor can copy that legacy config to `~/.pi/agent/pirelay/config.json` after confirmation.
+
+After migration, keep secrets in environment variables or namespaced `messengers.*.*.tokenEnv` references, and protect config/state files with:
+
+```bash
+chmod 600 ~/.pi/agent/pirelay/config.json
+```
+
+## Platform setup links
+
+- Telegram BotFather: <https://core.telegram.org/bots/features#botfather>
+- Discord Developer Portal: <https://discord.com/developers/docs/quick-start/getting-started>
+- Slack app setup: <https://api.slack.com/apps>
