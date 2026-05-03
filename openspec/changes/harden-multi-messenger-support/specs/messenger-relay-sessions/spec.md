@@ -15,6 +15,59 @@ The system SHALL allow a local Pi user to pair the active session with any enabl
 - **WHEN** a pairing payload created for one messenger kind or instance is received by another messenger kind or instance
 - **THEN** the system rejects the payload and does not bind any session
 
+### Requirement: Discord QR and PIN pairing UX
+The system SHALL provide a Discord pairing experience that uses a QR-accessible Discord bot invite/open URL, a short human-entered pairing PIN, and local Pi approval for untrusted users.
+
+#### Scenario: Discord connect shows QR invite and PIN
+- **WHEN** the local user invokes `/relay connect discord` and the Discord instance has a configured Application ID/clientId
+- **THEN** PiRelay renders a local pairing screen or notification containing a QR code for the Discord OAuth2 bot invite/open URL
+- **AND** the pairing instructions explain that the user and bot must share a Discord server and that the user should open a DM with the bot
+- **AND** the instructions show a short pairing PIN and the reliable Discord DM command form `relay pair <pin>`
+- **AND** `/start <pin>` MAY be accepted as a compatibility alias but MUST NOT be the only documented reliable pairing command
+
+#### Scenario: Discord clientId is missing during connect
+- **WHEN** the local user invokes `/relay connect discord` and the Discord instance has no configured Application ID/clientId
+- **THEN** PiRelay still MAY create a manual pairing PIN when live Discord control is otherwise configured
+- **AND** it explains that QR redirect is unavailable until `discord.clientId` or `PI_RELAY_DISCORD_CLIENT_ID` is set from the Discord Developer Portal Application ID
+
+#### Scenario: Short Discord PIN requires local approval
+- **WHEN** a Discord user sends a valid unconsumed short pairing PIN before expiry and that user is not allow-listed or locally trusted
+- **THEN** PiRelay presents a local confirmation prompt naming the Discord user, Discord user id, conversation type, target session label, and messenger instance
+- **AND** PiRelay does not create the binding until the local Pi user approves the request
+
+#### Scenario: Local approval can trust the Discord user
+- **WHEN** the local Pi user approves a Discord pairing request with a trust-this-user choice
+- **THEN** PiRelay creates the requested binding and records that Discord identity in local trusted-user state for the messenger instance
+- **AND** future Discord pairing requests from that trusted identity MAY skip local confirmation while still requiring a fresh expiring pairing code
+
+#### Scenario: Local approval can allow once or deny
+- **WHEN** the local Pi user chooses allow-once for a Discord pairing request
+- **THEN** PiRelay creates only the requested binding and does not add the Discord identity to trusted-user state
+- **WHEN** the local Pi user denies or ignores the request until it expires
+- **THEN** PiRelay does not bind the Discord conversation and reports a safe denial or expiry message to Discord when possible
+
+#### Scenario: Short pairing PIN is protected against guessing
+- **WHEN** PiRelay generates a short Discord pairing PIN
+- **THEN** the PIN is single-use, expiring, channel-scoped, and stored only in hashed form
+- **AND** repeated invalid PIN attempts are throttled or bounded so a Discord user cannot brute-force active pairings by sending many guesses
+
+### Requirement: Pairing trust and local confirmation reuse
+The system SHALL support local Pi confirmation choices that can either approve a single pairing attempt or trust a messenger identity for future pairing attempts without automatically mutating user-managed config.
+
+#### Scenario: Trusted identity skips future local confirmation
+- **WHEN** a Telegram, Discord, Slack, or future messenger user who is recorded in local trusted-user state completes a fresh valid pairing flow for the same messenger instance
+- **THEN** PiRelay MAY skip local confirmation and bind the session, subject to all normal pairing expiry, single-use, channel scope, and authorization checks
+
+#### Scenario: Config allow-list remains authoritative
+- **WHEN** a messenger identity is listed in the configured `allowUserIds` for that messenger instance
+- **THEN** PiRelay treats that identity as pre-approved for pairing confirmation purposes
+- **AND** local trusted-user state does not remove or weaken the configured allow-list requirement for later message authorization
+
+#### Scenario: Trust choices are secret-safe and revocable
+- **WHEN** PiRelay stores a trusted messenger identity
+- **THEN** it stores only non-secret identity metadata needed for future confirmation decisions, such as messenger ref, user id, display label, trust timestamp, and optional trusted-by session label
+- **AND** diagnostics and future UX SHALL provide a way to inspect and revoke trusted users without printing tokens, pairing codes, hidden prompts, tool internals, or transcripts
+
 ### Requirement: Messenger-neutral authorization boundary
 The system SHALL authorize every messenger event before media download, prompt injection, callback/action execution, broker forwarding, or control command execution.
 

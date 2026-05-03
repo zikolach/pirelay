@@ -6,6 +6,7 @@ import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordGatewayEven
 import { createDiscordRuntime, DiscordRuntime, getOrCreateDiscordRuntime } from "../extensions/relay/adapters/discord/runtime.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
+import { formatSessionList } from "../extensions/relay/core/session-selection.js";
 
 const tempDirs: string[] = [];
 
@@ -68,7 +69,7 @@ async function config(overrides: Partial<TelegramTunnelConfig["discord"]> = {}):
   };
 }
 
-function route(options: { idle?: boolean } = {}): { route: SessionRoute; sendUserMessage: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> } {
+function route(options: { idle?: boolean; promptLocalConfirmation?: SessionRoute["actions"]["promptLocalConfirmation"] } = {}): { route: SessionRoute; sendUserMessage: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> } {
   const sendUserMessage = vi.fn();
   const abort = vi.fn();
   return {
@@ -85,7 +86,7 @@ function route(options: { idle?: boolean } = {}): { route: SessionRoute; sendUse
         getImageByPath: async () => ({ ok: false, error: "not-found" }),
         appendAudit: vi.fn(),
         persistBinding: vi.fn(),
-        promptLocalConfirmation: async () => true,
+        promptLocalConfirmation: options.promptLocalConfirmation ?? (async () => true),
         abort,
         compact: async () => undefined,
       },
@@ -148,13 +149,68 @@ describe("DiscordRuntime", () => {
     await runtime.registerRoute(session);
     await runtime.start();
     const store = new TunnelStateStore(cfg.stateDir);
-    const { nonce } = await store.createPendingPairing({ channel: "discord", sessionId: session.sessionId, sessionLabel: session.sessionLabel, expiryMs: 60_000 });
+    const { nonce } = await store.createPendingPairing({ channel: "discord", sessionId: session.sessionId, sessionLabel: session.sessionLabel, expiryMs: 60_000, codeKind: "pin" });
 
-    await ops.handler?.(discordMessage(`/start ${nonce}`));
+    expect(nonce).toMatch(/^\d{3}-\d{3}$/);
+    await ops.handler?.(discordMessage(`relay pair ${nonce.replace("-", "")}`));
 
     expect(ops.messages.at(-1)?.content).toContain("Discord paired with Docs");
     const binding = await store.getChannelBinding("discord", "dm1", "u1");
     expect(binding).toMatchObject({ channel: "discord", sessionKey: "session-id:memory", conversationId: "dm1", userId: "u1" });
+  });
+
+  it("requires local approval for short Discord PINs and can trust users", async () => {
+    const cfg = await config({ allowUserIds: [] });
+    const ops = new FakeDiscordOperations();
+    const promptLocalConfirmation = vi.fn(async () => "trust" as const);
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route({ promptLocalConfirmation }).route;
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    const first = await store.createPendingPairing({ channel: "discord", sessionId: session.sessionId, sessionLabel: session.sessionLabel, expiryMs: 60_000, codeKind: "pin" });
+
+    await ops.handler?.(discordMessage(`relay pair ${first.nonce}`));
+
+    expect(promptLocalConfirmation).toHaveBeenCalledWith(expect.objectContaining({ channel: "discord", userId: "u1", conversationKind: "private" }));
+    expect(await store.getTrustedRelayUser("discord", "u1")).toMatchObject({ channel: "discord", userId: "u1", trustedBySessionLabel: "Docs" });
+
+    const second = await store.createPendingPairing({ channel: "discord", sessionId: session.sessionId, sessionLabel: session.sessionLabel, expiryMs: 60_000, codeKind: "pin" });
+    await ops.handler?.(discordMessage(`relay pair ${second.nonce}`));
+
+    expect(promptLocalConfirmation).toHaveBeenCalledTimes(1);
+    expect(ops.messages.filter((message) => message.content.includes("Discord paired with Docs"))).toHaveLength(2);
+  });
+
+  it("denies short Discord PIN pairing when local approval is rejected", async () => {
+    const cfg = await config({ allowUserIds: [] });
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route({ promptLocalConfirmation: async () => "deny" }).route;
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    const { nonce } = await store.createPendingPairing({ channel: "discord", sessionId: session.sessionId, sessionLabel: session.sessionLabel, expiryMs: 60_000, codeKind: "pin" });
+
+    await ops.handler?.(discordMessage(`relay pair ${nonce}`));
+
+    expect(ops.messages.at(-1)?.content).toContain("declined locally");
+    expect(await store.getChannelBinding("discord", "dm1", "u1")).toBeUndefined();
+    expect(await store.inspectPendingPairing(nonce, { channel: "discord" })).toMatchObject({ status: "consumed" });
+  });
+
+  it("bounds invalid Discord PIN guesses", async () => {
+    const cfg = await config({ allowUserIds: [] });
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    await runtime.registerRoute(route().route);
+    await runtime.start();
+
+    for (let index = 0; index < 6; index += 1) {
+      await ops.handler?.(discordMessage("relay pair 000-000"));
+    }
+
+    expect(ops.messages.at(-1)?.content).toContain("Too many invalid Discord pairing attempts");
   });
 
   it("rejects wrong-channel, unauthorized, and guild pairing attempts", async () => {
@@ -659,6 +715,63 @@ describe("DiscordRuntime", () => {
     expect(ops.messages.at(-1)).toMatchObject({ channelId: "dm1", content: expect.stringContaining("The answer is ready") });
   });
 
+  it("uses the recently active Discord binding for completion fan-out if persisted lookup misses", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("hello from discord"));
+    await store.revokeChannelBinding("discord", session.sessionKey);
+    session.notification.lastAssistantText = "Completion after Discord prompt.";
+
+    await runtime.notifyTurnCompleted(session, "completed");
+
+    expect(ops.messages.some((message) => message.content.includes("Prompt delivered to Pi."))).toBe(true);
+    expect(ops.messages.at(-1)).toMatchObject({ channelId: "dm1", content: expect.stringContaining("Completion after Discord prompt") });
+  });
+
+  it("keeps accepting a recently active Discord chat if persisted state is overwritten", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("first discord prompt"));
+    await store.revokeChannelBinding("discord", session.sessionKey);
+    await ops.handler?.(discordMessage("second discord prompt"));
+
+    expect(sendUserMessage.mock.calls.map(([content]) => content)).toEqual(["first discord prompt", "second discord prompt"]);
+    expect(ops.messages.at(-1)?.content).toContain("Prompt delivered to Pi.");
+    expect(ops.messages.at(-1)?.content).not.toContain("not paired");
+  });
+
   it("supports canonical Discord commands without falling through to generic unsupported help", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
@@ -706,13 +819,54 @@ describe("DiscordRuntime", () => {
     expect(text).toContain("Recent Pi activity");
     expect(text).toContain("Progress notifications set to verbose.");
     expect(text).toContain("Session alias set to phone.");
-    expect(text).toContain("prefer \\`relay <command\\>\\` in Discord DMs");
+    expect(text).toContain("prefer \\`relay <command>\\` in Discord DMs");
     expect(text).not.toContain("Supported Discord commands: /status, /abort, /disconnect");
     expect(text).not.toContain("/Users/example/.pi/agent/sessions/raw.jsonl");
     expect(sendUserMessage).toHaveBeenCalledWith("go", undefined);
     expect(sendUserMessage).toHaveBeenCalledWith("next", undefined);
     expect(sendUserMessage).toHaveBeenCalledWith("one shot", undefined);
     expect(ops.files.map((file) => file.fileName)).toEqual(["render.png", "render-path.png"]);
+  });
+
+  it("renders Discord session lists through the same formatter as Telegram, including color markers", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const first = route().route;
+    first.sessionKey = "session-a:/tmp/a.jsonl";
+    first.sessionId = "session-a";
+    first.sessionLabel = "pirelay";
+    first.lastActivityAt = Date.UTC(2026, 4, 3, 9, 56, 32);
+    await runtime.registerRoute(first);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: first.sessionKey,
+      sessionId: first.sessionId,
+      sessionLabel: first.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date(first.lastActivityAt).toISOString(),
+    });
+    await store.setActiveChannelSelection("discord", "dm1", "u1", first.sessionKey);
+
+    await ops.handler?.(discordMessage("relay sessions"));
+
+    const expected = formatSessionList([{
+      sessionKey: first.sessionKey,
+      sessionId: first.sessionId,
+      sessionFile: first.sessionFile,
+      sessionLabel: first.sessionLabel,
+      online: true,
+      busy: false,
+      paused: false,
+      lastActivityAt: first.lastActivityAt,
+    }], first.sessionKey);
+    expect(ops.messages.at(-1)?.content).toBe(expected);
+    expect(ops.messages.at(-1)?.content).toMatch(/[🔵🟢🟠🟣🟡🔴⚪⚫]/u);
+    expect(ops.messages.at(-1)?.content).toContain("— active");
   });
 
   it("handles status, abort, disconnect, bot ignores, and interactions", async () => {

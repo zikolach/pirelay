@@ -4,13 +4,15 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-cod
 import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { loadTelegramTunnelConfig, ConfigError } from "../config/tunnel-config.js";
 import { renderQrLines } from "../ui/qr.js";
+import { RelaySetupWizardScreen } from "../ui/setup-wizard.js";
 import { getOrCreateTunnelRuntime, sendSessionNotification } from "../adapters/telegram/runtime.js";
 import { TunnelStateStore } from "../state/tunnel-store.js";
-import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
+import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, RelayPairingIdentity, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
 import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
-import { collectRelaySetupFacts, completeRelayLocalCommand, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
+import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
+import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback } from "../config/setup-wizard.js";
 import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfigMigrationPlan } from "../config/migration.js";
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
 
@@ -47,10 +49,12 @@ function wrapPlainText(text: string, maxWidth: number): string[] {
 class PairingQrScreen {
   constructor(
     private readonly theme: Theme,
+    private readonly title: string,
     private readonly sessionLabel: string,
     private readonly qrLines: string[],
-    private readonly deepLink: string,
+    private readonly link: string,
     private readonly expiryMinutes: number,
+    private readonly instructions: string[],
     private readonly done: () => void,
   ) {}
 
@@ -73,7 +77,7 @@ class PairingQrScreen {
     };
     const row = (text = ""): string => `${this.theme.fg("border", "│")}${pad(text)}${this.theme.fg("border", "│")}`;
     const lines: string[] = [border];
-    lines.push(row(this.theme.fg("accent", "Telegram relay pairing")));
+    lines.push(row(this.theme.fg("accent", this.title)));
     lines.push(row(`Session: ${shortenMiddle(this.sessionLabel, Math.max(16, innerWidth - 9))}`));
     lines.push(row(`Expires in about ${this.expiryMinutes} minute(s).`));
     lines.push(row());
@@ -83,13 +87,15 @@ class PairingQrScreen {
     }
 
     lines.push(row());
-    lines.push(row("Fallback link:"));
-    for (const wrapped of wrapPlainText(this.deepLink, innerWidth)) {
+    lines.push(row("Link:"));
+    for (const wrapped of wrapPlainText(this.link, innerWidth)) {
       lines.push(row(wrapped));
     }
     lines.push(row());
-    lines.push(row(this.theme.fg("dim", "Scan the QR code or open the link in Telegram, then press Start.")));
-    lines.push(row(this.theme.fg("dim", "Press Esc or Enter when done. Re-run /relay connect telegram to show this again.")));
+    for (const instruction of this.instructions) {
+      for (const wrapped of wrapPlainText(instruction, innerWidth)) lines.push(row(this.theme.fg("dim", wrapped)));
+    }
+    lines.push(row(this.theme.fg("dim", "Press Esc or Enter when done.")));
     lines.push(bottomBorder);
     return lines;
   }
@@ -105,6 +111,8 @@ function getCommandHelp(): string {
     "  doctor      Diagnose configured relay channels",
     "  disconnect  Revoke relay bindings for this session",
     "  status      Show current local relay state",
+    "  trusted     List locally trusted relay users",
+    "  untrust <telegram|discord|slack> <userId>  Revoke local relay trust",
   ].join("\n");
 }
 
@@ -219,6 +227,34 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     pi.appendEntry<BindingEntryData>(BINDING_ENTRY_TYPE, data);
   }
 
+  function pairingIdentityLabel(identity: RelayPairingIdentity): string {
+    if ("id" in identity) return identity.displayName ?? getTelegramUserLabel(identity);
+    return identity.displayName ?? identity.username ?? identity.userId;
+  }
+
+  function pairingIdentityUserId(identity: RelayPairingIdentity): string {
+    return "id" in identity ? String(identity.id) : identity.userId;
+  }
+
+  async function promptPairingApproval(ctx: ExtensionContext, identity: RelayPairingIdentity, sessionLabel: string): Promise<PairingApprovalDecision> {
+    closeConnectQrScreen?.();
+    closeConnectQrScreen = undefined;
+    if (!ctx.hasUI) return "deny";
+    const channel = identity.channel ?? "telegram";
+    const label = pairingIdentityLabel(identity);
+    const userId = pairingIdentityUserId(identity);
+    const details = [
+      `Allow ${label} to control ${sessionLabel}?`,
+      `Messenger: ${channel}`,
+      `User ID: ${userId}`,
+      identity.conversationKind ? `Conversation: ${identity.conversationKind}` : undefined,
+    ].filter(Boolean).join("\n");
+    const approved = await ctx.ui.confirm(`${channel === "telegram" ? "Telegram" : "Discord"} Pairing Request`, details);
+    if (!approved) return "deny";
+    const trust = await ctx.ui.confirm("Trust relay user?", `Trust ${label} (${channel} ${userId}) so future fresh pairing codes can skip local confirmation on this machine?`);
+    return trust ? "trust" : "allow";
+  }
+
   function buildRoute(ctx: ExtensionContext, binding?: TelegramBindingMetadata, explicitLabel?: string): SessionRoute {
     const sessionId = ctx.sessionManager.getSessionId();
     const sessionFile = ctx.sessionManager.getSessionFile();
@@ -248,15 +284,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         },
         appendAudit,
         persistBinding,
-        promptLocalConfirmation: async (identity) => {
-          closeConnectQrScreen?.();
-          closeConnectQrScreen = undefined;
-          if (!latestContext?.hasUI) return false;
-          return latestContext.ui.confirm(
-            "Telegram Pairing Request",
-            `Allow ${getTelegramUserLabel(identity)} to control ${currentRoute?.sessionLabel ?? sessionLabel}?`,
-          );
-        },
+        promptLocalConfirmation: async (identity) => promptPairingApproval(latestContext ?? ctx, identity, currentRoute?.sessionLabel ?? sessionLabel),
         abort: () => latestContext?.abort(),
         compact: () =>
           new Promise<void>((resolve, reject) => {
@@ -342,7 +370,20 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       }
       const config = await ensureConfig(ctx, true);
       const facts = await collectRelaySetupFacts(config);
-      const findings = relaySetupDiagnostics(config, facts).filter((finding) => finding.channel === channel || finding.channel === "all");
+      const allFindings = relaySetupDiagnostics(config, facts);
+      const findings = allFindings.filter((finding) => finding.channel === channel || finding.channel === "all");
+      const model = buildRelaySetupWizardModel(channel, config, { facts, findings: allFindings });
+      if (ctx.hasUI) {
+        try {
+          await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => new RelaySetupWizardScreen(model, theme, () => done(undefined)));
+          return;
+        } catch (wizardError) {
+          const safeMessage = wizardError instanceof Error ? wizardError.message : String(wizardError);
+          ctx.ui.notify(redactSecrets(`Interactive setup wizard failed: ${safeMessage}. Showing plain setup guidance instead.`), "warning");
+          ctx.ui.notify(renderRelaySetupWizardFallback(model, config), findings.some((finding) => finding.severity === "error") ? "warning" : "info");
+          return;
+        }
+      }
       const lines = [relaySetupGuidance(channel, config)];
       if (findings.length > 0) {
         lines.push("", "Diagnostics:", ...findings.map((finding) => `- ${finding.severity}: ${finding.message}`));
@@ -443,7 +484,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       try {
         await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
           closeConnectQrScreen = () => done(undefined);
-          return new PairingQrScreen(theme, currentRoute!.sessionLabel, qrLines, deepLink, expiryMinutes, () => done(undefined));
+          return new PairingQrScreen(theme, "Telegram relay pairing", currentRoute!.sessionLabel, qrLines, deepLink, expiryMinutes, ["Scan the QR code or open the link in Telegram, then press Start.", "Re-run /relay connect telegram to show this again."], () => done(undefined));
         });
       } finally {
         closeConnectQrScreen = undefined;
@@ -494,13 +535,75 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       sessionFile: currentRoute.sessionFile,
       sessionLabel: currentRoute.sessionLabel,
       expiryMs: config.pairingExpiryMs,
+      codeKind: channel === "discord" ? "pin" : "nonce",
     });
     const expiryMinutes = Math.round((Date.parse(pairing.expiresAt) - Date.now()) / 60_000);
+    const discordApplicationId = config.discord?.applicationId ?? config.discord?.clientId;
+    if (channel === "discord" && discordApplicationId) {
+      const chatUrl = discordBotChatUrl(discordApplicationId);
+      const qrLines = renderQrLines(chatUrl);
+      const instructions = [
+        "Scan the QR code to open the Discord bot profile/DM.",
+        "Bot authorization/invite is handled by /relay setup discord; make sure you and the bot already share a server and that Discord DMs are allowed.",
+        `Then DM the bot: relay pair ${nonce}`,
+        `${`/start ${nonce}`} is also accepted as a compatibility alias.`,
+      ];
+      if (ctx.hasUI) {
+        ctx.ui.setWidget(CONNECT_WIDGET_KEY, undefined);
+        try {
+          await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+            closeConnectQrScreen = () => done(undefined);
+            return new PairingQrScreen(theme, "Discord relay pairing", currentRoute!.sessionLabel, qrLines, chatUrl, expiryMinutes, instructions, () => done(undefined));
+          });
+        } finally {
+          closeConnectQrScreen = undefined;
+        }
+        ctx.ui.notify(`Discord pairing PIN ready: ${nonce}. Expires in about ${expiryMinutes} minute(s).`, "info");
+        return;
+      }
+      ctx.ui.notify(redactSecrets([
+        `Discord pairing ready for session ${currentRoute.sessionLabel}.`,
+        `Open bot profile/DM: ${chatUrl}`,
+        "Bot authorization/invite is handled by /relay setup discord; make sure you and the bot already share a server and that Discord DMs are allowed.",
+        `DM the bot: relay pair ${nonce}`,
+        `/start ${nonce} is also accepted as a compatibility alias.`,
+        `Expires in about ${expiryMinutes} minute(s).`,
+      ].join("\n")), "info");
+      return;
+    }
     ctx.ui.notify(redactSecrets([
       `${channel} pairing ready for session ${currentRoute.sessionLabel}.`,
       relayPairingInstruction(channel, nonce),
+      channel === "discord" ? "QR redirect unavailable: set discord.applicationId (or clientId) or PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) from Discord Developer Portal > General Information > Application ID." : undefined,
       `Expires in about ${expiryMinutes} minute(s).`,
-    ].join("\n")), "info");
+    ].filter(Boolean).join("\n")), "info");
+  }
+
+  async function handleTrustedUsers(ctx: ExtensionContext): Promise<void> {
+    const config = await ensureConfig(ctx, true);
+    const trusted = await new TunnelStateStore(config.stateDir).listTrustedRelayUsers();
+    if (trusted.length === 0) {
+      ctx.ui.notify("No locally trusted relay users.", "info");
+      return;
+    }
+    ctx.ui.notify([
+      "Locally trusted relay users",
+      "",
+      ...trusted.map((record) => `- ${record.channel}:${record.instanceId} ${record.displayName ?? record.username ?? record.userId} (${record.userId}) trusted ${record.trustedAt}`),
+      "",
+      "Revoke with /relay untrust <messenger> <userId>.",
+    ].join("\n"), "info");
+  }
+
+  async function handleUntrust(ctx: ExtensionContext, args: string): Promise<void> {
+    const [channel, userId] = args.trim().split(/\s+/).filter(Boolean);
+    if (!channel || !userId || !supportedRelayChannels().includes(channel as RelaySetupChannel)) {
+      ctx.ui.notify("Usage: /relay untrust <telegram|discord|slack> <userId>", "warning");
+      return;
+    }
+    const config = await ensureConfig(ctx, true);
+    const removed = await new TunnelStateStore(config.stateDir).revokeTrustedRelayUser(channel as RelaySetupChannel, userId);
+    ctx.ui.notify(removed ? `Revoked local relay trust for ${channel}:${userId}.` : `No local relay trust found for ${channel}:${userId}.`, "info");
   }
 
   async function handleDisconnect(ctx: ExtensionContext): Promise<void> {
@@ -577,6 +680,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
               return;
             case "status":
               await handleStatus(ctx);
+              return;
+            case "trusted":
+              await handleTrustedUsers(ctx);
+              return;
+            case "untrust":
+              await handleUntrust(ctx, intent.args);
               return;
             default:
               ctx.ui.notify(getCommandHelp(), "info");

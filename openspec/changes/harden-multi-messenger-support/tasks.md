@@ -127,7 +127,20 @@
 
 - [x] 15.1 Run `npm run typecheck` and fix all strict TypeScript errors.
 - [x] 15.2 Run `npm test` and fix regressions.
-- [ ] 15.3 Run targeted manual smoke tests for same-machine multi-session pairing to Telegram and Discord.
+- [x] 15.3 Run targeted manual smoke tests for same-machine multi-session pairing to Telegram and Discord.
 - [x] 15.4 Run targeted manual or mocked smoke tests for shared-bot owner/non-owner federation.
 - [x] 15.5 Run `openspec validate harden-multi-messenger-support --strict`.
-- [ ] 15.6 Mark tasks complete only after code, docs, tests, and validation are done.
+- [x] 15.6 Mark tasks complete only after code, docs, tests, and validation are done.
+
+## 16. Discord QR/PIN pairing and trust UX
+
+- [x] 16.1 Add a short-code pairing mode for Discord that generates readable expiring PINs, stores only hashes, scopes them to the Discord messenger instance, consumes them once, and throttles or bounds invalid guesses.
+- [x] 16.2 Add Discord pairing command handling for `relay pair <pin>` as the reliable DM form while keeping `/start <pin>` as a compatibility alias.
+- [x] 16.3 Update `/relay connect discord` to render a QR pairing screen when `discord.applicationId` / `discord.clientId` is configured, using the Discord bot profile/DM URL and showing shared-server/DM instructions plus the short PIN.
+- [x] 16.4 Update `/relay connect discord` fallback output for missing `discord.clientId` to explain where to find Application ID/clientId and that QR redirect is unavailable until it is configured.
+- [x] 16.5 Update `/relay setup discord` and `/relay doctor` so clientId, shared-server membership, Message Content Intent, and DM reachability are first-class onboarding/diagnostic items.
+- [x] 16.6 Extend local pairing confirmation to return allow-once, trust-this-user, or deny instead of only boolean approval, with safe identity details for Telegram and Discord.
+- [x] 16.7 Add local trusted-user state keyed by messenger ref and platform user id; use it together with configured `allowUserIds` to skip future local pairing confirmation without mutating config automatically.
+- [x] 16.8 Add UX/docs for inspecting or revoking locally trusted relay users, and ensure diagnostics redact pairing codes and secret values.
+- [x] 16.9 Add tests for Discord QR URL rendering, missing-clientId guidance, short PIN parsing/expiry/single-use/throttling, local confirmation decisions, trusted-user reuse, and Telegram confirmation trust parity.
+- [x] 16.10 Run `npm run typecheck`, `npm test`, and `openspec validate harden-multi-messenger-support --strict` after implementation.

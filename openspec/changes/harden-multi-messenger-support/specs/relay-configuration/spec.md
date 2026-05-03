@@ -60,6 +60,22 @@ The system SHALL keep tokens, signing secrets, OAuth credentials, broker peer se
 - **WHEN** migration writes a new PiRelay config file
 - **THEN** the file mode is restricted and the migration output redacts any token-shaped or secret-shaped values
 
+### Requirement: Discord onboarding configuration guidance
+The system SHALL make Discord Application ID/clientId, shared-server setup, and DM reachability part of setup and diagnostics for the QR-based Discord connect experience.
+
+#### Scenario: Discord setup explains clientId source
+- **WHEN** the local user invokes `/relay setup discord`
+- **THEN** the setup guidance names Discord Developer Portal > General Information > Application ID as the source for `discord.clientId` or `PI_RELAY_DISCORD_CLIENT_ID`
+- **AND** it explains that the clientId is needed to render the `/relay connect discord` QR invite/open link
+
+#### Scenario: Doctor warns when Discord QR cannot be rendered
+- **WHEN** Discord live control is enabled but no Discord Application ID/clientId is configured
+- **THEN** `/relay doctor` reports a warning that manual PIN pairing may still work but QR redirect/invite guidance is unavailable
+
+#### Scenario: Discord setup explains shared server and DMs
+- **WHEN** `/relay setup discord` or `/relay connect discord` shows onboarding guidance
+- **THEN** it explains that the user and bot generally need to share a Discord server and that Discord privacy settings must allow opening or receiving bot DMs
+
 ### Requirement: Canonical relay commands and resource names
 The system SHALL use PiRelay and `/relay` naming for user-facing commands, docs, skills, extension resource paths, config paths, state paths, and diagnostics.
 

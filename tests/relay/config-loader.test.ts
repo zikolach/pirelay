@@ -63,6 +63,22 @@ describe("relay config loader", () => {
     expect(loaded.warnings.some((warning) => warning.includes("legacy"))).toBe(true);
   });
 
+  it("resolves Discord Application ID from applicationId and legacy clientId aliases", async () => {
+    const appPath = await writeConfig({
+      messengers: { discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", applicationId: "app-id" } } },
+    });
+    const appLoaded = await loadRelayConfig({ configPath: appPath, env: { DISCORD_TOKEN: "token" }, supportedMessengers: ["discord"] });
+    expect(appLoaded.messengers[0]?.applicationId).toBe("app-id");
+    expect(appLoaded.messengers[0]?.clientId).toBe("app-id");
+
+    const aliasPath = await writeConfig({
+      messengers: { discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", clientId: "client-alias" } } },
+    });
+    const aliasLoaded = await loadRelayConfig({ configPath: aliasPath, env: { DISCORD_TOKEN: "token" }, supportedMessengers: ["discord"] });
+    expect(aliasLoaded.messengers[0]?.applicationId).toBe("client-alias");
+    expect(aliasLoaded.messengers[0]?.clientId).toBe("client-alias");
+  });
+
   it("canonicalizes legacy JSON without top-level env-style keys", () => {
     const canonical = canonicalRelayConfigForWrite({
       botToken: "telegram-token",

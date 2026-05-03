@@ -46,6 +46,19 @@ export interface ParsedRemoteCommand {
   args: string;
 }
 
+export interface RemoteCommandInvocationOptions {
+  prefixes?: string[];
+  allowSlash?: boolean;
+  allowPrefix?: boolean;
+}
+
+export function parseRemoteCommandInvocation(text: string, options: RemoteCommandInvocationOptions = {}): ParsedRemoteCommand | undefined {
+  const allowSlash = options.allowSlash ?? true;
+  const allowPrefix = options.allowPrefix ?? true;
+  return (allowSlash ? parseRemoteCommand(text) : undefined)
+    ?? (allowPrefix ? parsePrefixedRemoteCommand(text, { prefixes: options.prefixes }) : undefined);
+}
+
 export function parseRemoteCommand(text: string): ParsedRemoteCommand | undefined {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return undefined;

@@ -251,10 +251,14 @@ export function discordPairingCommand(code: string): string {
   return `/start ${code}`;
 }
 
+export function discordRelayPairingCommand(code: string): string {
+  return `relay pair ${code}`;
+}
+
 export function escapeDiscordPlainText(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
-    .replace(/([`*_~|>#])/g, "\\$1")
+    .replace(/([`*_~#])/g, "\\$1")
     .replace(/@(everyone|here|&?\d+)/g, "@\u200b$1");
 }
 

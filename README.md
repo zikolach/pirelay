@@ -188,14 +188,17 @@ PiRelay adds the following Pi-side commands:
 | `/relay setup <telegram\|discord\|slack>` | show secret-safe channel setup guidance and readiness diagnostics |
 | `/relay connect <telegram\|discord\|slack> [name]` | create an expiring pairing instruction for the selected channel |
 | `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, and config/state permissions |
+| `/relay trusted` / `/relay untrust <messenger> <userId>` | inspect or revoke locally trusted relay users |
 | `/relay disconnect` / `/relay status` | generic aliases for Telegram disconnect/status compatibility |
 
-Discord and Slack foundations are opt-in. Discord now includes a live DM-first bot runtime when `discord.enabled` and `discord.botToken` are configured; run `/relay setup discord` for credential, intent, invite, and DM troubleshooting guidance. Slack remains an adapter foundation until a live Slack runtime is wired. Guild/channel control requires explicit authorization config.
+Discord and Slack foundations are opt-in. Discord now includes a live DM-first bot runtime when `discord.enabled` and `discord.botToken` are configured; run `/relay setup discord` for the interactive setup wizard with credential, intent, invite/QR, and DM troubleshooting guidance. In headless/no-UI contexts, `/relay setup <messenger>` falls back to secret-safe plain text guidance. Slack remains an adapter foundation until a live Slack runtime is wired. Guild/channel control requires explicit authorization config.
+
+The interactive setup wizard is read-only for secrets: it shows readiness, links, QR/invite helpers, doctor-style findings, and copy-paste snippets that use placeholders or environment variable names. It does not write bot tokens, signing secrets, OAuth secrets, or peer secrets.
 
 Credential starting points:
 
 - Telegram: create a bot with BotFather, then set `TELEGRAM_BOT_TOKEN` (<https://core.telegram.org/bots/features#botfather>).
-- Discord: create an application/bot in the Discord Developer Portal, copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, enable **Message Content Intent** for plain DM prompts and `relay <command>` text controls, and optionally copy the Application ID to `PI_RELAY_DISCORD_CLIENT_ID` or `discord.clientId` for invite URL guidance (<https://discord.com/developers/docs/quick-start/getting-started>). Invite with the `bot` scope and `permissions=0` for DM-first operation; `applications.commands` is only needed for a future native `/relay <subcommand>` UX.
+- Discord: create an application/bot in the Discord Developer Portal, copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, enable **Message Content Intent** for plain DM prompts and `relay <command>` text controls, and copy the Application ID to `PI_RELAY_DISCORD_APPLICATION_ID` or `discord.applicationId` (`PI_RELAY_DISCORD_CLIENT_ID` / `discord.clientId` are accepted aliases) so `/relay connect discord` can show a QR link to the bot profile/DM (<https://discord.com/developers/docs/quick-start/getting-started>). Invite with the `bot` scope and `permissions=0` for DM-first operation; `applications.commands` is only needed for a future native `/relay <subcommand>` UX. Pairing uses a short PIN (`relay pair 123-456`) and asks the local Pi user to allow once, trust the user, or deny unless the Discord user is already allow-listed/trusted.
 - Slack: create a Slack app, install it to your workspace, set the Bot User OAuth Token as `PI_RELAY_SLACK_BOT_TOKEN` or `slack.botToken`, and set the Signing Secret as `PI_RELAY_SLACK_SIGNING_SECRET` or `slack.signingSecret` (<https://api.slack.com/apps>).
 
 ## Remote messenger commands

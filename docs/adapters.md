@@ -41,7 +41,9 @@ Inbound messenger events are normalized as messages or actions before relay hand
 
 Remote messenger adapters expose the same PiRelay command semantics wherever the platform allows text commands, slash commands, buttons, or fallbacks: `/help`, `/status`, `/sessions`, `/use`, `/to`, `/alias`, `/forget`, `/progress`, `/recent`, `/summary`, `/full`, `/images`, `/send-image`, `/steer`, `/followup`, `/abort`, `/compact`, `/pause`, `/resume`, and `/disconnect`. If an adapter cannot perform a command because of a declared capability limit, it should return an explicit limitation instead of falling through to generic unsupported-command help.
 
-Discord is special because Discord owns the `/...` application-command UI. The reliable Discord baseline is ordinary DM text with a prefix, for example `relay status`, `relay sessions`, `relay full`, and `relay abort`. Bare `/status`-style Discord aliases remain best-effort conveniences only when Discord delivers them as message text. A future native Discord application-command implementation should register one namespaced `/relay` command with subcommands instead of top-level `/status`/`/full` commands.
+Discord is special because Discord owns the `/...` application-command UI. The reliable Discord baseline is ordinary DM text with a prefix, for example `relay status`, `relay sessions`, `relay full`, `relay abort`, and `relay pair 123-456` during pairing. Bare `/status`-style Discord aliases remain best-effort conveniences only when Discord delivers them as message text; `/start <pin>` is accepted for pairing compatibility, but setup should advertise `relay pair <pin>` first. A future native Discord application-command implementation should register one namespaced `/relay` command with subcommands instead of top-level `/status`/`/full` commands.
+
+Discord setup uses `discord.applicationId` / `PI_RELAY_DISCORD_APPLICATION_ID` (`clientId` aliases are accepted) from Developer Portal → General Information → Application ID to render the Discord OAuth2 bot invite URL. Discord connect uses the same ID to render a QR code to the bot profile/DM link (`https://discord.com/users/<applicationId>`). The user and bot generally need to share a server first, and Discord privacy settings must allow DMs. Short PIN pairing requires local Pi approval unless the user is configured in `allowUserIds` or has been trusted locally; the local approval can allow once, trust the user, or deny.
 
 Examples:
 
@@ -52,6 +54,8 @@ Examples:
 /relay connect telegram docs
 /relay connect discord:personal api
 ```
+
+When Pi has an interactive TUI, `/relay setup <messenger>` opens a read-only setup wizard for Telegram, Discord, Slack, or future adapters. The wizard uses adapter setup metadata plus shared diagnostics to show checklists, links, config/env snippets, QR/invite information where available, troubleshooting notes, and next steps. In headless/no-UI contexts it falls back to the same secret-safe plain text guidance.
 
 ## Middleware layer
 

@@ -1,5 +1,5 @@
 import type { ChannelBinding, ChannelInboundMessage } from "../core/channel-adapter.js";
-import { discordPairingCommand, isDiscordIdentityAllowed } from "./discord/adapter.js";
+import { discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed } from "./discord/adapter.js";
 import { isSlackIdentityAllowed, slackPairingCommand } from "./slack/adapter.js";
 import type { DiscordRelayConfig, PendingPairingRecord, SlackRelayConfig } from "../core/types.js";
 
@@ -8,7 +8,7 @@ export type ChannelPairingResult =
   | { ok: false; reason: "wrong-channel" | "unsupported-conversation" | "unauthorized" | "command-mismatch" | "expired" };
 
 export function discordPairingInstruction(code: string): string {
-  return `Send ${discordPairingCommand(code)} to the Discord bot in a DM before the pairing expires.`;
+  return `Send ${discordRelayPairingCommand(code)} to the Discord bot in a DM before the pairing expires. ${discordPairingCommand(code)} is also accepted.`;
 }
 
 export function slackPairingInstruction(code: string): string {
@@ -25,7 +25,7 @@ export function completeDiscordPairing(
   if (event.channel !== "discord") return { ok: false, reason: "wrong-channel" };
   if (event.conversation.kind !== "private" && !config.allowGuildChannels) return { ok: false, reason: "unsupported-conversation" };
   if (!isDiscordIdentityAllowed(event.sender, config)) return { ok: false, reason: "unauthorized" };
-  return completeChannelPairing(event, pairing, discordPairingCommand(code), now);
+  return completeChannelPairing(event, pairing, [discordRelayPairingCommand(code), discordPairingCommand(code)], now);
 }
 
 export function completeSlackPairing(
@@ -38,17 +38,17 @@ export function completeSlackPairing(
   if (event.channel !== "slack") return { ok: false, reason: "wrong-channel" };
   if (event.conversation.kind !== "private" && !config.allowChannelMessages) return { ok: false, reason: "unsupported-conversation" };
   if (!isSlackIdentityAllowed(event.sender, config)) return { ok: false, reason: "unauthorized" };
-  return completeChannelPairing(event, pairing, slackPairingCommand(code), now);
+  return completeChannelPairing(event, pairing, [slackPairingCommand(code)], now);
 }
 
 function completeChannelPairing(
   event: ChannelInboundMessage,
   pairing: PendingPairingRecord,
-  expectedCommand: string,
+  expectedCommands: string[],
   now: number,
 ): ChannelPairingResult {
   if (Date.parse(pairing.expiresAt) <= now || pairing.consumedAt) return { ok: false, reason: "expired" };
-  if (event.text.trim() !== expectedCommand) return { ok: false, reason: "command-mismatch" };
+  if (!expectedCommands.includes(event.text.trim())) return { ok: false, reason: "command-mismatch" };
   return {
     ok: true,
     binding: {

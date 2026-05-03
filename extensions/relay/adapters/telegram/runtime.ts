@@ -33,6 +33,7 @@ import {
 } from "./actions.js";
 import type {
   LatestTurnImage,
+  PairingApprovalDecision,
   SessionRoute,
   SessionStatusSnapshot,
   SetupCache,
@@ -47,7 +48,7 @@ import type {
   TunnelRuntime,
   TelegramUserSummary,
 } from "../../core/types.js";
-import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg } from "../../commands/remote.js";
+import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
@@ -563,7 +564,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config: this.config });
-    const command = commandIntentFromPipeline(initialPipeline.result) ?? parseTelegramCommand(message.text);
+    const command = commandIntentFromPipeline(initialPipeline.result) ?? parseRemoteCommandInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseTelegramCommand(message.text);
     if (command?.command === "start") {
       await this.handleStart(message, command.args);
       return;
@@ -872,12 +873,25 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
+    const store = this.store;
     const allowedByList = this.config.allowUserIds.length > 0 && this.config.allowUserIds.includes(message.user.id);
-    const approved = allowedByList || (await route.actions.promptLocalConfirmation(message.user));
+    const trusted = await store.getTrustedRelayUser("telegram", String(message.user.id));
+    const approval = allowedByList || trusted ? "allow" : normalizePairingApproval(await route.actions.promptLocalConfirmation({ ...message.user, channel: "telegram", userId: String(message.user.id), displayName: getTelegramUserLabel(message.user), conversationKind: message.chat.type, instanceId: "default" }));
 
-    if (!approved) {
+    if (approval === "deny") {
       await this.api.sendPlainText(message.chat.id, "Pairing was declined locally. Ask the Pi user to retry the connection flow.");
       return;
+    }
+
+    if (approval === "trust") {
+      await store.trustRelayUser({
+        channel: "telegram",
+        instanceId: "default",
+        userId: String(message.user.id),
+        username: message.user.username,
+        displayName: getTelegramUserLabel(message.user),
+        trustedBySessionLabel: route.sessionLabel,
+      });
     }
 
     const binding: TelegramBindingMetadata = {
@@ -1616,6 +1630,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const failure = notification.lastFailure || "The Pi task ended without a final assistant response.";
     await this.api.sendPlainText(route.binding.chatId, `${sourcePrefix}❌ Pi task failed after ${durationLabel}\n\n${failure}`);
   }
+}
+
+function normalizePairingApproval(value: PairingApprovalDecision | boolean): PairingApprovalDecision {
+  if (value === true) return "allow";
+  if (value === false) return "deny";
+  return value;
 }
 
 type RuntimeRegistry = Map<string, TunnelRuntime>;

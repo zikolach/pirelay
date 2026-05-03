@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { realpath, stat, readFile } from "node:fs/promises";
 import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -67,6 +67,11 @@ export function sha256(value: string): string {
 
 export function createPairingNonce(): string {
   return randomBytes(32).toString("base64url");
+}
+
+export function createPairingPin(): string {
+  const value = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  return `${value.slice(0, 3)}-${value.slice(3)}`;
 }
 
 export function createTurnId(): string {

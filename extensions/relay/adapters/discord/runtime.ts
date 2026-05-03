@@ -1,10 +1,10 @@
 import type { ChannelBinding, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelRouteAddress } from "../../core/channel-adapter.js";
 import { completeDiscordPairing } from "../channel-pairing.js";
-import { DiscordChannelAdapter, discordPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
+import { DiscordChannelAdapter, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
-import type { ChannelPersistedBindingRecord, LatestTurnImage, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
-import { commandAllowsWhilePaused, normalizeAliasArg, parsePrefixedRemoteCommand, parseRemoteCommand, buildHelpText } from "../../commands/remote.js";
+import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
+import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation, buildHelpText } from "../../commands/remote.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
@@ -15,6 +15,8 @@ import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministi
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
 const DISCORD_TYPING_REFRESH_MS = 7_000;
+const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
+const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
 const DISCORD_HELP_TEXT = buildHelpText({
   title: "PiRelay Discord commands:",
   commandPrefix: "relay",
@@ -37,7 +39,9 @@ export class DiscordRuntime {
   private readonly routes = new Map<string, SessionRoute>();
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly activeSessionByConversationUser = new Map<string, string>();
+  private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
   private readonly typingStates = new Map<string, { address: ChannelRouteAddress; timer?: ReturnType<typeof setTimeout> }>();
+  private readonly invalidPairingAttempts = new Map<string, { count: number; resetAt: number }>();
   private started = false;
   private startPromise?: Promise<void>;
   private lastError?: string;
@@ -86,7 +90,10 @@ export class DiscordRuntime {
   async registerRoute(route: SessionRoute): Promise<void> {
     this.routes.set(route.sessionKey, route);
     const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey);
-    if (binding) this.ownedBindingSessionKeys.add(route.sessionKey);
+    if (binding) {
+      this.ownedBindingSessionKeys.add(route.sessionKey);
+      this.recentBindingBySessionKey.set(route.sessionKey, binding);
+    }
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
@@ -98,7 +105,8 @@ export class DiscordRuntime {
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.stopTypingActivity(route.sessionKey);
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey);
+    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey)
+      ?? this.recentBindingBySessionKey.get(route.sessionKey);
     if (!binding) return;
     const text = discordTurnNotificationText(route, status);
     await this.adapter.sendText(bindingAddress(binding), text);
@@ -126,8 +134,9 @@ export class DiscordRuntime {
   private async handleMessage(message: ChannelInboundMessage): Promise<void> {
     if (!this.config.discord) return;
     const text = message.text.trim();
-    if (text.startsWith("/start ")) {
-      await this.handlePairing(message, text.slice("/start ".length).trim());
+    const pairingCode = parseDiscordPairingCode(text);
+    if (pairingCode) {
+      await this.handlePairing(message, pairingCode);
       return;
     }
 
@@ -155,9 +164,14 @@ export class DiscordRuntime {
 
   private async handlePairing(message: ChannelInboundMessage, code: string): Promise<void> {
     if (!this.config.discord) return;
+    if (this.isPairingAttemptThrottled(message)) {
+      await this.sendText(message, "Too many invalid Discord pairing attempts. Wait a minute, then run /relay connect discord again if needed.");
+      return;
+    }
     const pending = await this.store.inspectPendingPairing(code, { channel: DISCORD_CHANNEL });
     if (pending.status === "consumed") return;
     if (pending.status !== "active") {
+      this.recordInvalidPairingAttempt(message);
       await this.sendText(message, "This Discord pairing code is invalid or expired. Run /relay connect discord again in Pi.");
       return;
     }
@@ -168,14 +182,46 @@ export class DiscordRuntime {
 
     const result = completeDiscordPairing(message, { ...pairing, consumedAt: undefined }, code, this.config.discord);
     if (!result.ok) {
+      if (result.reason === "command-mismatch") this.recordInvalidPairingAttempt(message);
       await this.sendText(message, discordPairingFailureMessage(result.reason));
+      return;
+    }
+
+    const allowedByConfig = (this.config.discord.allowUserIds ?? []).includes(message.sender.userId);
+    const trusted = await this.store.getTrustedRelayUser(DISCORD_CHANNEL, message.sender.userId);
+    const approval = allowedByConfig || trusted ? "allow" : normalizePairingApproval(await route.actions.promptLocalConfirmation({
+      channel: DISCORD_CHANNEL,
+      userId: message.sender.userId,
+      username: message.sender.username,
+      displayName: message.sender.displayName,
+      firstName: message.sender.firstName,
+      lastName: message.sender.lastName,
+      conversationKind: message.conversation.kind,
+      instanceId: "default",
+    }));
+
+    if (approval === "deny") {
+      await this.store.markPendingPairingConsumed(code, { channel: DISCORD_CHANNEL });
+      await this.sendText(message, "Discord pairing was declined locally. Ask the Pi user to retry /relay connect discord.");
       return;
     }
 
     const consumed = await this.store.markPendingPairingConsumed(code, { channel: DISCORD_CHANNEL });
     if (!consumed) return;
 
+    if (approval === "trust") {
+      await this.store.trustRelayUser({
+        channel: DISCORD_CHANNEL,
+        instanceId: "default",
+        userId: message.sender.userId,
+        username: message.sender.username,
+        displayName: message.sender.displayName,
+        trustedBySessionLabel: route.sessionLabel,
+      });
+    }
+
     const binding = await this.store.upsertChannelBinding(result.binding);
+    this.recentBindingBySessionKey.set(binding.sessionKey, binding);
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     await this.setActiveSelection(message, binding.sessionKey);
     route.lastActivityAt = Date.now();
@@ -195,11 +241,13 @@ export class DiscordRuntime {
     if (selected.conversationId === message.conversation.id) return selected;
     const refreshed = { ...selected, conversationId: message.conversation.id, lastSeenAt: new Date().toISOString() };
     await this.store.upsertChannelBinding(refreshed);
+    this.recentBindingBySessionKey.set(refreshed.sessionKey, refreshed);
     if (activeKey === selected.sessionKey) await this.setActiveSelection(message, selected.sessionKey);
     return refreshed;
   }
 
   private async handleBoundMessage(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute): Promise<void> {
+    this.recentBindingBySessionKey.set(binding.sessionKey, binding);
     const command = parseDiscordCommand(message.text);
     if (binding.paused && (!command || !commandAllowsWhilePaused(command.name))) {
       await this.sendText(message, "The relay is currently paused. Use /resume or disconnect locally.");
@@ -307,6 +355,7 @@ export class DiscordRuntime {
       case "disconnect":
         this.stopTypingActivity(binding.sessionKey);
         await this.store.revokeChannelBinding(DISCORD_CHANNEL, binding.sessionKey);
+        this.recentBindingBySessionKey.delete(binding.sessionKey);
         await this.clearActiveSelection(message, binding.sessionKey);
         route.actions.appendAudit("Discord relay disconnected remotely.");
         await this.sendText(message, "Discord relay disconnected for this Pi session.");
@@ -339,6 +388,7 @@ export class DiscordRuntime {
     route.lastActivityAt = Date.now();
     try {
       await this.store.upsertChannelBinding({ ...binding, lastSeenAt: new Date().toISOString() });
+      this.recentBindingBySessionKey.set(binding.sessionKey, { ...binding, lastSeenAt: new Date().toISOString() });
     } catch (error) {
       this.lastError = safeDiscordRuntimeError(error);
     }
@@ -402,7 +452,8 @@ export class DiscordRuntime {
 
   private async handleAliasCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, args: string): Promise<void> {
     const alias = normalizeAliasArg(args);
-    await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, alias } });
+    const updated = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, alias } });
+    this.recentBindingBySessionKey.set(updated.sessionKey, updated);
     route.actions.appendAudit(alias ? `Discord set session alias to ${alias}.` : "Discord cleared session alias.");
     await this.sendText(message, alias ? `Session alias set to ${alias}.` : "Session alias cleared.");
   }
@@ -414,7 +465,8 @@ export class DiscordRuntime {
       return;
     }
     const mode = progressModeFor({ progressMode: parsed }, this.config);
-    await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, progressMode: mode } });
+    const updated = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, progressMode: mode } });
+    this.recentBindingBySessionKey.set(updated.sessionKey, updated);
     await this.sendText(message, `Progress notifications set to ${displayProgressMode(mode)}.`);
   }
 
@@ -430,7 +482,8 @@ export class DiscordRuntime {
   }
 
   private async setPaused(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, paused: boolean): Promise<void> {
-    await this.store.upsertChannelBinding({ ...binding, paused });
+    const updated = await this.store.upsertChannelBinding({ ...binding, paused });
+    this.recentBindingBySessionKey.set(updated.sessionKey, updated);
     route.actions.appendAudit(paused ? "Discord relay paused remotely." : "Discord relay resumed remotely.");
     await this.sendText(message, paused ? "Relay paused. Remote prompts and notifications are suspended until /resume." : "Relay resumed.");
   }
@@ -507,8 +560,11 @@ export class DiscordRuntime {
   }
 
   private async discordBindingsForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord[]> {
-    const bindings = Object.values((await this.store.load()).channelBindings)
+    const persisted = Object.values((await this.store.load()).channelBindings)
       .filter((binding) => binding.channel === DISCORD_CHANNEL && binding.userId === message.sender.userId && binding.status !== "revoked");
+    const recent = [...this.recentBindingBySessionKey.values()]
+      .filter((binding) => binding.channel === DISCORD_CHANNEL && binding.userId === message.sender.userId && binding.status !== "revoked");
+    const bindings = [...new Map([...persisted, ...recent].map((binding) => [binding.sessionKey, binding])).values()];
     const exactConversation = bindings.filter((binding) => binding.conversationId === message.conversation.id);
     return exactConversation.length > 0 ? exactConversation : bindings;
   }
@@ -567,6 +623,29 @@ export class DiscordRuntime {
 
   private async sendText(message: ChannelInboundMessage, text: string): Promise<void> {
     await this.adapter?.sendText({ channel: DISCORD_CHANNEL, conversationId: message.conversation.id, userId: message.sender.userId }, text);
+  }
+
+  private pairingAttemptKey(message: ChannelInboundMessage): string {
+    return `${message.conversation.id}:${message.sender.userId}`;
+  }
+
+  private isPairingAttemptThrottled(message: ChannelInboundMessage): boolean {
+    const key = this.pairingAttemptKey(message);
+    const now = Date.now();
+    const attempts = this.invalidPairingAttempts.get(key);
+    if (!attempts || attempts.resetAt <= now) return false;
+    return attempts.count >= DISCORD_PAIRING_MAX_INVALID_ATTEMPTS;
+  }
+
+  private recordInvalidPairingAttempt(message: ChannelInboundMessage): void {
+    const key = this.pairingAttemptKey(message);
+    const now = Date.now();
+    const current = this.invalidPairingAttempts.get(key);
+    if (!current || current.resetAt <= now) {
+      this.invalidPairingAttempts.set(key, { count: 1, resetAt: now + DISCORD_PAIRING_ATTEMPT_WINDOW_MS });
+      return;
+    }
+    this.invalidPairingAttempts.set(key, { ...current, count: current.count + 1 });
   }
 
   private startTypingActivity(route: SessionRoute, address: ChannelRouteAddress): void {
@@ -666,13 +745,27 @@ export function getOrCreateDiscordRuntime(config: TelegramTunnelConfig, options?
   return runtime;
 }
 
+export function parseDiscordPairingCode(text: string): string | undefined {
+  const trimmed = text.trim();
+  const start = trimmed.match(/^\/start\s+(.+)$/i);
+  if (start?.[1]) return start[1].trim();
+  const pair = trimmed.match(/^(?:relay|pirelay)\s+pair\s+(.+)$/i);
+  return pair?.[1]?.trim();
+}
+
 export function parseDiscordCommand(text: string): DiscordCommand | undefined {
-  const parsed = parseRemoteCommand(text) ?? parsePrefixedRemoteCommand(text, { prefixes: ["relay", "pirelay"] });
+  const parsed = parseRemoteCommandInvocation(text, { prefixes: ["relay", "pirelay"] });
   if (!parsed) return undefined;
   const command = normalizeDiscordRelayCommand(parsed);
   const normalized = command.command === "sendimage" ? "sendimage" : command.command;
   if (isDiscordCommandName(normalized)) return { name: normalized, args: command.args };
   return { name: "help", args: command.args };
+}
+
+function normalizePairingApproval(value: PairingApprovalDecision | boolean): PairingApprovalDecision {
+  if (value === true) return "allow";
+  if (value === false) return "deny";
+  return value;
 }
 
 function normalizeDiscordRelayCommand(command: { command: string; args: string }): { command: string; args: string } {
@@ -732,7 +825,7 @@ function discordPairingFailureMessage(reason: string): string {
     case "unauthorized":
       return "This Discord user or guild is not authorized for pairing.";
     case "command-mismatch":
-      return `Pairing command mismatch. Send ${discordPairingCommand("<code>")} with the current code from Pi.`;
+      return `Pairing command mismatch. Send ${discordRelayPairingCommand("<pin>")} with the current PIN from Pi. ${discordPairingCommand("<pin>")} is also accepted.`;
     case "expired":
       return "This Discord pairing code is expired. Run /relay connect discord again in Pi.";
     default:

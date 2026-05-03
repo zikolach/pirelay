@@ -39,7 +39,7 @@ Environment variables can still provide secrets and deployment overrides. Legacy
       "personal": {
         "enabled": true,
         "tokenEnv": "PI_RELAY_DISCORD_BOT_TOKEN",
-        "clientId": "123456789012345678",
+        "applicationId": "123456789012345678",
         "allowUserIds": ["123456789012345678"]
       }
     },
@@ -56,6 +56,10 @@ Environment variables can still provide secrets and deployment overrides. Legacy
 ```
 
 Messenger instances are addressed as `<kind>:<instance>`, for example `telegram:default`, `discord:personal`, or `slack:work`. The `:default` suffix can be omitted in commands.
+
+For Discord, `applicationId` is the Discord Developer Portal → General Information → Application ID (`clientId` is accepted as an alias because Discord OAuth URLs call the same value `client_id`). It is used by `/relay setup discord` for the Discord OAuth2 bot invite URL and by `/relay connect discord` to render a QR code to the bot profile/DM link. Short Discord PIN pairing still requires local Pi approval unless the user is listed in `allowUserIds` or trusted locally from a previous approval. Use `/relay trusted` to inspect locally trusted users and `/relay untrust <messenger> <userId>` to revoke that local trust without editing config.
+
+Run `/relay setup <messenger>` in Pi for an interactive read-only setup wizard when TUI is available. The wizard shows checklist status, links, QR/invite helpers, troubleshooting, and copy-paste config/env snippets with placeholders; it does not write secrets. Headless/no-UI runs keep the plain text guidance.
 
 ## Commands
 
@@ -75,7 +79,7 @@ Preferred secret style is `tokenEnv` / `signingSecretEnv` in the namespaced conf
 
 - `TELEGRAM_BOT_TOKEN`
 - `PI_RELAY_DISCORD_BOT_TOKEN`
-- `PI_RELAY_DISCORD_CLIENT_ID`
+- `PI_RELAY_DISCORD_APPLICATION_ID` (`PI_RELAY_DISCORD_CLIENT_ID` is accepted as an alias)
 - `PI_RELAY_SLACK_BOT_TOKEN`
 - `PI_RELAY_SLACK_SIGNING_SECRET`
 - legacy `PI_TELEGRAM_TUNNEL_*` variables during migration

@@ -31,6 +31,7 @@ export interface MessengerInstanceFileConfig {
   tokenEnv?: string;
   signingSecret?: string;
   signingSecretEnv?: string;
+  applicationId?: string;
   clientId?: string;
   eventMode?: "socket" | "webhook";
   workspaceId?: string;
@@ -64,6 +65,7 @@ export interface RelayConfigFile {
   PI_RELAY_DISCORD_ENABLED?: string;
   PI_RELAY_DISCORD_BOT_TOKEN?: string;
   PI_RELAY_DISCORD_CLIENT_ID?: string;
+  PI_RELAY_DISCORD_APPLICATION_ID?: string;
   PI_RELAY_DISCORD_ALLOW_USER_IDS?: string;
   PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS?: string;
   PI_RELAY_DISCORD_ALLOW_GUILD_IDS?: string;
@@ -90,6 +92,7 @@ export interface ResolvedMessengerInstanceConfig {
   tokenEnv?: string;
   signingSecret?: string;
   signingSecretEnv?: string;
+  applicationId?: string;
   clientId?: string;
   eventMode?: "socket" | "webhook";
   workspaceId?: string;

@@ -16,6 +16,7 @@ Recent multi-channel refactoring left PiRelay with Telegram-shaped runtime, conf
 - Add regression tests covering multi-messenger pairing, canonical command/UX parity, multi-machine broker coordination, config migration, module boundaries, and closed-loop parity from messenger prompt through Pi completion/failure/abort notification across Telegram and Discord paths.
 - Harden Discord and shared-bot ingress so a single inbound messenger event cannot be injected into multiple active Pi sessions, even when multiple same-machine runtimes or stale bindings observe the same Discord DM.
 - Fix remaining Telegram-shaped UX regressions such as `/relay disconnect` saying "Telegram tunnel" for non-Telegram/messenger-neutral disconnect flows, and require adapter-safe plain-text rendering so Discord does not accidentally bold/code-format status/help text.
+- Make Discord pairing closer to the Telegram pairing experience by treating Discord Application ID/clientId as setup-critical for QR invite/open links, showing a QR-driven Discord connect screen, using a short human-entered pairing PIN, and requiring Pi-side approval with an option to trust the messenger user for future pairings.
 
 ## Capabilities
 
@@ -35,6 +36,7 @@ Recent multi-channel refactoring left PiRelay with Telegram-shaped runtime, conf
 
 - Affected code: `extensions/telegram-tunnel/*` will be renamed/split into `extensions/relay/*` with structured subfolders such as `core/`, `broker/`, `runtime/`, `config/`, `state/`, `commands/`, `middleware/`, `adapters/<messenger>/`, `media/`, `notifications/`, `ui/`, and `testing/`; after migration, `extensions/telegram-tunnel/` is removed rather than kept as a compatibility shim folder.
 - Affected user APIs: `/telegram-tunnel ...` is removed with no action side effects; `/relay setup|connect|disconnect|status|doctor ...` is canonical. Existing users must migrate imports, docs, skills, scripts, and package references to PiRelay/relay names.
+- Affected Discord UX: `/relay setup discord` and `/relay doctor` guide users to configure Discord Application ID/clientId, invite/share a server with the bot, enable DMs, and use `/relay connect discord` QR + short PIN pairing. Short-code pairing requires local Pi confirmation unless the Discord user is explicitly allow-listed or locally trusted.
 - Affected config/state: default config/state directory migrates from `~/.pi/agent/telegram-tunnel` to a PiRelay namespace; legacy config and state are read for one-time migration and env fallback.
 - Affected docs/skills/package metadata: README, docs, tests, skill names, Pi package resource paths, and troubleshooting instructions require updates.
 - No new runtime dependencies are expected beyond messenger SDKs already justified by enabled adapters.

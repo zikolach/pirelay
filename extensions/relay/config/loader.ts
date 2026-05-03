@@ -59,8 +59,8 @@ function envSigningSecret(env: NodeJS.ProcessEnv, kind: string): string | undefi
   return undefined;
 }
 
-function envClientId(env: NodeJS.ProcessEnv, kind: string): string | undefined {
-  if (kind === "discord") return env.PI_RELAY_DISCORD_CLIENT_ID;
+function envApplicationId(env: NodeJS.ProcessEnv, kind: string): string | undefined {
+  if (kind === "discord") return env.PI_RELAY_DISCORD_APPLICATION_ID ?? env.PI_RELAY_DISCORD_CLIENT_ID;
   return undefined;
 }
 
@@ -126,7 +126,8 @@ function resolveMessengerInstance(input: {
     tokenEnv: config.tokenEnv,
     signingSecret,
     signingSecretEnv: config.signingSecretEnv,
-    clientId: config.clientId ?? envClientId(env, ref.kind),
+    applicationId: config.applicationId ?? config.clientId ?? envApplicationId(env, ref.kind),
+    clientId: config.clientId ?? config.applicationId ?? envApplicationId(env, ref.kind),
     eventMode: config.eventMode,
     workspaceId: config.workspaceId,
     allowUserIds: envAllowUserIds(env, ref.kind) ?? config.allowUserIds ?? [],

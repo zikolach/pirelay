@@ -20,6 +20,7 @@ interface ConfigFileShape extends RelayConfigFile {
   PI_RELAY_DISCORD_ENABLED?: string;
   PI_RELAY_DISCORD_BOT_TOKEN?: string;
   PI_RELAY_DISCORD_CLIENT_ID?: string;
+  PI_RELAY_DISCORD_APPLICATION_ID?: string;
   PI_RELAY_DISCORD_ALLOW_USER_IDS?: string;
   PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS?: string;
   PI_RELAY_DISCORD_ALLOW_GUILD_IDS?: string;
@@ -139,7 +140,8 @@ function resolveDiscordConfig(fileConfig: ConfigFileShape | undefined, defaultIm
   return {
     enabled,
     botToken,
-    clientId: process.env.PI_RELAY_DISCORD_CLIENT_ID ?? discordConfig?.clientId ?? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID ?? legacyConfig?.clientId,
+    applicationId: process.env.PI_RELAY_DISCORD_APPLICATION_ID ?? process.env.PI_RELAY_DISCORD_CLIENT_ID ?? discordConfig?.applicationId ?? discordConfig?.clientId ?? fileConfig?.PI_RELAY_DISCORD_APPLICATION_ID ?? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID ?? legacyConfig?.applicationId ?? legacyConfig?.clientId,
+    clientId: process.env.PI_RELAY_DISCORD_APPLICATION_ID ?? process.env.PI_RELAY_DISCORD_CLIENT_ID ?? discordConfig?.applicationId ?? discordConfig?.clientId ?? fileConfig?.PI_RELAY_DISCORD_APPLICATION_ID ?? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID ?? legacyConfig?.applicationId ?? legacyConfig?.clientId,
     allowUserIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS ?? fileConfig?.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? discordConfig?.allowUserIds ?? legacyConfig?.allowUserIds ?? [],
     allowGuildChannels: parseBoolean(
       process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS ?? configString(fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS),

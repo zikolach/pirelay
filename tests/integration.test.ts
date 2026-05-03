@@ -357,6 +357,89 @@ describe("PiRelay integration behavior", () => {
     expect(notifications.filter((entry) => entry.message.includes("Telegram bot ready"))).toHaveLength(1);
   });
 
+  it("opens interactive setup wizard when UI is available", async () => {
+    const config = await createRuntimeConfig("pi-setup-wizard-ui-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+    vi.stubEnv("PI_RELAY_DISCORD_APPLICATION_ID", "123456789012345678");
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("setup-wizard-ui");
+    const rendered: string[][] = [];
+    context.ui.custom = vi.fn(async (factory: (...args: any[]) => { render?: (width: number) => string[] } | undefined) => {
+      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, () => undefined);
+      rendered.push(screen?.render?.(100) ?? []);
+    });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "setup discord", context);
+
+    expect(context.ui.custom).toHaveBeenCalledTimes(1);
+    const text = rendered.flat().join("\n");
+    expect(text).toContain("Discord setup");
+    expect(text).toContain("Application ID");
+    expect(text).toContain("Readiness checks");
+    expect(text).not.toContain("Checklist");
+  });
+
+  it("uses plain setup guidance without UI", async () => {
+    const config = await createRuntimeConfig("pi-setup-wizard-headless-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("setup-wizard-headless");
+    context.hasUI = false;
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "setup discord", context);
+
+    expect(context.ui.custom).not.toHaveBeenCalled();
+    expect(notifications.at(-1)?.message).toContain("Discord relay setup");
+  });
+
+  it("falls back to plain setup guidance when setup wizard rendering fails", async () => {
+    const config = await createRuntimeConfig("pi-setup-wizard-fallback-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("setup-wizard-fallback");
+    context.ui.custom = vi.fn(async () => {
+      throw new Error("terminal broke");
+    });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "setup discord", context);
+
+    expect(notifications.some((entry) => entry.message.includes("Interactive setup wizard failed"))).toBe(true);
+    expect(notifications.at(-1)?.message).toContain("Setup checklist:");
+  });
+
+  it("does not open setup wizard for unsupported setup channels", async () => {
+    const config = await createRuntimeConfig("pi-setup-wizard-unsupported-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("setup-wizard-unsupported");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "setup matrix", context);
+
+    expect(context.ui.custom).not.toHaveBeenCalled();
+    expect(notifications.at(-1)?.message).toContain("Unsupported relay channel");
+  });
+
   it("asks before auto-migrating legacy relay config from doctor", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pirelay-doctor-migrate-"));
     tempDirs.push(dir);
@@ -517,6 +600,8 @@ describe("PiRelay integration behavior", () => {
     vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
     vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
     vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+    vi.stubEnv("PI_RELAY_DISCORD_APPLICATION_ID", "");
+    vi.stubEnv("PI_RELAY_DISCORD_CLIENT_ID", "");
 
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
@@ -563,10 +648,100 @@ describe("PiRelay integration behavior", () => {
     expect(fakeDiscordRuntime.registerRoute).toHaveBeenCalled();
     expect(fakeDiscordRuntime.start).toHaveBeenCalledTimes(1);
     expect(statuses).toContainEqual({ key: "discord-relay", value: "discord: ready" });
-    expect(notifications.at(-1)?.message).toContain("/start");
+    expect(notifications.at(-1)?.message).toContain("relay pair");
+    expect(notifications.at(-1)?.message).toContain("QR redirect unavailable");
     const store = new TunnelStateStore(config.stateDir);
     const pending = Object.values((await store.load()).pendingPairings)[0];
-    expect(pending).toMatchObject({ channel: "discord", sessionLabel: "docs" });
+    expect(pending).toMatchObject({ channel: "discord", sessionLabel: "docs", codeKind: "pin" });
+  });
+
+  it("renders a Discord QR pairing screen when applicationId is configured", async () => {
+    const config = await createRuntimeConfig("pi-discord-qr-connect-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+    vi.stubEnv("PI_RELAY_DISCORD_APPLICATION_ID", "client-123");
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const fakeDiscordRuntime = {
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: true })),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/discord/runtime.js", () => ({
+      getOrCreateDiscordRuntime: () => fakeDiscordRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("discord-qr-session");
+    const rendered: string[][] = [];
+    context.ui.custom = vi.fn(async (factory: (...args: any[]) => { render?: (width: number) => string[] } | undefined) => {
+      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, () => undefined);
+      rendered.push(screen?.render?.(100) ?? []);
+    });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "connect discord docs", context);
+
+    const screenText = rendered.flat().join("\n");
+    expect(screenText).toContain("Discord relay pairing");
+    expect(screenText).toContain("discord.com/users/client-123");
+    expect(screenText).not.toContain("discord.com/oauth2/authorize");
+    expect(screenText).toContain("relay pair");
+    expect(screenText).toContain("already share a server");
+    expect(notifications.at(-1)?.message).toContain("Discord pairing PIN ready");
+  });
+
+  it("lists and revokes locally trusted relay users", async () => {
+    const config = await createRuntimeConfig("pi-trusted-users-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const store = new TunnelStateStore(config.stateDir);
+    await store.trustRelayUser({ channel: "discord", instanceId: "default", userId: "u1", displayName: "zikolach", trustedBySessionLabel: "docs" });
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("trusted-users-session");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "trusted", context);
+    expect(notifications.at(-1)?.message).toContain("zikolach");
+
+    await pi.runCommand("relay", "untrust discord u1", context);
+    expect(notifications.at(-1)?.message).toContain("Revoked local relay trust");
+    expect(await store.getTrustedRelayUser("discord", "u1")).toBeUndefined();
   });
 
   it("connects Discord pairing through the extension and routes relay status plus prompts to Pi", async () => {
@@ -575,6 +750,8 @@ describe("PiRelay integration behavior", () => {
     vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
     vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
     vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+    vi.stubEnv("PI_RELAY_DISCORD_APPLICATION_ID", "");
+    vi.stubEnv("PI_RELAY_DISCORD_CLIENT_ID", "");
 
     const store = new TunnelStateStore(config.stateDir);
     await store.upsertChannelBinding({
@@ -645,6 +822,8 @@ describe("PiRelay integration behavior", () => {
     vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
     vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
     vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", `discord-token-${config.stateDir.split("/").pop()}`);
+    vi.stubEnv("PI_RELAY_DISCORD_APPLICATION_ID", "");
+    vi.stubEnv("PI_RELAY_DISCORD_CLIENT_ID", "");
 
     const store = new TunnelStateStore(config.stateDir);
     const registeredRoutes = new Map<string, SessionRoute>();

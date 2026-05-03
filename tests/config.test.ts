@@ -112,4 +112,21 @@ describe("telegram tunnel config", () => {
     expect(config.discord).toMatchObject({ enabled: true, botToken: "discord-env-token", clientId: "client-canonical", maxTextChars: 1500 });
     expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-file", signingSecret: "slack-env-secret", eventMode: "webhook", workspaceId: "T-canonical" });
   });
+
+  it("accepts Discord applicationId as the preferred Application ID field", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      messengers: {
+        telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" } },
+        discord: { default: { enabled: true, botToken: "discord-file", applicationId: "app-123" } },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.discord).toMatchObject({ applicationId: "app-123", clientId: "app-123" });
+  });
 });

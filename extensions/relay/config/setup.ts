@@ -18,7 +18,7 @@ export interface RelaySetupFacts {
 }
 
 export interface RelayLocalCommandIntent {
-  subcommand?: "setup" | "connect" | "disconnect" | "status" | "doctor";
+  subcommand?: "setup" | "connect" | "disconnect" | "status" | "doctor" | "trusted" | "untrust";
   channel?: RelaySetupChannel;
   messengerRef?: string;
   args: string;
@@ -43,7 +43,7 @@ export function completeRelayLocalCommand(prefix: string, options: { compatibili
   const parts = prefix.trim().split(/\s+/).filter(Boolean);
   const subcommands = options.compatibilityCommand
     ? ["setup", "connect", "disconnect", "status"]
-    : ["setup", "connect", "doctor", "disconnect", "status"];
+    : ["setup", "connect", "doctor", "disconnect", "status", "trusted", "untrust"];
 
   if (parts.length === 0) return subcommands;
   if (parts.length === 1 && !endsWithSpace) {
@@ -69,7 +69,7 @@ export function parseRelayLocalCommand(args: string, options: { compatibilityCom
   const subcommand = normalizeSubcommand(parts[0]);
   if (!subcommand) return { args: args.trim() };
   const rest = parts.slice(1);
-  if (subcommand === "doctor" || subcommand === "disconnect" || subcommand === "status") {
+  if (subcommand === "doctor" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
     return { subcommand, args: rest.join(" ") };
   }
 
@@ -167,7 +167,7 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Discord relay setup",
         "Create a Discord application/bot: https://discord.com/developers/docs/quick-start/getting-started",
         "Copy the bot token from the Bot settings, then set discord.botToken or PI_RELAY_DISCORD_BOT_TOKEN.",
-        "Copy the Application ID from General Information, then set discord.clientId or PI_RELAY_DISCORD_CLIENT_ID to print a bot invite URL.",
+        "Copy the Application ID from General Information, then set discord.applicationId (or clientId) or PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) to print a bot invite URL.",
         "Developer Portal > Bot: enable Message Content Intent so DM text prompts are delivered to PiRelay.",
         "Invite scope: bot applications.commands. Use permissions=0 for DM-first operation.",
         "Keep Discord DM-first; set allowUserIds before enabling live control.",
@@ -202,7 +202,7 @@ export function relayPairingInstruction(channel: RelaySetupChannel, code: string
     case "telegram":
       return "Use /relay connect telegram to generate a Telegram deep link.";
     case "discord":
-      return `Send /start ${code} to the Discord bot in a DM before the pairing expires.`;
+      return `Send relay pair ${code} to the Discord bot in a DM before the pairing expires. /start ${code} is also accepted.`;
     case "slack":
       return `Send /pirelay ${code} to the Slack app in a DM before the pairing expires.`;
   }
@@ -241,7 +241,7 @@ function channelDoctorChecklist(config: TelegramTunnelConfig, channel: RelaySetu
       if (!discord?.enabled && !discord?.botToken) return [];
       return [
         discord?.botToken ? "  ✅ Discord bot token configured for live Gateway login" : "  ❌ Discord bot token missing",
-        discord?.clientId ? "  ✅ Discord Application ID configured for invite URL" : "  ℹ️ Optional Discord Application ID not configured; invite URL will not be shown",
+        discord?.applicationId || discord?.clientId ? "  ✅ Discord Application ID configured for QR invite/open link" : "  ⚠️ Discord Application ID missing; QR redirect is unavailable",
         "  ℹ️ Developer Portal: enable Message Content Intent for plain DM prompts and invite with bot + applications.commands scopes",
         discord?.allowUserIds && discord.allowUserIds.length > 0 ? "  ✅ Discord user allow-list configured" : "  ⚠️ Discord user allow-list not configured",
         discord?.allowGuildChannels
@@ -296,6 +296,9 @@ function discordDiagnostics(config: DiscordRelayConfig | undefined): RelaySetupF
   }
   const findings: RelaySetupFinding[] = [];
   if (!config.botToken) findings.push({ channel: "discord", severity: "error", code: "discord-token-missing", message: "Discord is enabled but discord.botToken or PI_RELAY_DISCORD_BOT_TOKEN is missing." });
+  const applicationId = config.applicationId ?? config.clientId;
+  if (!applicationId) findings.push({ channel: "discord", severity: "warning", code: "discord-application-id-missing", message: "Discord Application ID is missing; manual PIN pairing may work, but /relay connect discord cannot show the QR invite/open redirect." });
+  if (applicationId && !isDiscordApplicationId(applicationId)) findings.push({ channel: "discord", severity: "warning", code: "discord-application-id-format", message: "Discord Application ID should be the numeric snowflake from Developer Portal > General Information. Do not use the bot token, public key, or client secret." });
   if ((config.allowUserIds ?? []).length === 0) findings.push({ channel: "discord", severity: "warning", code: "discord-allow-list-empty", message: "Discord allowUserIds is empty; restrict Discord users before enabling live control." });
   if (config.allowGuildChannels && (config.allowGuildIds ?? []).length === 0) {
     findings.push({ channel: "discord", severity: "error", code: "discord-guild-ids-missing", message: "Discord guild-channel control is enabled but allowGuildIds is empty. Add explicit guild ids or disable guild channels." });
@@ -345,15 +348,17 @@ function discordGuidance(config: DiscordRelayConfig | undefined): string {
     `Status: ${config?.enabled && config.botToken ? "enabled" : "disabled or incomplete"}`,
     "Create a Discord application/bot: https://discord.com/developers/docs/quick-start/getting-started",
     "Copy the bot token from the Bot settings, then set discord.botToken or PI_RELAY_DISCORD_BOT_TOKEN.",
+    "Copy Application ID from General Information, then set discord.applicationId (or clientId) or PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) so /relay connect discord can show a QR invite/open link.",
     "Developer Portal > Bot: enable Message Content Intent so DM text prompts are delivered to PiRelay.",
     "Invite scope: bot applications.commands with permissions=0 for DM-first operation.",
     "Keep Discord DM-first; set allowUserIds before enabling live control.",
     "After inviting the bot to a server, DM it from the member list or server profile. If DM is unavailable, check Discord privacy settings for server member DMs.",
   ];
-  if (config?.clientId) {
-    lines.push(`Invite URL: ${discordInviteUrl(config.clientId)}`);
+  const applicationId = config?.applicationId ?? config?.clientId;
+  if (applicationId) {
+    lines.push(`Invite URL: ${discordInviteUrl(applicationId)}`);
   } else {
-    lines.push("Optional: set discord.clientId or PI_RELAY_DISCORD_CLIENT_ID from the Application ID to print a bot invite URL.");
+    lines.push("Set discord.applicationId (or clientId) or PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) from General Information > Application ID to enable the QR invite/open link.");
   }
   if (config?.allowGuildChannels) lines.push("Guild-channel control requires explicit discord.allowGuildIds.");
   lines.push("Run /relay connect discord [name], then send the displayed /start code to the bot in a DM.");
@@ -374,9 +379,18 @@ function slackGuidance(config: SlackRelayConfig | undefined): string {
   ].join("\n");
 }
 
-function discordInviteUrl(clientId: string): string {
-  const params = new URLSearchParams({ client_id: clientId, scope: "bot applications.commands", permissions: "0" });
+export function discordInviteUrl(applicationId: string): string {
+  const normalizedApplicationId = String(applicationId).trim();
+  const params = new URLSearchParams({ client_id: normalizedApplicationId, scope: "bot applications.commands", permissions: "0", integration_type: "0" });
   return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+export function discordBotChatUrl(applicationId: string): string {
+  return `https://discord.com/users/${encodeURIComponent(String(applicationId).trim())}`;
+}
+
+function isDiscordApplicationId(value: string): boolean {
+  return /^\d{15,25}$/.test(String(value).trim());
 }
 
 function channelStatus(config: TelegramTunnelConfig, channel: RelaySetupChannel): string {
@@ -386,7 +400,7 @@ function channelStatus(config: TelegramTunnelConfig, channel: RelaySetupChannel)
 }
 
 function normalizeSubcommand(value: string | undefined): RelayLocalCommandIntent["subcommand"] | undefined {
-  if (value === "setup" || value === "connect" || value === "disconnect" || value === "status" || value === "doctor") return value;
+  if (value === "setup" || value === "connect" || value === "disconnect" || value === "status" || value === "doctor" || value === "trusted" || value === "untrust") return value;
   return undefined;
 }
 

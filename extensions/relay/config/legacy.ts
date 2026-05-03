@@ -16,6 +16,7 @@ const legacyTopLevelKeys = new Set([
   "PI_RELAY_DISCORD_ENABLED",
   "PI_RELAY_DISCORD_BOT_TOKEN",
   "PI_RELAY_DISCORD_CLIENT_ID",
+  "PI_RELAY_DISCORD_APPLICATION_ID",
   "PI_RELAY_DISCORD_ALLOW_USER_IDS",
   "PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS",
   "PI_RELAY_DISCORD_ALLOW_GUILD_IDS",
@@ -131,6 +132,7 @@ export function canonicalizeRelayConfigFile(input: RelayConfigFile): RelayConfig
     || input.PI_RELAY_DISCORD_ENABLED
     || input.PI_RELAY_DISCORD_BOT_TOKEN
     || input.PI_RELAY_DISCORD_CLIENT_ID
+    || input.PI_RELAY_DISCORD_APPLICATION_ID
     || input.PI_RELAY_DISCORD_ALLOW_USER_IDS
     || input.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS
     || input.PI_RELAY_DISCORD_ALLOW_GUILD_IDS
@@ -141,7 +143,8 @@ export function canonicalizeRelayConfigFile(input: RelayConfigFile): RelayConfig
       ...messengers.discord?.default,
       enabled: messengers.discord?.default?.enabled ?? parseBoolean(input.PI_RELAY_DISCORD_ENABLED) ?? legacy?.enabled,
       botToken: messengers.discord?.default?.botToken ?? legacy?.botToken ?? input.PI_RELAY_DISCORD_BOT_TOKEN,
-      clientId: messengers.discord?.default?.clientId ?? legacy?.clientId ?? input.PI_RELAY_DISCORD_CLIENT_ID,
+      applicationId: messengers.discord?.default?.applicationId ?? messengers.discord?.default?.clientId ?? legacy?.applicationId ?? legacy?.clientId ?? input.PI_RELAY_DISCORD_APPLICATION_ID ?? input.PI_RELAY_DISCORD_CLIENT_ID,
+      clientId: messengers.discord?.default?.clientId ?? messengers.discord?.default?.applicationId ?? legacy?.clientId ?? legacy?.applicationId ?? input.PI_RELAY_DISCORD_CLIENT_ID ?? input.PI_RELAY_DISCORD_APPLICATION_ID,
       allowUserIds: messengers.discord?.default?.allowUserIds ?? parseStringList(input.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? legacy?.allowUserIds,
       allowGuildChannels: messengers.discord?.default?.allowGuildChannels ?? parseBoolean(input.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS) ?? legacy?.allowGuildChannels,
       allowGuildIds: messengers.discord?.default?.allowGuildIds ?? parseStringList(input.PI_RELAY_DISCORD_ALLOW_GUILD_IDS) ?? legacy?.allowGuildIds,

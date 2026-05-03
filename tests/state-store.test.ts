@@ -12,6 +12,12 @@ async function createStore(): Promise<TunnelStateStore> {
   return new TunnelStateStore(dir);
 }
 
+async function createStoreWithDir(): Promise<{ store: TunnelStateStore; dir: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "pi-telegram-tunnel-"));
+  tempDirs.push(dir);
+  return { store: new TunnelStateStore(dir), dir };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -64,5 +70,40 @@ describe("TunnelStateStore", () => {
 
     const consumed = await store.consumePendingPairing(nonce);
     expect(consumed).toBeUndefined();
+  });
+
+  it("serializes concurrent state updates so messenger bindings are not clobbered", async () => {
+    const { store, dir } = await createStoreWithDir();
+    const sameDirStore = new TunnelStateStore(dir);
+
+    await Promise.all([
+      store.update(async (data) => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        data.bindings["session-1"] = {
+          sessionKey: "session-1",
+          sessionId: "session-1",
+          sessionLabel: "Docs",
+          chatId: 123,
+          userId: 123,
+          boundAt: new Date().toISOString(),
+          lastSeenAt: new Date().toISOString(),
+          status: "active",
+        };
+      }),
+      sameDirStore.upsertChannelBinding({
+        channel: "discord",
+        conversationId: "dm1",
+        userId: "u1",
+        sessionKey: "session-1",
+        sessionId: "session-1",
+        sessionLabel: "Docs",
+        boundAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+      }),
+    ]);
+
+    const data = await store.load();
+    expect(Object.keys(data.bindings)).toEqual(["session-1"]);
+    expect(Object.values(data.channelBindings)).toContainEqual(expect.objectContaining({ channel: "discord", userId: "u1", sessionKey: "session-1" }));
   });
 });

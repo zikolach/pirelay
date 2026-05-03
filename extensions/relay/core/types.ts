@@ -18,6 +18,7 @@ export interface ProgressActivityEntry {
 export interface DiscordRelayConfig {
   enabled?: boolean;
   botToken?: string;
+  applicationId?: string;
   clientId?: string;
   allowUserIds?: string[];
   allowGuildChannels?: boolean;
@@ -115,6 +116,7 @@ export interface BindingEntryData {
 
 export interface PendingPairingRecord {
   nonceHash: string;
+  codeKind?: "nonce" | "pin";
   channel?: "telegram" | "discord" | "slack";
   sessionKey: string;
   sessionId: string;
@@ -144,12 +146,23 @@ export interface ChannelActiveSelectionRecord {
   updatedAt: string;
 }
 
+export interface TrustedRelayUserRecord {
+  channel: ChannelBinding["channel"];
+  instanceId: string;
+  userId: string;
+  displayName?: string;
+  username?: string;
+  trustedAt: string;
+  trustedBySessionLabel?: string;
+}
+
 export interface TunnelStoreData {
   setup?: SetupCache;
   pendingPairings: Record<string, PendingPairingRecord>;
   bindings: Record<string, PersistedBindingRecord>;
   channelBindings: Record<string, ChannelPersistedBindingRecord>;
   activeChannelSelections: Record<string, ChannelActiveSelectionRecord>;
+  trustedRelayUsers: Record<string, TrustedRelayUserRecord>;
 }
 
 export interface ParsedTelegramCommand {
@@ -228,10 +241,16 @@ export interface SessionRouteActions {
   getImageByPath(relativePath: string): Promise<ImageFileLoadResult>;
   appendAudit(message: string): void;
   persistBinding(binding: TelegramBindingMetadata | null, revoked?: boolean): void;
-  promptLocalConfirmation(identity: TelegramUserSummary): Promise<boolean>;
+  promptLocalConfirmation(identity: RelayPairingIdentity): Promise<PairingApprovalDecision | boolean>;
   abort(): void;
   compact(): Promise<void>;
 }
+
+export type PairingApprovalDecision = "allow" | "trust" | "deny";
+
+export type RelayPairingIdentity =
+  | (TelegramUserSummary & { channel?: "telegram"; userId?: string; displayName?: string; conversationKind?: string; instanceId?: string })
+  | { channel: ChannelBinding["channel"]; userId: string; username?: string; displayName?: string; firstName?: string; lastName?: string; conversationKind?: string; instanceId?: string };
 
 export interface SessionRoute {
   sessionKey: string;
