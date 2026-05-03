@@ -1,0 +1,74 @@
+{
+  "setup": {
+    "botId": 123456789,
+    "botUsername": "pirelay_test_bot",
+    "botDisplayName": "PiRelay Test Bot",
+    "validatedAt": "2026-05-01T12:00:00.000Z"
+  },
+  "pendingPairings": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+      "nonceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "channel": "telegram",
+      "sessionKey": "session-active:/tmp/session-active.json",
+      "sessionId": "session-active",
+      "sessionFile": "/tmp/session-active.json",
+      "sessionLabel": "Active legacy session",
+      "createdAt": "2026-05-01T12:00:00.000Z",
+      "expiresAt": "2026-05-01T12:05:00.000Z"
+    },
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+      "nonceHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "channel": "discord",
+      "sessionKey": "session-wrong-channel:/tmp/session-wrong-channel.json",
+      "sessionId": "session-wrong-channel",
+      "sessionFile": "/tmp/session-wrong-channel.json",
+      "sessionLabel": "Wrong channel pending pairing",
+      "createdAt": "2026-05-01T12:00:00.000Z",
+      "expiresAt": "2026-05-01T12:05:00.000Z"
+    }
+  },
+  "bindings": {
+    "session-active:/tmp/session-active.json": {
+      "sessionKey": "session-active:/tmp/session-active.json",
+      "sessionId": "session-active",
+      "sessionFile": "/tmp/session-active.json",
+      "sessionLabel": "Active legacy session",
+      "chatId": 111222333,
+      "userId": 1001,
+      "username": "legacy_user",
+      "firstName": "Legacy",
+      "lastName": "User",
+      "boundAt": "2026-05-01T12:10:00.000Z",
+      "lastSeenAt": "2026-05-01T12:20:00.000Z",
+      "alias": "docs",
+      "progressMode": "normal",
+      "status": "active"
+    },
+    "session-revoked:/tmp/session-revoked.json": {
+      "sessionKey": "session-revoked:/tmp/session-revoked.json",
+      "sessionId": "session-revoked",
+      "sessionFile": "/tmp/session-revoked.json",
+      "sessionLabel": "Revoked legacy session",
+      "chatId": 444555666,
+      "userId": 1002,
+      "boundAt": "2026-05-01T12:10:00.000Z",
+      "lastSeenAt": "2026-05-01T12:30:00.000Z",
+      "revokedAt": "2026-05-01T12:30:00.000Z",
+      "status": "revoked"
+    }
+  },
+  "channelBindings": {
+    "discord:session-discord:/tmp/session-discord.json": {
+      "channel": "discord",
+      "conversationId": "dm-2001",
+      "userId": "2001",
+      "sessionKey": "session-discord:/tmp/session-discord.json",
+      "sessionId": "session-discord",
+      "sessionFile": "/tmp/session-discord.json",
+      "sessionLabel": "Discord legacy channel binding",
+      "boundAt": "2026-05-01T12:15:00.000Z",
+      "lastSeenAt": "2026-05-01T12:25:00.000Z",
+      "status": "active"
+    }
+  }
+}

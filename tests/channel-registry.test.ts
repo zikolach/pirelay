@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { channelBindingStorageKey, createEnabledChannelAdapters, enabledChannelKinds } from "../extensions/telegram-tunnel/channel-registry.js";
-import type { TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+import { channelBindingStorageKey, createEnabledChannelAdapters, enabledChannelKinds } from "../extensions/relay/broker/channel-registry.js";
+import type { TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const config: TelegramTunnelConfig = {
   botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",

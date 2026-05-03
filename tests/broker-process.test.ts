@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +30,7 @@ describe("telegram broker process", () => {
     }));
 
     const socketPath = join(stateDir, "broker.sock");
-    const brokerPath = fileURLToPath(new URL("../extensions/telegram-tunnel/broker.js", import.meta.url));
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
     const child = spawn(process.execPath, [brokerPath], {
       env: {
         ...process.env,
@@ -46,6 +46,78 @@ describe("telegram broker process", () => {
     children.push(child);
 
     await expect(waitForSocket(socketPath, child)).resolves.toBeUndefined();
+  });
+
+  it("preserves non-Telegram channel bindings when updating broker state", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    const discordBinding = {
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "du1",
+      sessionKey: "discord-session:memory",
+      sessionId: "discord-session",
+      sessionLabel: "Discord Docs",
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(statePath, JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: {},
+      channelBindings: { "discord:discord-session:memory": discordBinding },
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    await sendBrokerRequest(socketPath, {
+      type: "request",
+      requestId: "preserve-channel-bindings",
+      action: "registerRoute",
+      clientId: "test-client",
+      route: {
+        sessionKey: "telegram-session:memory",
+        sessionId: "telegram-session",
+        sessionLabel: "Telegram Docs",
+        online: true,
+        busy: false,
+        notification: {},
+        binding: {
+          sessionKey: "telegram-session:memory",
+          sessionId: "telegram-session",
+          sessionLabel: "Telegram Docs",
+          chatId: 123,
+          userId: 123,
+          boundAt: new Date(0).toISOString(),
+          lastSeenAt: new Date(0).toISOString(),
+        },
+      },
+    });
+
+    const updated = JSON.parse(await readFile(statePath, "utf8")) as { channelBindings?: Record<string, unknown> };
+    expect(updated.channelBindings?.["discord:discord-session:memory"]).toEqual(discordBinding);
   });
 });
 
@@ -151,5 +223,27 @@ function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams
     };
 
     tryConnect();
+  });
+}
+
+function sendBrokerRequest(socketPath: string, payload: Record<string, unknown>): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.once("connect", () => {
+      socket.write(`${JSON.stringify(payload)}\n`);
+    });
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex < 0) return;
+      const line = buffer.slice(0, newlineIndex).trim();
+      socket.end();
+      const response = JSON.parse(line) as { ok?: boolean; result?: unknown; error?: string };
+      if (response.ok) resolve(response.result);
+      else reject(new Error(response.error ?? "Broker request failed."));
+    });
+    socket.once("error", reject);
   });
 }

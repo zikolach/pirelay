@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { relayRouteStateForRoute, statusSnapshotForRoute } from "../extensions/telegram-tunnel/relay-core.js";
-import type { SessionRoute } from "../extensions/telegram-tunnel/types.js";
+import { relayRouteStateForRoute, statusSnapshotForRoute } from "../extensions/relay/core/relay-core.js";
+import type { SessionRoute } from "../extensions/relay/core/types.js";
 
 function route(): SessionRoute {
   return {

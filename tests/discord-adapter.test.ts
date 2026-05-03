@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DiscordChannelAdapter, discordCapabilities, discordMessageToChannelEvent, discordPairingCommand, isDiscordGuildMessage, isDiscordIdentityAllowed } from "../extensions/telegram-tunnel/discord-adapter.js";
+import { DiscordChannelAdapter, discordCapabilities, discordMessageToChannelEvent, discordPairingCommand, escapeDiscordPlainText, isDiscordGuildMessage, isDiscordIdentityAllowed } from "../extensions/relay/adapters/discord/adapter.js";
 
 const config = {
   enabled: true,
@@ -70,6 +70,25 @@ describe("DiscordChannelAdapter", () => {
     expect(sendTyping).toHaveBeenCalledWith("dm1");
     expect(answerInteraction).toHaveBeenCalledWith("interaction-1", undefined, { text: "Done", alert: undefined });
     expect(downloadFile).toHaveBeenCalledWith("https://cdn.test/file");
+  });
+
+  it("escapes Discord markdown in outbound plain text", async () => {
+    expect(escapeDiscordPlainText("## **Status** `code` @everyone openai_codex"))
+      .toBe("\\#\\# \\*\\*Status\\*\\* \\`code\\` @\u200beveryone openai\\_codex");
+
+    const sendMessage = vi.fn(async (_payload: unknown) => undefined);
+    const sendFile = vi.fn(async (_payload: unknown) => undefined);
+    const answerInteraction = vi.fn(async (_interactionId: string, _interactionToken: string | undefined, _options?: unknown) => undefined);
+    const adapter = new DiscordChannelAdapter(config, { sendMessage, sendFile, sendTyping: async () => undefined, answerInteraction });
+    const address = { channel: "discord", conversationId: "dm1", userId: "u1" } as const;
+
+    await adapter.sendText(address, "### H\nUse **bold**");
+    await adapter.sendDocument(address, { fileName: "out.txt", mimeType: "text/plain", data: new Uint8Array([1]), byteSize: 1 }, { caption: "**caption**" });
+    await adapter.answerAction("interaction-1", { text: "**Done**" });
+
+    expect(sendMessage).toHaveBeenCalledWith({ channelId: "dm1", content: "\\#\\#\\# H\nUse \\*\\*bold\\*\\*" });
+    expect(sendFile).toHaveBeenCalledWith(expect.objectContaining({ caption: "\\*\\*caption\\*\\*" }));
+    expect(answerInteraction).toHaveBeenCalledWith("interaction-1", undefined, { text: "\\*\\*Done\\*\\*", alert: undefined });
   });
 
   it("rejects bot/webhook messages and only applies image MIME allow-list to images", () => {

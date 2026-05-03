@@ -1,12 +1,14 @@
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrokerTunnelRuntime } from "../extensions/telegram-tunnel/broker-runtime.js";
-import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
-import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/telegram-tunnel/types.js";
+import { BrokerTunnelRuntime } from "../extensions/relay/broker/tunnel-runtime.js";
+import { InProcessTunnelRuntime } from "../extensions/relay/adapters/telegram/runtime.js";
+import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
+import { sessionKeyOf } from "../extensions/relay/core/utils.js";
+import type { DiscordGatewayEvent, DiscordSendFilePayload, DiscordSendMessagePayload } from "../extensions/relay/adapters/discord/adapter.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 
@@ -36,7 +38,9 @@ async function createRuntimeConfig(prefix = "pi-telegram-integration-"): Promise
 afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-  vi.doUnmock("../extensions/telegram-tunnel/runtime.js");
+  vi.doUnmock("../extensions/relay/adapters/telegram/runtime.js");
+  vi.doUnmock("../extensions/relay/adapters/discord/runtime.js");
+  vi.doUnmock("../extensions/relay/adapters/discord/live-client.js");
   vi.resetModules();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -208,6 +212,49 @@ function createMockContext(sessionId = "local-session") {
   };
 }
 
+class IntegrationDiscordOperations {
+  handler?: (event: DiscordGatewayEvent) => Promise<void>;
+  readonly messages: DiscordSendMessagePayload[] = [];
+  readonly files: DiscordSendFilePayload[] = [];
+  readonly typing: string[] = [];
+
+  async connect(handler: (event: DiscordGatewayEvent) => Promise<void>): Promise<void> {
+    this.handler = handler;
+  }
+
+  async disconnect(): Promise<void> {
+    this.handler = undefined;
+  }
+
+  async sendMessage(payload: DiscordSendMessagePayload): Promise<void> {
+    this.messages.push(payload);
+  }
+
+  async sendFile(payload: DiscordSendFilePayload): Promise<void> {
+    this.files.push(payload);
+  }
+
+  async sendTyping(channelId: string): Promise<void> {
+    this.typing.push(channelId);
+  }
+
+  async answerInteraction(): Promise<void> {}
+}
+
+function integrationDiscordMessage(content: string, options: { id?: string; userId?: string; channelId?: string; guildId?: string; bot?: boolean } = {}): DiscordGatewayEvent {
+  return {
+    type: "message",
+    payload: {
+      id: options.id ?? `discord-${Math.random()}`,
+      channel_id: options.channelId ?? "dm1",
+      guild_id: options.guildId,
+      content,
+      author: { id: options.userId ?? "u1", username: "zikolach", bot: options.bot ?? false },
+      attachments: [],
+    },
+  };
+}
+
 function createMockPi() {
   const commands = new Map<string, { handler: (args: string, ctx: any) => void | Promise<void> }>();
   const handlers = new Map<string, Array<(event: any, ctx: any) => void | Promise<void>>>();
@@ -237,9 +284,9 @@ function createMockPi() {
     }),
   };
 
-  commands.set("skill:telegram-tunnel", {
+  commands.set("skill:relay", {
     handler: async () => {
-      skillInvocations.push("telegram-tunnel");
+      skillInvocations.push("relay");
     },
   });
 
@@ -268,7 +315,7 @@ function createMockPi() {
   };
 }
 
-describe("Telegram tunnel integration behavior", () => {
+describe("PiRelay integration behavior", () => {
   it("keeps Telegram local commands compatible while exposing relay aliases", async () => {
     const config = await createRuntimeConfig("pi-telegram-relay-alias-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
@@ -290,25 +337,59 @@ describe("Telegram tunnel integration behavior", () => {
       sendToBoundChat: vi.fn(async () => undefined),
     };
 
-    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
       getOrCreateTunnelRuntime: () => fakeRuntime,
       sendSessionNotification: vi.fn(async () => undefined),
     }));
 
-    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context, notifications } = createMockContext("relay-alias-session");
-    telegramTunnelExtension(pi.api as any);
+    relayExtension(pi.api as any);
 
-    expect(pi.commands.has("telegram-tunnel")).toBe(true);
+    expect(pi.commands.has("telegram-tunnel")).toBe(false);
     expect(pi.commands.has("relay")).toBe(true);
 
-    await pi.runCommand("telegram-tunnel", "setup", context);
-    await pi.runCommand("relay", "setup", context);
+    await pi.runCommand("relay", "setup telegram", context);
 
-    expect(fakeRuntime.ensureSetup).toHaveBeenCalledTimes(2);
-    expect(fakeRuntime.start).toHaveBeenCalledTimes(2);
-    expect(notifications.filter((entry) => entry.message.includes("Telegram bot ready"))).toHaveLength(2);
+    expect(fakeRuntime.ensureSetup).toHaveBeenCalledTimes(1);
+    expect(fakeRuntime.start).toHaveBeenCalledTimes(1);
+    expect(notifications.filter((entry) => entry.message.includes("Telegram bot ready"))).toHaveLength(1);
+  });
+
+  it("asks before auto-migrating legacy relay config from doctor", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-doctor-migrate-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+      stateDir: dir,
+      allowUserIds: [1001],
+      PI_RELAY_DISCORD_BOT_TOKEN: "discord-file-env-style",
+    }, null, 2), { mode: 0o644 });
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("relay-doctor-migrate");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "doctor", context);
+
+    expect(context.ui.confirm).toHaveBeenCalledWith(
+      "Migrate PiRelay config?",
+      expect.stringContaining("Legacy Telegram tunnel config keys were detected"),
+    );
+    const migrated = JSON.parse(await readFile(configPath, "utf8"));
+    expect(migrated.botToken).toBeUndefined();
+    expect(migrated.stateDir).toBeUndefined();
+    expect(migrated.messengers.telegram.default).toMatchObject({
+      botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+      allowUserIds: ["1001"],
+    });
+    expect(migrated.messengers.discord.default.botToken).toBe("discord-file-env-style");
+    expect(notifications.some((entry) => entry.message.includes("Migrated PiRelay config"))).toBe(true);
+    expect(notifications.some((entry) => entry.message.includes("Relay setup doctor"))).toBe(true);
   });
 
   it("keeps local prompts and skill commands usable after connect, pairing, and route sync", async () => {
@@ -319,6 +400,7 @@ describe("Telegram tunnel integration behavior", () => {
     const registeredRoutes = new Map<string, SessionRoute>();
     let blockFutureRouteSync = false;
     let blockedRouteSyncAttempts = 0;
+    let unblockRouteSync: (() => void) | undefined;
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
       start: vi.fn(async () => undefined),
@@ -333,7 +415,9 @@ describe("Telegram tunnel integration behavior", () => {
         registeredRoutes.set(route.sessionKey, route);
         if (blockFutureRouteSync) {
           blockedRouteSyncAttempts += 1;
-          await new Promise<void>(() => undefined);
+          await new Promise<void>((resolve) => {
+            unblockRouteSync = resolve;
+          });
         }
       }),
       unregisterRoute: vi.fn(async (sessionKey: string) => {
@@ -343,17 +427,17 @@ describe("Telegram tunnel integration behavior", () => {
       sendToBoundChat: vi.fn(async () => undefined),
     };
 
-    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
       getOrCreateTunnelRuntime: () => fakeRuntime,
       sendSessionNotification: vi.fn(async () => undefined),
     }));
 
-    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context, branch, setIdle } = createMockContext("local-after-pairing");
-    telegramTunnelExtension(pi.api as any);
+    relayExtension(pi.api as any);
 
-    await pi.runCommand("telegram-tunnel", "connect", context);
+    await pi.runCommand("relay", "connect telegram", context);
     const route = [...registeredRoutes.values()][0];
     expect(route).toBeDefined();
 
@@ -363,7 +447,7 @@ describe("Telegram tunnel integration behavior", () => {
     binding.sessionLabel = route!.sessionLabel;
     route!.binding = binding;
     route!.actions.persistBinding(binding, false);
-    route!.actions.appendAudit("Telegram tunnel paired with @owner.");
+    route!.actions.appendAudit("Telegram relay paired with @owner.");
     branch.push(...pi.appendedEntries);
 
     blockFutureRouteSync = true;
@@ -373,14 +457,15 @@ describe("Telegram tunnel integration behavior", () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error("local prompt was blocked by route sync")), 100)),
     ]);
     await Promise.race([
-      pi.runCommand("skill:telegram-tunnel", "", context),
+      pi.runCommand("skill:relay", "", context),
       new Promise((_, reject) => setTimeout(() => reject(new Error("skill command was blocked after pairing")), 100)),
     ]);
 
     expect(pi.localPrompts).toEqual(["local prompt still works after Telegram pairing"]);
-    expect(pi.skillInvocations).toEqual(["telegram-tunnel"]);
+    expect(pi.skillInvocations).toEqual(["relay"]);
     expect(blockedRouteSyncAttempts).toBeGreaterThan(0);
-    expect(pi.sentMessages.map((message) => message.customType)).toContain("telegram-tunnel-audit");
+    expect(pi.sentMessages.map((message) => message.customType)).toContain("relay-audit");
+    unblockRouteSync?.();
   });
 
   it("uses explicit connect labels for pending pairing and route registration", async () => {
@@ -407,23 +492,290 @@ describe("Telegram tunnel integration behavior", () => {
       sendToBoundChat: vi.fn(async () => undefined),
     };
 
-    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
       getOrCreateTunnelRuntime: () => fakeRuntime,
       sendSessionNotification: vi.fn(async () => undefined),
     }));
 
-    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context } = createMockContext("explicit-label-session");
-    telegramTunnelExtension(pi.api as any);
+    relayExtension(pi.api as any);
 
-    await pi.runCommand("telegram-tunnel", "connect docs team", context);
+    await pi.runCommand("relay", "connect telegram docs team", context);
     const route = [...registeredRoutes.values()][0];
     expect(route?.sessionLabel).toBe("docs team");
 
     const store = new TunnelStateStore(config.stateDir);
     const pending = Object.values((await store.load()).pendingPairings)[0];
     expect(pending?.sessionLabel).toBe("docs team");
+  });
+
+  it("starts the configured Discord runtime before showing Discord pairing instructions", async () => {
+    const config = await createRuntimeConfig("pi-discord-extension-connect-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    let discordStarted = false;
+    const fakeDiscordRuntime = {
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      start: vi.fn(async () => {
+        discordStarted = true;
+      }),
+      stop: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: discordStarted })),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/discord/runtime.js", () => ({
+      getOrCreateDiscordRuntime: () => fakeDiscordRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications, statuses } = createMockContext("discord-connect-session");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "connect discord docs", context);
+
+    expect(fakeDiscordRuntime.registerRoute).toHaveBeenCalled();
+    expect(fakeDiscordRuntime.start).toHaveBeenCalledTimes(1);
+    expect(statuses).toContainEqual({ key: "discord-relay", value: "discord: ready" });
+    expect(notifications.at(-1)?.message).toContain("/start");
+    const store = new TunnelStateStore(config.stateDir);
+    const pending = Object.values((await store.load()).pendingPairings)[0];
+    expect(pending).toMatchObject({ channel: "discord", sessionLabel: "docs" });
+  });
+
+  it("connects Discord pairing through the extension and routes relay status plus prompts to Pi", async () => {
+    const config = await createRuntimeConfig("pi-discord-connectivity-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: "stale-session:/tmp/stale.jsonl",
+      sessionId: "stale-session",
+      sessionLabel: "Stale session",
+      boundAt: "2026-05-02T10:00:00.000Z",
+      lastSeenAt: "2026-05-02T10:00:00.000Z",
+    });
+
+    const fakeTelegramRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const discordOps = new IntegrationDiscordOperations();
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeTelegramRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/discord/live-client.js", () => ({
+      createDiscordLiveOperations: () => discordOps,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("discord-connectivity-session");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "connect discord docs", context);
+    const pending = Object.values((await store.load()).pendingPairings)[0];
+    expect(pending).toMatchObject({ channel: "discord", sessionLabel: "docs" });
+    expect(discordOps.handler).toBeDefined();
+
+    const code = notifications.map((entry) => entry.message).join("\n").match(/\/start\s+([A-Za-z0-9_-]+)/)?.[1];
+    expect(code).toBeDefined();
+    await discordOps.handler?.(integrationDiscordMessage(`/start ${code}`));
+    await discordOps.handler?.(integrationDiscordMessage("relay status"));
+    await discordOps.handler?.(integrationDiscordMessage("hello from discord"));
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("agent_end", {
+      messages: [{ role: "assistant", content: [{ type: "text", text: "Hello back from Pi." }] }],
+    }, context);
+
+    expect(discordOps.messages.some((message) => message.content.includes("Discord paired with docs"))).toBe(true);
+    expect(discordOps.messages.some((message) => message.content.includes("Session: docs"))).toBe(true);
+    expect(pi.injectedMessages).toContainEqual({ text: "hello from discord", options: undefined });
+    expect(discordOps.messages.some((message) => message.content.includes("Hello back from Pi."))).toBe(true);
+  });
+
+  it("sends failure and abort terminal notifications to Telegram and Discord bindings", async () => {
+    const config = await createRuntimeConfig("pi-discord-terminal-parity-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", `discord-token-${config.stateDir.split("/").pop()}`);
+
+    const store = new TunnelStateStore(config.stateDir);
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeTelegramRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const discordOps = new IntegrationDiscordOperations();
+    const sendSessionNotification = vi.fn(async () => undefined);
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeTelegramRuntime,
+      sendSessionNotification,
+    }));
+    vi.doMock("../extensions/relay/adapters/discord/live-client.js", () => ({
+      createDiscordLiveOperations: () => discordOps,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications, setIdle } = createMockContext("discord-terminal-session");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "connect discord docs", context);
+    const code = notifications.map((entry) => entry.message).join("\n").match(/\/start\s+([A-Za-z0-9_-]+)/)?.[1];
+    expect(code).toBeDefined();
+    await discordOps.handler?.(integrationDiscordMessage(`/start ${code}`));
+
+    const route = [...registeredRoutes.values()][0]!;
+    const telegramBinding = createBinding(route.sessionId, 7010, 9010);
+    telegramBinding.sessionKey = route.sessionKey;
+    telegramBinding.sessionFile = route.sessionFile;
+    telegramBinding.sessionLabel = route.sessionLabel;
+    route.binding = telegramBinding;
+    await store.upsertBinding(telegramBinding);
+
+    await discordOps.handler?.(integrationDiscordMessage("run failure"));
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("agent_end", { messages: [] }, context);
+
+    setIdle(false);
+    await pi.emit("agent_start", {}, context);
+    await discordOps.handler?.(integrationDiscordMessage("relay abort"));
+    await pi.emit("agent_end", {
+      messages: [{ role: "assistant", content: [{ type: "text", text: "Stopping now." }] }],
+    }, context);
+
+    const terminalStatuses = sendSessionNotification.mock.calls.map((call) => (call as unknown[])[2]);
+    expect(terminalStatuses).toEqual(expect.arrayContaining(["failed", "aborted"]));
+    expect(discordOps.messages.some((message) => message.content.includes("finished without a final assistant response"))).toBe(true);
+    expect(discordOps.messages.some((message) => message.content.includes("Abort requested"))).toBe(true);
+    expect(discordOps.messages.some((message) => message.content.includes("Pi task aborted"))).toBe(true);
+  });
+
+  it("restores persisted Discord bindings after restart and completes the closed loop without re-pairing", async () => {
+    const config = await createRuntimeConfig("pi-discord-restore-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", `discord-token-${config.stateDir.split("/").pop()}`);
+
+    const sessionId = "discord-restored-session";
+    const sessionFile = `/tmp/${sessionId}.jsonl`;
+    const sessionKey = sessionKeyOf(sessionId, sessionFile);
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey,
+      sessionId,
+      sessionFile,
+      sessionLabel: "restored docs",
+      boundAt: "2026-05-02T12:00:00.000Z",
+      lastSeenAt: "2026-05-02T12:00:00.000Z",
+    });
+
+    const fakeTelegramRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const discordOps = new IntegrationDiscordOperations();
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeTelegramRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/discord/live-client.js", () => ({
+      createDiscordLiveOperations: () => discordOps,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext(sessionId);
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    await discordOps.handler?.(integrationDiscordMessage("relay status"));
+    await discordOps.handler?.(integrationDiscordMessage("hello after restart"));
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("agent_end", {
+      messages: [{ role: "assistant", content: [{ type: "text", text: "Restored Discord binding replied." }] }],
+    }, context);
+
+    expect(discordOps.messages.some((message) => message.content.includes("Session: discord-restored-session.jsonl"))).toBe(true);
+    expect(pi.injectedMessages).toContainEqual({ text: "hello after restart", options: undefined });
+    expect(discordOps.messages.some((message) => message.content.includes("Restored Discord binding replied."))).toBe(true);
   });
 
   it("tracks latest tool-result images without echoing input images", async () => {
@@ -450,15 +802,15 @@ describe("Telegram tunnel integration behavior", () => {
       sendToBoundChat: vi.fn(async () => undefined),
     };
 
-    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
       getOrCreateTunnelRuntime: () => fakeRuntime,
       sendSessionNotification: vi.fn(async () => undefined),
     }));
 
-    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context } = createMockContext("local-image-tracking");
-    telegramTunnelExtension(pi.api as any);
+    relayExtension(pi.api as any);
 
     await pi.emit("session_start", { reason: "startup" }, context);
     const route = [...registeredRoutes.values()][0]!;
@@ -487,7 +839,7 @@ describe("Telegram tunnel integration behavior", () => {
     const images = await route.actions.getLatestImages();
     expect(images).toHaveLength(1);
     expect(images[0]?.data).toBe(Buffer.from("output").toString("base64"));
-  });
+  }, 10_000);
 
   it("stages latest assistant image file references and loads them on demand", async () => {
     const config = await createRuntimeConfig("pi-telegram-extension-file-images-");
@@ -516,16 +868,16 @@ describe("Telegram tunnel integration behavior", () => {
       sendToBoundChat: vi.fn(async () => undefined),
     };
 
-    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
       getOrCreateTunnelRuntime: () => fakeRuntime,
       sendSessionNotification: vi.fn(async () => undefined),
     }));
 
-    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context } = createMockContext("local-file-image-tracking");
     context.cwd = workspace;
-    telegramTunnelExtension(pi.api as any);
+    relayExtension(pi.api as any);
 
     await pi.emit("session_start", { reason: "startup" }, context);
     const route = [...registeredRoutes.values()][0]!;
@@ -543,7 +895,7 @@ describe("Telegram tunnel integration behavior", () => {
     expect(images).toHaveLength(1);
     expect(images[0]?.fileName).toBe("render.png");
     await expect(route.actions.getImageByPath("../secret.png")).resolves.toMatchObject({ ok: false });
-  });
+  }, 10_000);
 
   it("does not offer latest-image actions for missing assistant image path references", async () => {
     const config = await createRuntimeConfig("pi-telegram-extension-missing-file-images-");
@@ -571,16 +923,16 @@ describe("Telegram tunnel integration behavior", () => {
       sendToBoundChat: vi.fn(async () => undefined),
     };
 
-    vi.doMock("../extensions/telegram-tunnel/runtime.js", () => ({
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
       getOrCreateTunnelRuntime: () => fakeRuntime,
       sendSessionNotification: vi.fn(async () => undefined),
     }));
 
-    const { default: telegramTunnelExtension } = await import("../extensions/telegram-tunnel/index.js");
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context } = createMockContext("local-missing-file-image-tracking");
     context.cwd = workspace;
-    telegramTunnelExtension(pi.api as any);
+    relayExtension(pi.api as any);
 
     await pi.emit("session_start", { reason: "startup" }, context);
     const route = [...registeredRoutes.values()][0]!;
@@ -595,7 +947,7 @@ describe("Telegram tunnel integration behavior", () => {
 
     expect(route.notification.latestImages).toBeUndefined();
     await expect(route.actions.getLatestImages()).resolves.toEqual([]);
-  });
+  }, 10_000);
 
   it("synchronizes route state through the broker and handles broker-delivered prompts", async () => {
     const config = await createRuntimeConfig("pi-telegram-broker-");

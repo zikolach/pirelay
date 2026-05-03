@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buttonsFallbackText, canSendFile, channelTextChunks, requiresTextChunking, supportsButtons, type ChannelCapabilities } from "../extensions/telegram-tunnel/channel-adapter.js";
+import { buttonsFallbackText, canSendFile, channelTextChunks, requiresTextChunking, supportsButtons, type ChannelCapabilities } from "../extensions/relay/core/channel-adapter.js";
 
 const baseCapabilities: ChannelCapabilities = {
   inlineButtons: true,

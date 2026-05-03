@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { completeDiscordPairing, completeSlackPairing, discordPairingInstruction, slackPairingInstruction } from "../extensions/telegram-tunnel/channel-pairing.js";
-import type { ChannelInboundMessage } from "../extensions/telegram-tunnel/channel-adapter.js";
-import type { PendingPairingRecord } from "../extensions/telegram-tunnel/types.js";
+import { completeDiscordPairing, completeSlackPairing, discordPairingInstruction, slackPairingInstruction } from "../extensions/relay/adapters/channel-pairing.js";
+import type { ChannelInboundMessage } from "../extensions/relay/core/channel-adapter.js";
+import type { PendingPairingRecord } from "../extensions/relay/core/types.js";
 
 const pairing: PendingPairingRecord = {
   nonceHash: "hash",

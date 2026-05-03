@@ -1,128 +1,105 @@
 # Configuration
 
-## Sources
+PiRelay uses a namespaced configuration file at:
 
-The tunnel loads configuration from:
+```text
+~/.pi/agent/pirelay/config.json
+```
 
-1. environment variables
-2. `~/.pi/agent/telegram-tunnel/config.json`
-3. overrides from `PI_TELEGRAM_TUNNEL_CONFIG` or `PI_TELEGRAM_TUNNEL_STATE_DIR`
+Environment variables can still provide secrets and deployment overrides. Legacy Telegram tunnel env vars and state/config paths are accepted only as migration fallbacks.
 
-Environment variables win over file values. For compatibility with `TELEGRAM_BOT_TOKEN` in the config file, top-level env-style Discord/Slack keys such as `PI_RELAY_DISCORD_BOT_TOKEN` and `PI_RELAY_SLACK_SIGNING_SECRET` are also accepted in the JSON config file, although the namespaced `discord.*` / `slack.*` form is easier to read.
-
-## Keys
+## Canonical schema
 
 ```json
 {
-  "botToken": "<telegram-bot-token>",
-  "TELEGRAM_BOT_TOKEN": "<telegram-bot-token>",
-  "stateDir": "~/.pi/agent/telegram-tunnel",
-  "pairingExpiryMs": 300000,
-  "busyDeliveryMode": "followUp",
-  "allowUserIds": [123456789],
-  "summaryMode": "deterministic",
-  "maxTelegramMessageChars": 3900,
-  "sendRetryCount": 3,
-  "sendRetryBaseMs": 800,
-  "pollingTimeoutSeconds": 20,
-  "maxInboundImageBytes": 10485760,
-  "maxOutboundImageBytes": 10485760,
-  "maxLatestImages": 4,
-  "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"],
-  "progressMode": "normal",
-  "progressIntervalMs": 30000,
-  "verboseProgressIntervalMs": 10000,
-  "recentActivityLimit": 10,
-  "maxProgressMessageChars": 700,
-  "discord": {
-    "enabled": false,
-    "botToken": "<discord-bot-token>",
-    "clientId": "123456789012345678",
-    "allowUserIds": ["123456789012345678"],
-    "allowGuildChannels": false,
-    "allowGuildIds": [],
-    "maxTextChars": 2000,
-    "maxFileBytes": 8388608,
+  "relay": {
+    "machineId": "laptop",
+    "stateDir": "~/.pi/agent/pirelay",
+    "brokerGroup": "personal",
+    "brokerPeers": []
+  },
+  "defaults": {
+    "pairingExpiryMs": 300000,
+    "busyDeliveryMode": "followUp",
+    "maxTextChars": 3900,
+    "maxInboundImageBytes": 10485760,
+    "maxOutboundImageBytes": 10485760,
     "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"]
   },
-  "slack": {
-    "enabled": false,
-    "botToken": "xoxb-...",
-    "signingSecret": "<slack-signing-secret>",
-    "eventMode": "socket",
-    "workspaceId": "T012345",
-    "allowUserIds": ["U012345"],
-    "allowChannelMessages": false,
-    "maxTextChars": 3000,
-    "maxFileBytes": 10485760,
-    "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"]
-  },
-  "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
+  "messengers": {
+    "telegram": {
+      "default": {
+        "enabled": true,
+        "tokenEnv": "TELEGRAM_BOT_TOKEN",
+        "allowUserIds": ["123456789"],
+        "ingressPolicy": { "kind": "owner", "machineId": "laptop" }
+      }
+    },
+    "discord": {
+      "personal": {
+        "enabled": true,
+        "tokenEnv": "PI_RELAY_DISCORD_BOT_TOKEN",
+        "clientId": "123456789012345678",
+        "allowUserIds": ["123456789012345678"]
+      }
+    },
+    "slack": {
+      "work": {
+        "enabled": false,
+        "tokenEnv": "PI_RELAY_SLACK_BOT_TOKEN",
+        "signingSecretEnv": "PI_RELAY_SLACK_SIGNING_SECRET",
+        "workspaceId": "T012345"
+      }
+    }
+  }
 }
 ```
 
-## Messenger credential setup links
+Messenger instances are addressed as `<kind>:<instance>`, for example `telegram:default`, `discord:personal`, or `slack:work`. The `:default` suffix can be omitted in commands.
 
-- Telegram: create a bot with BotFather (<https://core.telegram.org/bots/features#botfather>), then set `TELEGRAM_BOT_TOKEN` or `botToken`.
-- Discord: create an application/bot in the Discord Developer Portal (<https://discord.com/developers/docs/quick-start/getting-started>), copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, and copy the Application ID to `PI_RELAY_DISCORD_CLIENT_ID` or `discord.clientId` if you want `/relay setup discord` to print an invite URL.
-- Slack: create a Slack app (<https://api.slack.com/apps>), install it to the workspace, copy the Bot User OAuth Token to `PI_RELAY_SLACK_BOT_TOKEN` or `slack.botToken`, and copy the Signing Secret from **Basic Information > App Credentials** to `PI_RELAY_SLACK_SIGNING_SECRET` or `slack.signingSecret`.
+## Commands
 
-## Environment variables
+```text
+/relay doctor
+/relay setup telegram
+/relay setup discord:personal
+/relay connect telegram docs
+/relay connect discord:personal api
+```
+
+`/telegram-tunnel ...` is removed. Use `/relay ...`.
+
+## Environment fallback
+
+Preferred secret style is `tokenEnv` / `signingSecretEnv` in the namespaced config. PiRelay also recognizes these existing variables as fallbacks:
 
 - `TELEGRAM_BOT_TOKEN`
-- `PI_TELEGRAM_TUNNEL_CONFIG`
-- `PI_TELEGRAM_TUNNEL_STATE_DIR`
-- `PI_TELEGRAM_TUNNEL_PAIRING_EXPIRY_MS`
-- `PI_TELEGRAM_TUNNEL_BUSY_MODE`
-- `PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS`
-- `PI_TELEGRAM_TUNNEL_SUMMARY_MODE`
-- `PI_TELEGRAM_TUNNEL_MAX_MESSAGE_CHARS`
-- `PI_TELEGRAM_TUNNEL_SEND_RETRY_COUNT`
-- `PI_TELEGRAM_TUNNEL_SEND_RETRY_BASE_MS`
-- `PI_TELEGRAM_TUNNEL_POLLING_TIMEOUT_SECONDS`
-- `PI_TELEGRAM_TUNNEL_MAX_INBOUND_IMAGE_BYTES`
-- `PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES`
-- `PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES`
-- `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES`
-- `PI_TELEGRAM_TUNNEL_PROGRESS_MODE`
-- `PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS`
-- `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
-- `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
-- `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
-- `PI_RELAY_DISCORD_ENABLED`
 - `PI_RELAY_DISCORD_BOT_TOKEN`
 - `PI_RELAY_DISCORD_CLIENT_ID`
-- `PI_RELAY_DISCORD_ALLOW_USER_IDS`
-- `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
-- `PI_RELAY_DISCORD_ALLOW_GUILD_IDS`
-- `PI_RELAY_DISCORD_MAX_TEXT_CHARS`
-- `PI_RELAY_DISCORD_MAX_FILE_BYTES`
-- `PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES`
-- `PI_RELAY_SLACK_ENABLED`
 - `PI_RELAY_SLACK_BOT_TOKEN`
 - `PI_RELAY_SLACK_SIGNING_SECRET`
-- `PI_RELAY_SLACK_EVENT_MODE` (`socket` or `webhook`)
-- `PI_RELAY_SLACK_WORKSPACE_ID`
-- `PI_RELAY_SLACK_ALLOW_USER_IDS`
-- `PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES`
-- `PI_RELAY_SLACK_MAX_TEXT_CHARS`
-- `PI_RELAY_SLACK_MAX_FILE_BYTES`
-- `PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES`
+- legacy `PI_TELEGRAM_TUNNEL_*` variables during migration
 
-`PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS`, Discord/Slack allow-user lists, and image MIME-type variables are comma-separated lists. `progressMode` can be `quiet`, `normal`, `verbose`, or `completionOnly`; Telegram users can override it per binding with `/progress`.
+Diagnostics never print token or signing-secret values.
 
-Discord and Slack configuration is intentionally namespaced so tokens/signing secrets are not confused with Telegram credentials. The current package includes DM-first adapter foundations with mockable platform clients; Telegram remains the default live runtime until a platform client is wired by an integration.
+## Multi-machine shared bot setup
 
-Use `/relay doctor` to check enabled/disabled channel status, missing credentials, unsafe allow-list/guild/channel modes, and config/state permissions. Use `/relay setup telegram`, `/relay setup discord`, or `/relay setup slack` for platform-specific next steps. Doctor/setup output names missing credential categories but never prints token or signing-secret values.
+Run one PiRelay broker per machine. If the same bot/account is configured on multiple machines, configure one ingress owner for that messenger instance and broker peers/federation for the other machines. PiRelay blocks ambiguous duplicate polling instead of letting multiple brokers race on the same bot token.
 
-Discord guild-channel control requires `discord.allowGuildChannels: true` plus explicit `discord.allowGuildIds`. Slack `eventMode: "socket"` is recommended for local Pi use; `eventMode: "webhook"` requires raw-body Slack signature verification with `slack.signingSecret`.
+## Migration from legacy Telegram tunnel config/state
 
-## Troubleshooting
+Legacy files under `~/.pi/agent/telegram-tunnel` are read as migration input. Active non-secret Telegram bindings migrate to `messengers.telegram.default`; active pairing nonces are not copied, so create a fresh pairing with `/relay connect telegram` when needed.
 
-- invalid token format: check `TELEGRAM_BOT_TOKEN`
-- no Telegram response: run `/telegram-tunnel setup` and confirm the bot username resolves
-- too many progress messages: use `/progress quiet` for the paired session or increase `progressIntervalMs`
-- image prompt rejected: switch Pi to a model with image input support, reduce file size, or use one of the configured MIME types
-- `/images` finds no image after Pi saved a file: make sure the latest Pi reply mentioned the relative workspace path, or use `/send-image <relative-path>`; absolute, hidden, traversal, symlink-outside-workspace, oversized, and non-image files are rejected
-- pairing expires: rerun `/telegram-tunnel connect`
-- permission warning: `chmod 600 ~/.pi/agent/telegram-tunnel/config.json`
+When `/relay doctor` detects legacy top-level config keys, it asks whether to migrate the config file to the namespaced schema, creates a timestamped backup, and writes the migrated file with `0600` permissions. If the canonical PiRelay config is missing but `~/.pi/agent/telegram-tunnel/config.json` exists, doctor can copy that legacy config to `~/.pi/agent/pirelay/config.json` after confirmation.
+
+After migration, keep secrets in environment variables or namespaced `messengers.*.*.tokenEnv` references, and protect config/state files with:
+
+```bash
+chmod 600 ~/.pi/agent/pirelay/config.json
+```
+
+## Platform setup links
+
+- Telegram BotFather: <https://core.telegram.org/bots/features#botfather>
+- Discord Developer Portal: <https://discord.com/developers/docs/quick-start/getting-started>
+- Slack app setup: <https://api.slack.com/apps>

@@ -2,8 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TelegramApiClient, toTelegramReplyMarkup } from "../extensions/telegram-tunnel/telegram-api.js";
-import type { TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+import { TelegramApiClient, toTelegramReplyMarkup } from "../extensions/relay/adapters/telegram/api.js";
+import type { TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadTelegramTunnelConfig } from "../extensions/telegram-tunnel/config.js";
+import { loadTelegramTunnelConfig } from "../extensions/relay/config/tunnel-config.js";
 
 const tempDirs: string[] = [];
 
@@ -83,5 +83,33 @@ describe("telegram tunnel config", () => {
     expect(config.discord).toMatchObject({ enabled: true, botToken: "discord-env", clientId: "client-env", allowUserIds: ["u1", "u2"] });
     expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-env", signingSecret: "secret-env", workspaceId: "T-env", eventMode: "webhook" });
     expect(config.botToken).toBe("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
+  });
+
+  it("loads canonical namespaced config through the runtime compatibility loader", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      relay: { stateDir: dir },
+      defaults: { pairingExpiryMs: 60000, busyDeliveryMode: "steer", maxTextChars: 2000 },
+      messengers: {
+        telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", allowUserIds: ["1001"] } },
+        discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", clientId: "client-canonical", limits: { maxTextChars: 1500 } } },
+        slack: { default: { botToken: "slack-file", signingSecretEnv: "SLACK_SECRET", eventMode: "webhook", workspaceId: "T-canonical" } },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+    vi.stubEnv("DISCORD_TOKEN", "discord-env-token");
+    vi.stubEnv("SLACK_SECRET", "slack-env-secret");
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.stateDir).toBe(dir);
+    expect(config.busyDeliveryMode).toBe("steer");
+    expect(config.pairingExpiryMs).toBe(60000);
+    expect(config.maxTelegramMessageChars).toBe(2000);
+    expect(config.allowUserIds).toEqual([1001]);
+    expect(config.discord).toMatchObject({ enabled: true, botToken: "discord-env-token", clientId: "client-canonical", maxTextChars: 1500 });
+    expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-file", signingSecret: "slack-env-secret", eventMode: "webhook", workspaceId: "T-canonical" });
   });
 });

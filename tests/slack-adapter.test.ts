@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SlackChannelAdapter, buildSlackActionId, isSlackIdentityAllowed, parseSlackWebhookBody, slackCapabilities, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackPairingCommand, verifySlackSignature } from "../extensions/telegram-tunnel/slack-adapter.js";
+import { SlackChannelAdapter, buildSlackActionId, isSlackIdentityAllowed, parseSlackWebhookBody, slackCapabilities, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackPairingCommand, verifySlackSignature } from "../extensions/relay/adapters/slack/adapter.js";
 import { createHmac } from "node:crypto";
 
 const config = {

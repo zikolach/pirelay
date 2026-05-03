@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTelegramChatText } from "../extensions/telegram-tunnel/telegram-format.js";
+import { formatTelegramChatText } from "../extensions/relay/adapters/telegram/formatting.js";
 
 describe("Telegram chat formatter", () => {
   it("converts Markdown tables to aligned code-style blocks", () => {

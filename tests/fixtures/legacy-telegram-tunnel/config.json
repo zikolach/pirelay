@@ -1,0 +1,20 @@
+{
+  "botToken": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+  "stateDir": "~/.pi/agent/telegram-tunnel",
+  "pairingExpiryMs": 300000,
+  "busyDeliveryMode": "followUp",
+  "allowUserIds": [1001, 1002],
+  "summaryMode": "deterministic",
+  "maxTelegramMessageChars": 3900,
+  "discord": {
+    "enabled": true,
+    "botToken": "discord-test-token",
+    "clientId": "123456789012345678",
+    "allowUserIds": ["2001"]
+  },
+  "PI_RELAY_SLACK_BOT_TOKEN": "xoxb-legacy-json-token",
+  "slack": {
+    "enabled": true,
+    "signingSecret": "legacy-signing-secret"
+  }
+}

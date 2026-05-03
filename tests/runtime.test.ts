@@ -2,12 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
-import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/telegram-tunnel/telegram-actions.js";
-import { createProgressActivity } from "../extensions/telegram-tunnel/progress.js";
-import { InProcessTunnelRuntime } from "../extensions/telegram-tunnel/runtime.js";
-import { TunnelStateStore } from "../extensions/telegram-tunnel/state-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
+import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
+import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
+import { InProcessTunnelRuntime } from "../extensions/relay/adapters/telegram/runtime.js";
+import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 
@@ -810,6 +810,35 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
   });
 
+  it("sends Telegram failure and aborted terminal notifications", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-terminal:/tmp/session-terminal.jsonl",
+      sessionId: "session-terminal",
+      sessionFile: "/tmp/session-terminal.jsonl",
+      sessionLabel: "session-terminal.jsonl",
+      chatId: 1012,
+      userId: 32,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.startedAt = Date.now() - 2_000;
+    route.notification.lastFailure = "The agent finished without a final assistant response.";
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await runtime.notifyTurnCompleted(route, "failed");
+    await runtime.notifyTurnCompleted(route, "aborted");
+
+    expect(sent[0]).toContain("Pi task failed");
+    expect(sent[0]).toContain("without a final assistant response");
+    expect(sent[1]).toContain("Pi task aborted");
+  });
+
   it("treats terminal notification state as idle even if stale busy context remains", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -1225,6 +1254,68 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(first.deliveries).toHaveLength(0);
     expect(second.deliveries).toEqual([{ text: "hello selected session", deliverAs: undefined }]);
+  });
+
+  it("supports text /use, /to, and /forget session controls in-process", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-text-use-1:/tmp/session-text-use-1.jsonl",
+      sessionId: "session-text-use-1",
+      sessionFile: "/tmp/session-text-use-1.jsonl",
+      sessionLabel: "first.jsonl",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-text-use-2:/tmp/session-text-use-2.jsonl",
+      sessionId: "session-text-use-2",
+      sessionFile: "/tmp/session-text-use-2.jsonl",
+      sessionLabel: "second.jsonl",
+      alias: "phone",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const offlineBinding: TelegramBindingMetadata = {
+      sessionKey: "session-text-use-offline:/tmp/session-text-use-offline.jsonl",
+      sessionId: "session-text-use-offline",
+      sessionFile: "/tmp/session-text-use-offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true);
+    const second = createRoute(secondBinding, true);
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    await store.upsertBinding(offlineBinding);
+    (runtime as any).routes.set(first.route.sessionKey, first.route);
+    (runtime as any).routes.set(second.route.sessionKey, second.route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({ updateId: 40, messageId: 40, text: "/use phone", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 41, messageId: 41, text: "hello active", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 42, messageId: 42, text: "/to first.jsonl one shot", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 43, messageId: 43, text: "/forget offline.jsonl", chat: { id: 1011, type: "private" }, user: { id: 31, username: "owner" } });
+
+    expect(second.deliveries).toContainEqual({ text: "hello active", deliverAs: undefined });
+    expect(first.deliveries).toContainEqual({ text: "one shot", deliverAs: undefined });
+    expect(sent.join("\n")).toContain("Forgot offline session offline.jsonl");
+    expect((await store.getBindingBySessionKey(offlineBinding.sessionKey))?.status).toBe("revoked");
   });
 
   it("includes persisted offline sessions in the in-process session list", async () => {

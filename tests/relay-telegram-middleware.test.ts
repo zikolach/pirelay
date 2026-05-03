@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createRelayPipeline } from "../extensions/telegram-tunnel/relay-middleware.js";
-import { commandIntentFromPipeline, createTelegramRelayEvent, telegramActionFromPipelineResult, telegramActionMiddleware, telegramCommandMiddleware, telegramMediaMiddleware } from "../extensions/telegram-tunnel/relay-telegram-middleware.js";
-import type { TelegramInboundCallback, TelegramInboundMessage } from "../extensions/telegram-tunnel/types.js";
+import { createRelayPipeline } from "../extensions/relay/middleware/pipeline.js";
+import { commandIntentFromPipeline, createTelegramRelayEvent, telegramActionFromPipelineResult, telegramActionMiddleware, telegramCommandMiddleware, telegramMediaMiddleware } from "../extensions/relay/adapters/telegram/middleware.js";
+import type { TelegramInboundCallback, TelegramInboundMessage } from "../extensions/relay/core/types.js";
 
 const message: TelegramInboundMessage = {
   kind: "message",

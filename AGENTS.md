@@ -25,16 +25,15 @@ For docs-only changes, run the smallest relevant validation and mention what was
 
 ## Architecture boundaries
 
-Preserve the current split:
+Preserve the current split under `extensions/relay/`:
 
-- `extensions/telegram-tunnel/index.ts`: Pi extension lifecycle, local commands, session event handling.
-- `extensions/telegram-tunnel/runtime.ts`: in-process Telegram runtime.
-- `extensions/telegram-tunnel/broker-runtime.ts`: broker client/runtime bridge.
-- `extensions/telegram-tunnel/broker.js`: detached broker process and Telegram polling/routing.
-- `extensions/telegram-tunnel/types.ts`: shared data contracts.
-- `extensions/telegram-tunnel/utils.ts` and focused helper modules: pure/shared logic.
+- `extensions/relay/runtime/extension-runtime.ts`: Pi extension lifecycle, local commands, session event handling.
+- `extensions/relay/adapters/<messenger>/`: platform-specific Telegram, Discord, Slack, and future adapter/runtime edges.
+- `extensions/relay/broker/`: broker supervision, process entrypoints, route registry, ownership, federation, and broker runtime bridge.
+- `extensions/relay/core/`: shared data contracts and pure domain helpers.
+- `extensions/relay/config/`, `state/`, `commands/`, `middleware/`, `media/`, `notifications/`, `formatting/`, and `ui/`: focused shared relay modules.
 
-When behavior must be shared between `runtime.ts` and `broker.js`, prefer extracting a helper module instead of duplicating logic.
+The legacy Telegram-tunnel extension path has been removed; do not add compatibility shims or new imports there. When behavior must be shared between adapter runtimes and broker code, prefer extracting a helper module under `extensions/relay/` instead of duplicating logic.
 
 ## Safety and state rules
 
@@ -42,7 +41,7 @@ When behavior must be shared between `runtime.ts` and `broker.js`, prefer extrac
 - Pairing links must remain single-use and expiring.
 - State schema changes must be backward-compatible with existing persisted bindings and pending pairings.
 - Never store bot tokens, secrets, hidden prompts, tool internals, or full transcripts in persisted tunnel state.
-- Keep existing `/telegram-tunnel` commands, paths, and config compatibility unless an OpenSpec change explicitly says otherwise.
+- `/relay` is canonical. Do not restore `/telegram-tunnel` commands, paths, skills, or import shims; keep only explicit legacy config/state migration inputs where required.
 
 ## Testing expectations
 

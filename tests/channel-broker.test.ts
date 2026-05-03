@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ChannelRelayBroker } from "../extensions/telegram-tunnel/channel-broker.js";
-import type { ChannelAdapter, ChannelInboundHandler } from "../extensions/telegram-tunnel/channel-adapter.js";
+import { ChannelRelayBroker } from "../extensions/relay/broker/channel-broker.js";
+import type { ChannelAdapter, ChannelInboundHandler } from "../extensions/relay/core/channel-adapter.js";
 
 function adapter(id: "telegram" | "discord" | "slack"): ChannelAdapter {
   return {

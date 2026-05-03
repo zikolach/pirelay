@@ -13,7 +13,7 @@ It pairs a private Telegram chat to the exact Pi session you are using, then let
 - answer structured follow-up questions from Telegram
 - manage multiple paired Pi sessions through one bot
 
-The npm package is `pirelay`. The Pi command family remains `/telegram-tunnel ...` for compatibility with the existing extension internals.
+The npm package is `pirelay`. The canonical Pi command family is `/relay ...`; the old `/telegram-tunnel ...` namespace has been removed.
 
 ## What PiRelay does
 
@@ -22,7 +22,7 @@ PiRelay connects Telegram to a live Pi session without replacing the Pi terminal
 Typical flow:
 
 1. start working in Pi locally
-2. run `/telegram-tunnel connect`
+2. run `/relay connect telegram`
 3. scan the QR code with Telegram
 4. press **Start** in the bot chat
 5. approve the pairing locally if prompted
@@ -33,18 +33,18 @@ That means Telegram becomes a **mobile companion** for the current session, not 
 ## Features
 
 ### Pairing and session routing
-- pairs a **private Telegram chat** to the **current Pi session**
-- uses expiring, single-use Telegram deep links
+- pairs a private Telegram or Discord DM with the current Pi session
+- uses expiring, single-use pairing payloads
 - restores non-secret binding metadata when the session resumes
 - supports multiple concurrently registered Pi sessions through a local broker
-- exposes `/sessions` and `/use <session>` when more than one session is paired to the same chat
+- exposes `/sessions`/`/use <session>` on Telegram and `relay sessions`/`relay use <session>` on Discord when more than one session is paired to the same chat
 
 ### Remote prompting and control
-- plain Telegram text becomes a Pi prompt when the session is idle
+- plain Telegram or Discord DM text becomes a Pi prompt when the session is idle
 - Telegram photos and supported image documents become Pi image prompts when the current model supports image input
-- while Pi is busy, Telegram text or image prompts are queued as a follow-up by default
-- `/steer <text>` and `/followup <text>` provide explicit delivery control, including when used as image captions
-- `/abort`, `/compact`, `/pause`, `/resume`, `/status`, `/summary`, `/full`, and `/disconnect` are supported directly from Telegram
+- while Pi is busy, Telegram or Discord text/image prompts are queued as a follow-up by default
+- `/steer <text>` and `/followup <text>` on Telegram, or `relay steer <text>` and `relay followup <text>` on Discord, provide explicit delivery control
+- Telegram supports slash-style remote commands such as `/status`; Discord's reliable DM command form is `relay status`, `relay full`, `relay sessions`, etc. Bare Discord `/status`-style aliases are best-effort because Discord may route slash commands to another app.
 
 ### Telegram-native activity feedback
 - accepted remote prompts trigger Telegram `typing...`
@@ -139,13 +139,13 @@ Alternative local config file:
 Default config path:
 
 ```text
-~/.pi/agent/telegram-tunnel/config.json
+~/.pi/agent/pirelay/config.json
 ```
 
 Recommended permissions:
 
 ```bash
-chmod 600 ~/.pi/agent/telegram-tunnel/config.json
+chmod 600 ~/.pi/agent/pirelay/config.json
 ```
 
 ### 3. Validate setup
@@ -156,7 +156,7 @@ In Pi:
 /relay setup telegram
 ```
 
-`/relay doctor` checks channel readiness and config/state permissions without printing secrets. `/relay setup telegram` (or `/telegram-tunnel setup`) checks the token and caches the bot identity.
+`/relay doctor` checks channel readiness and config/state permissions without printing secrets. `/relay setup telegram` checks the token and caches the bot identity.
 
 ### 4. Pair the current session
 In Pi:
@@ -165,7 +165,7 @@ In Pi:
 /relay connect telegram
 ```
 
-The compatible `/telegram-tunnel connect` command works the same way.
+`/relay connect telegram` is the canonical pairing command.
 
 Then:
 
@@ -181,49 +181,49 @@ PiRelay adds the following Pi-side commands:
 
 | Command | Purpose |
 |---|---|
-| `/telegram-tunnel setup` | validate the bot token and cache the bot username |
-| `/telegram-tunnel connect [name]` | create a QR/deep-link pairing flow for the current session with an optional display label |
-| `/telegram-tunnel disconnect` | revoke the active binding |
-| `/telegram-tunnel status` | show local tunnel status |
+| `/relay setup telegram` | validate the bot token and cache the bot username |
+| `/relay connect telegram [name]` | create a QR/deep-link pairing flow for the current session with an optional display label |
+| `/relay disconnect` | revoke the active binding |
+| `/relay status` | show local tunnel status |
 | `/relay setup <telegram\|discord\|slack>` | show secret-safe channel setup guidance and readiness diagnostics |
 | `/relay connect <telegram\|discord\|slack> [name]` | create an expiring pairing instruction for the selected channel |
 | `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, and config/state permissions |
 | `/relay disconnect` / `/relay status` | generic aliases for Telegram disconnect/status compatibility |
 
-Discord and Slack foundations are opt-in. Run `/relay setup discord` or `/relay setup slack` for credential, allow-list, invite, Socket Mode, and webhook-signing guidance. They stay DM-first by default; guild/channel control requires explicit authorization config.
+Discord and Slack foundations are opt-in. Discord now includes a live DM-first bot runtime when `discord.enabled` and `discord.botToken` are configured; run `/relay setup discord` for credential, intent, invite, and DM troubleshooting guidance. Slack remains an adapter foundation until a live Slack runtime is wired. Guild/channel control requires explicit authorization config.
 
 Credential starting points:
 
 - Telegram: create a bot with BotFather, then set `TELEGRAM_BOT_TOKEN` (<https://core.telegram.org/bots/features#botfather>).
-- Discord: create an application/bot in the Discord Developer Portal, copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, and optionally copy the Application ID to `PI_RELAY_DISCORD_CLIENT_ID` or `discord.clientId` for invite URL guidance (<https://discord.com/developers/docs/quick-start/getting-started>).
+- Discord: create an application/bot in the Discord Developer Portal, copy the bot token to `PI_RELAY_DISCORD_BOT_TOKEN` or `discord.botToken`, enable **Message Content Intent** for plain DM prompts and `relay <command>` text controls, and optionally copy the Application ID to `PI_RELAY_DISCORD_CLIENT_ID` or `discord.clientId` for invite URL guidance (<https://discord.com/developers/docs/quick-start/getting-started>). Invite with the `bot` scope and `permissions=0` for DM-first operation; `applications.commands` is only needed for a future native `/relay <subcommand>` UX.
 - Slack: create a Slack app, install it to your workspace, set the Bot User OAuth Token as `PI_RELAY_SLACK_BOT_TOKEN` or `slack.botToken`, and set the Signing Secret as `PI_RELAY_SLACK_SIGNING_SECRET` or `slack.signingSecret` (<https://api.slack.com/apps>).
 
-## Telegram commands
+## Remote messenger commands
 
-Once paired, the Telegram bot supports:
+Once paired, Telegram and Discord DMs support the same canonical command semantics with platform-specific invocation syntax. Telegram uses slash-style commands. Discord's reliable baseline is ordinary DM text prefixed with `relay`; bare Discord `/status`-style aliases are best-effort only because Discord may route slash commands to another app.
 
-| Command | Purpose |
-|---|---|
-| `/help` | show available Telegram tunnel commands |
-| `/status` | show the session dashboard with identity, online/offline state, busy/idle state, model, progress mode, recent activity, and quick-action buttons |
-| `/sessions` | list paired Pi sessions for this chat with number, alias/label, online/offline state, active marker, and dashboard buttons |
-| `/use <session>` | switch the active session by number, label, or session id prefix |
-| `/forget <session>` | remove an offline paired session from `/sessions` |
-| `/to <session> <prompt>` | send a one-shot prompt to a session without changing the active session |
-| `/progress <quiet\|normal\|verbose\|completion-only>` | set per-session progress notification noise |
-| `/alias <name\|clear>` | set or clear a Telegram-friendly session alias |
-| `/recent` or `/activity` | show recent safe progress/lifecycle activity |
-| `/summary` | show the latest concise summary |
-| `/full` | show the latest assistant output in Telegram-sized chunks |
-| `/images` | download latest captured image outputs or safe image files referenced by the latest completed turn |
-| `/send-image <path>` | send a validated workspace PNG/JPEG/WebP file by relative path |
-| `/steer <text>` | queue steering text while Pi is running |
-| `/followup <text>` | queue an explicit follow-up |
-| `/abort` | request cancellation of the current run |
-| `/compact` | trigger Pi context compaction |
-| `/pause` | pause remote delivery |
-| `/resume` | resume remote delivery |
-| `/disconnect` | revoke the current chat binding |
+| Telegram | Discord reliable form | Purpose |
+|---|---|---|
+| `/help` | `relay help` | show available PiRelay commands |
+| `/status` | `relay status` | show the session dashboard with identity, online/offline state, busy/idle state, model, progress mode, recent activity, and quick-action buttons |
+| `/sessions` | `relay sessions` | list paired Pi sessions for this chat with number, alias/label, online/offline state, active marker, and dashboard buttons |
+| `/use <session>` | `relay use <session>` | switch the active session by number, label, or session id prefix |
+| `/forget <session>` | `relay forget <session>` | remove an offline paired session from the session list |
+| `/to <session> <prompt>` | `relay to <session> <prompt>` | send a one-shot prompt to a session without changing the active session |
+| `/progress <quiet\|normal\|verbose\|completion-only>` | `relay progress <quiet\|normal\|verbose\|completion-only>` | set per-session progress notification noise |
+| `/alias <name\|clear>` | `relay alias <name\|clear>` | set or clear a chat-friendly session alias |
+| `/recent` or `/activity` | `relay recent` or `relay activity` | show recent safe progress/lifecycle activity |
+| `/summary` | `relay summary` | show the latest concise summary |
+| `/full` | `relay full` | show the latest assistant output using the active messenger's chunking/file fallback |
+| `/images` | `relay images` | download latest captured image outputs or safe image files referenced by the latest completed turn |
+| `/send-image <path>` | `relay send-image <path>` | send a validated workspace PNG/JPEG/WebP file by relative path |
+| `/steer <text>` | `relay steer <text>` | queue steering text while Pi is running |
+| `/followup <text>` | `relay followup <text>` | queue an explicit follow-up |
+| `/abort` | `relay abort` | request cancellation of the current run |
+| `/compact` | `relay compact` | trigger Pi context compaction |
+| `/pause` | `relay pause` | pause remote delivery |
+| `/resume` | `relay resume` | resume remote delivery |
+| `/disconnect` | `relay disconnect` | revoke the current chat binding |
 
 ## Prompt routing behavior
 
@@ -330,8 +330,8 @@ Internally, PiRelay uses channel adapters and interaction middleware so Telegram
 Pair sessions with short labels when useful:
 
 ```text
-/telegram-tunnel connect docs
-/telegram-tunnel connect api
+/relay connect telegram docs
+/relay connect telegram api
 ```
 
 When no label is provided, PiRelay uses the Pi session name when available, then the project folder name, then the session file basename, then a short session id fallback.
@@ -344,91 +344,25 @@ If one Telegram chat is paired to multiple sessions:
 
 Duplicate labels are allowed; `/sessions` adds short identifiers when needed and numeric selection always works. Lightweight markers such as `🔵` or `🟢` are derived from stable session identity and de-duplicated within the current session list when possible, so multi-session notifications are easier to distinguish without storing extra state. Ordinary prompts are not guessed when multiple live sessions exist without a selected active session.
 
-This avoids Telegram polling conflicts and keeps routing explicit. Multiple independent brokers on different machines must not poll the same bot token concurrently; a laptop-plus-cloud shared-chat setup would require a future relay hub architecture.
+PiRelay runs one local broker per machine. If the same bot/account is configured on multiple machines, configure one ingress owner and broker federation so other machines register their routes instead of polling the bot concurrently.
 
 ## Configuration
 
-Supported configuration keys include:
+Canonical config lives at `~/.pi/agent/pirelay/config.json` and uses namespaced messenger instances:
 
 ```json
 {
-  "botToken": "<telegram-bot-token>",
-  "stateDir": "~/.pi/agent/telegram-tunnel",
-  "pairingExpiryMs": 300000,
-  "busyDeliveryMode": "followUp",
-  "allowUserIds": [123456789],
-  "summaryMode": "deterministic",
-  "maxTelegramMessageChars": 3900,
-  "sendRetryCount": 3,
-  "sendRetryBaseMs": 800,
-  "pollingTimeoutSeconds": 20,
-  "maxInboundImageBytes": 10485760,
-  "maxOutboundImageBytes": 10485760,
-  "maxLatestImages": 4,
-  "allowedImageMimeTypes": ["image/jpeg", "image/png", "image/webp"],
-  "progressMode": "normal",
-  "progressIntervalMs": 30000,
-  "verboseProgressIntervalMs": 10000,
-  "recentActivityLimit": 10,
-  "maxProgressMessageChars": 700,
-  "discord": {
-    "enabled": false,
-    "botToken": "<discord-bot-token>",
-    "allowUserIds": ["123456789012345678"],
-    "allowGuildChannels": false,
-    "allowGuildIds": []
-  },
-  "slack": {
-    "enabled": false,
-    "botToken": "xoxb-...",
-    "signingSecret": "<slack-signing-secret>",
-    "workspaceId": "T012345",
-    "allowUserIds": ["U012345"],
-    "allowChannelMessages": false
-  },
-  "redactionPatterns": ["token\\s*[:=]\\s*\\S+"]
+  "relay": { "machineId": "laptop", "stateDir": "~/.pi/agent/pirelay", "brokerGroup": "personal" },
+  "defaults": { "pairingExpiryMs": 300000, "busyDeliveryMode": "followUp" },
+  "messengers": {
+    "telegram": { "default": { "enabled": true, "tokenEnv": "TELEGRAM_BOT_TOKEN" } },
+    "discord": { "personal": { "enabled": true, "tokenEnv": "PI_RELAY_DISCORD_BOT_TOKEN" } },
+    "slack": { "work": { "enabled": false, "tokenEnv": "PI_RELAY_SLACK_BOT_TOKEN", "signingSecretEnv": "PI_RELAY_SLACK_SIGNING_SECRET" } }
+  }
 }
 ```
 
-Environment variables:
-
-- `TELEGRAM_BOT_TOKEN`
-- `PI_TELEGRAM_TUNNEL_CONFIG`
-- `PI_TELEGRAM_TUNNEL_STATE_DIR`
-- `PI_TELEGRAM_TUNNEL_PAIRING_EXPIRY_MS`
-- `PI_TELEGRAM_TUNNEL_BUSY_MODE`
-- `PI_TELEGRAM_TUNNEL_ALLOW_USER_IDS`
-- `PI_TELEGRAM_TUNNEL_SUMMARY_MODE`
-- `PI_TELEGRAM_TUNNEL_MAX_MESSAGE_CHARS`
-- `PI_TELEGRAM_TUNNEL_SEND_RETRY_COUNT`
-- `PI_TELEGRAM_TUNNEL_SEND_RETRY_BASE_MS`
-- `PI_TELEGRAM_TUNNEL_POLLING_TIMEOUT_SECONDS`
-- `PI_TELEGRAM_TUNNEL_MAX_INBOUND_IMAGE_BYTES`
-- `PI_TELEGRAM_TUNNEL_MAX_OUTBOUND_IMAGE_BYTES`
-- `PI_TELEGRAM_TUNNEL_MAX_LATEST_IMAGES`
-- `PI_TELEGRAM_TUNNEL_ALLOWED_IMAGE_MIME_TYPES`
-- `PI_TELEGRAM_TUNNEL_PROGRESS_MODE`
-- `PI_TELEGRAM_TUNNEL_PROGRESS_INTERVAL_MS`
-- `PI_TELEGRAM_TUNNEL_VERBOSE_PROGRESS_INTERVAL_MS`
-- `PI_TELEGRAM_TUNNEL_RECENT_ACTIVITY_LIMIT`
-- `PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS`
-- `PI_RELAY_DISCORD_ENABLED`
-- `PI_RELAY_DISCORD_BOT_TOKEN`
-- `PI_RELAY_DISCORD_ALLOW_USER_IDS`
-- `PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS`
-- `PI_RELAY_DISCORD_ALLOW_GUILD_IDS`
-- `PI_RELAY_DISCORD_MAX_TEXT_CHARS`
-- `PI_RELAY_DISCORD_MAX_FILE_BYTES`
-- `PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES`
-- `PI_RELAY_SLACK_ENABLED`
-- `PI_RELAY_SLACK_BOT_TOKEN`
-- `PI_RELAY_SLACK_SIGNING_SECRET`
-- `PI_RELAY_SLACK_WORKSPACE_ID`
-- `PI_RELAY_SLACK_ALLOW_USER_IDS`
-- `PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES`
-- `PI_RELAY_SLACK_MAX_TEXT_CHARS`
-- `PI_RELAY_SLACK_MAX_FILE_BYTES`
-- `PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES`
+Legacy Telegram tunnel config/state under `~/.pi/agent/telegram-tunnel` and `PI_TELEGRAM_TUNNEL_*` env vars are migration fallbacks only. Active non-secret bindings migrate to `telegram:default`; active pairing codes are not copied.
 
 For more detail, see [docs/config.md](docs/config.md).
 
@@ -451,12 +385,12 @@ Important points:
 ## Troubleshooting
 
 ### Telegram does not respond
-- run `/telegram-tunnel setup`
+- run `/relay setup telegram`
 - verify `TELEGRAM_BOT_TOKEN`
 - confirm the bot exists and the username resolves in Telegram
 
 ### Pairing link expired
-- run `/telegram-tunnel connect` again
+- run `/relay connect telegram` again
 - use the newly generated QR/deep link
 
 ### Telegram says the session is offline
@@ -478,7 +412,7 @@ PiRelay uses a detached local broker process.
 Restart it before retesting:
 
 ```bash
-pkill -f 'extensions/telegram-tunnel/broker.js'
+pkill -f 'extensions/relay/broker/entry.js'
 ```
 
 Then reload Pi.
@@ -487,10 +421,10 @@ Then reload Pi.
 
 PiRelay consists of:
 
-- a Pi extension at `extensions/telegram-tunnel/`
-- a companion skill at `skills/telegram-tunnel/`
+- a Pi extension at `extensions/relay/`
+- a companion skill at `skills/relay/`
 - a local broker process for multi-session Telegram polling/routing
-- persisted local state under `~/.pi/agent/telegram-tunnel/`
+- persisted local state under `~/.pi/agent/pirelay/`
 
 The extension listens to Pi lifecycle events, tracks task state, publishes route updates to the broker, and injects authorized Telegram input back into the session.
 
@@ -522,4 +456,4 @@ Real Telegram regression checks, manual smoke-test steps, and release notes live
 
 - configuration reference: [docs/config.md](docs/config.md)
 - manual testing checklist: [docs/testing.md](docs/testing.md)
-- Pi skill entrypoint: [skills/telegram-tunnel/SKILL.md](skills/telegram-tunnel/SKILL.md)
+- Pi skill entrypoint: [skills/relay/SKILL.md](skills/relay/SKILL.md)

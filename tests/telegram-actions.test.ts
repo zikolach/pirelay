@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractStructuredAnswerMetadata } from "../extensions/telegram-tunnel/answer-workflow.js";
+import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
 import {
   buildAnswerActionKeyboard,
   buildAnswerAmbiguityCallbackData,
@@ -16,7 +16,7 @@ import {
   parseTelegramActionCallbackData,
   sessionDashboardRef,
   shouldOfferFullOutputActions,
-} from "../extensions/telegram-tunnel/telegram-actions.js";
+} from "../extensions/relay/adapters/telegram/actions.js";
 
 describe("telegram action callbacks", () => {
   it("round-trips compact callback data", () => {

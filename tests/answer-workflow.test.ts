@@ -10,7 +10,7 @@ import {
   renderGuidedAnswerPrompt,
   startGuidedAnswerFlow,
   summarizeTailForTelegram,
-} from "../extensions/telegram-tunnel/answer-workflow.js";
+} from "../extensions/relay/core/guided-answer.js";
 
 describe("answer workflow", () => {
   it("extracts structured choice metadata from numbered decision blocks", () => {

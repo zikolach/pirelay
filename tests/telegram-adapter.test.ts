@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { TelegramChannelAdapter, telegramCapabilities, telegramUpdateToChannelEvent, toTelegramKeyboard, type TelegramApiOperations } from "../extensions/telegram-tunnel/telegram-adapter.js";
-import type { TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+import { TelegramChannelAdapter, telegramCapabilities, telegramUpdateToChannelEvent, toTelegramKeyboard, type TelegramApiOperations } from "../extensions/relay/adapters/telegram/adapter.js";
+import type { TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 function config(): TelegramTunnelConfig {
   return {

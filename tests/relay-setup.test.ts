@@ -9,8 +9,8 @@ import {
   relaySetupFallbackGuidance,
   relaySetupGuidance,
   renderRelayDoctorReport,
-} from "../extensions/telegram-tunnel/relay-setup.js";
-import type { TelegramTunnelConfig } from "../extensions/telegram-tunnel/types.js";
+} from "../extensions/relay/config/setup.js";
+import type { TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 function baseConfig(): TelegramTunnelConfig {
   return {
@@ -43,8 +43,8 @@ describe("relay setup wizard helpers", () => {
   });
 
   it("parses generic and compatibility local commands", () => {
-    expect(parseRelayLocalCommand("setup discord")).toEqual({ subcommand: "setup", channel: "discord", args: "" });
-    expect(parseRelayLocalCommand("connect slack docs team")).toEqual({ subcommand: "connect", channel: "slack", args: "docs team" });
+    expect(parseRelayLocalCommand("setup discord")).toEqual({ subcommand: "setup", channel: "discord", messengerRef: "discord:default", args: "" });
+    expect(parseRelayLocalCommand("connect slack:work docs team")).toEqual({ subcommand: "connect", channel: "slack", messengerRef: "slack:work", args: "docs team" });
     expect(parseRelayLocalCommand("connect docs", { compatibilityCommand: true })).toEqual({ subcommand: "connect", channel: "telegram", args: "docs" });
     expect(parseRelayLocalCommand("setup matrix")).toMatchObject({ subcommand: "setup", unsupportedChannel: "matrix" });
     expect(parseRelayLocalCommand("doctor")).toEqual({ subcommand: "doctor", args: "" });
@@ -62,6 +62,7 @@ describe("relay setup wizard helpers", () => {
     expect(report).toContain("❌ Discord guild-channel control needs explicit allowed guild ids");
     expect(report).toContain("Discord guild-channel control is enabled");
     expect(report).toContain("Shared checks");
+    expect(report).toContain("Broker topology");
     expect(report).toContain("⚠️ Config file is group/world readable");
     expect(report).not.toContain("  ! ");
     expect(report).not.toContain("xoxb-super-secret-token");

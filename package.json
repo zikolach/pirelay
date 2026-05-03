@@ -1,7 +1,7 @@
 {
   "name": "pirelay",
   "version": "0.2.0",
-  "description": "Pi package that pairs a Telegram chat to the active Pi session for notifications and remote control.",
+  "description": "Pi package that pairs messenger chats to active Pi sessions for notifications and remote control.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -37,7 +37,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/telegram-tunnel/index.ts"
+      "./extensions/relay/index.ts"
     ],
     "skills": [
       "./skills"
@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@mariozechner/jiti": "^2.6.5",
+    "discord.js": "^14.26.4",
     "grammy": "^1.42.0",
     "proper-lockfile": "^4.1.2",
     "qrcode-terminal": "^0.12.0"
