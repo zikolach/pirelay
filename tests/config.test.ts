@@ -129,4 +129,33 @@ describe("telegram tunnel config", () => {
 
     expect(config.discord).toMatchObject({ applicationId: "app-123", clientId: "app-123" });
   });
+
+  it("preserves non-default Discord and Slack messenger instances for the live runtime", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      messengers: {
+        telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" } },
+        discord: {
+          personal: { enabled: true, botToken: "discord-personal", applicationId: "111111111111111111" },
+          work: { enabled: true, tokenEnv: "DISCORD_WORK", applicationId: "222222222222222222" },
+        },
+        slack: {
+          team: { enabled: true, botToken: "slack-team", signingSecret: "slack-secret", workspaceId: "T1" },
+        },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+    vi.stubEnv("DISCORD_WORK", "discord-work");
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.discordInstances).toMatchObject({
+      personal: { botToken: "discord-personal", applicationId: "111111111111111111" },
+      work: { botToken: "discord-work", applicationId: "222222222222222222" },
+    });
+    expect(config.discord).toMatchObject({ botToken: "discord-personal" });
+    expect(config.slackInstances).toMatchObject({ team: { botToken: "slack-team", signingSecret: "slack-secret" } });
+  });
 });

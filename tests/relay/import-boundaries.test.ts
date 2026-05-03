@@ -29,6 +29,8 @@ const legacyFixtureAllowList = [
   join("openspec", "changes", "archive"),
   join("openspec", "specs", "telegram-session-tunnel"),
   join("openspec", "specs", "relay-channel-adapters"),
+  join("openspec", "specs", "npm-distribution"),
+  join("openspec", "specs", "relay-code-architecture"),
 ];
 
 async function collectTypeScriptFiles(dir: string): Promise<string[]> {

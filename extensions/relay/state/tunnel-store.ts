@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getStateFilePath } from "./paths.js";
 import type { ChannelBinding } from "../core/channel-adapter.js";
-import { channelBindingStorageKey } from "../broker/channel-registry.js";
+import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../broker/channel-registry.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
@@ -223,22 +223,25 @@ export class TunnelStateStore {
   }
 
   async upsertChannelBinding(binding: ChannelBinding): Promise<ChannelPersistedBindingRecord> {
-    const key = channelBindingStorageKey(binding.channel, binding.sessionKey);
-    const record: ChannelPersistedBindingRecord = { ...binding, status: binding.revokedAt ? "revoked" : "active" };
+    const key = channelBindingStorageKey(binding.channel, binding.sessionKey, binding.instanceId);
+    const record: ChannelPersistedBindingRecord = { ...binding, instanceId: binding.instanceId ?? "default", status: binding.revokedAt ? "revoked" : "active" };
     await this.update((data) => {
       data.channelBindings[key] = record;
+      delete data.channelBindings[legacyChannelBindingStorageKey(binding.channel, binding.sessionKey)];
     });
     return record;
   }
 
-  async revokeChannelBinding(channel: ChannelBinding["channel"], sessionKey: string, revokedAt = toIsoNow()): Promise<ChannelPersistedBindingRecord | undefined> {
-    const key = channelBindingStorageKey(channel, sessionKey);
+  async revokeChannelBinding(channel: ChannelBinding["channel"], sessionKey: string, revokedAt = toIsoNow(), instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
+    const key = channelBindingStorageKey(channel, sessionKey, instanceId);
+    const legacyKey = legacyChannelBindingStorageKey(channel, sessionKey);
     let revoked: ChannelPersistedBindingRecord | undefined;
     await this.update((data) => {
-      const existing = data.channelBindings[key];
+      const existing = data.channelBindings[key] ?? (instanceId === "default" ? data.channelBindings[legacyKey] : undefined);
       if (!existing) return;
       revoked = revokeChannelBindingRecord(existing, revokedAt);
       data.channelBindings[key] = revoked;
+      if (key !== legacyKey) delete data.channelBindings[legacyKey];
       clearSelectionForBinding(data, existing, sessionKey);
     });
     return revoked;
@@ -277,13 +280,15 @@ export class TunnelStateStore {
     });
   }
 
-  async getChannelBinding(channel: ChannelBinding["channel"], conversationId: string, userId: string): Promise<ChannelPersistedBindingRecord | undefined> {
+  async getChannelBinding(channel: ChannelBinding["channel"], conversationId: string, userId: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
     const bindings = Object.values((await this.load()).channelBindings);
-    return bindings.find((binding) => binding.channel === channel && binding.conversationId === conversationId && binding.userId === userId && binding.status !== "revoked");
+    return bindings.find((binding) => binding.channel === channel && (binding.instanceId ?? "default") === instanceId && binding.conversationId === conversationId && binding.userId === userId && binding.status !== "revoked");
   }
 
-  async getChannelBindingBySessionKey(channel: ChannelBinding["channel"], sessionKey: string): Promise<ChannelPersistedBindingRecord | undefined> {
-    const binding = (await this.load()).channelBindings[channelBindingStorageKey(channel, sessionKey)];
+  async getChannelBindingBySessionKey(channel: ChannelBinding["channel"], sessionKey: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
+    const data = await this.load();
+    const binding = data.channelBindings[channelBindingStorageKey(channel, sessionKey, instanceId)]
+      ?? (instanceId === "default" ? data.channelBindings[legacyChannelBindingStorageKey(channel, sessionKey)] : undefined);
     return binding && binding.status !== "revoked" ? binding : undefined;
   }
 

@@ -130,6 +130,24 @@ describe("DiscordRuntime", () => {
     await first?.stop();
   });
 
+  it("creates live runtimes from non-default Discord messenger instances", async () => {
+    const cfg = await config();
+    cfg.discord = undefined;
+    cfg.discordInstances = {
+      work: { enabled: true, botToken: `discord-work-${cfg.stateDir}`, allowUserIds: ["u1"] },
+    };
+    const ops = new FakeDiscordOperations();
+
+    const defaultRuntime = getOrCreateDiscordRuntime(cfg, { operations: ops });
+    const workRuntime = getOrCreateDiscordRuntime(cfg, { operations: ops }, "work");
+
+    expect(defaultRuntime).toBeUndefined();
+    expect(workRuntime?.getStatus()).toMatchObject({ enabled: true, started: false });
+    await workRuntime?.start();
+    expect(ops.handler).toBeDefined();
+    await workRuntime?.stop();
+  });
+
   it("reports startup failures without exposing tokens", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations(new Error("bad discord-token-supersecret"));

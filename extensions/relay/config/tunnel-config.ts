@@ -125,70 +125,104 @@ async function readConfigFile(configPath: string): Promise<ConfigFileShape | und
   return parsed;
 }
 
-function resolveDiscordConfig(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): DiscordRelayConfig | undefined {
-  const discordConfig = fileConfig?.messengers?.discord?.default as LegacyMessengerFileShape | undefined;
+function resolveDiscordConfigForInstance(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[], instanceId: string): DiscordRelayConfig | undefined {
+  const discordConfig = fileConfig?.messengers?.discord?.[instanceId] as LegacyMessengerFileShape | undefined;
   const legacyConfig = fileConfig?.discord;
-  const botToken = process.env.PI_RELAY_DISCORD_BOT_TOKEN
+  const useLegacyFallback = instanceId === "default";
+  const botToken = (useLegacyFallback ? process.env.PI_RELAY_DISCORD_BOT_TOKEN : undefined)
     ?? resolveConfigSecret(discordConfig?.botToken ?? discordConfig?.token, discordConfig?.tokenEnv)
-    ?? fileConfig?.PI_RELAY_DISCORD_BOT_TOKEN
-    ?? legacyConfig?.botToken;
+    ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_BOT_TOKEN : undefined)
+    ?? (useLegacyFallback ? legacyConfig?.botToken : undefined);
   const enabled = parseBoolean(
-    process.env.PI_RELAY_DISCORD_ENABLED ?? configString(fileConfig?.PI_RELAY_DISCORD_ENABLED),
-    discordConfig?.enabled ?? legacyConfig?.enabled ?? Boolean(botToken),
+    (useLegacyFallback ? process.env.PI_RELAY_DISCORD_ENABLED : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ENABLED : undefined),
+    discordConfig?.enabled ?? (useLegacyFallback ? legacyConfig?.enabled : undefined) ?? Boolean(botToken),
   );
   if (!enabled && !botToken) return undefined;
   return {
     enabled,
     botToken,
-    applicationId: process.env.PI_RELAY_DISCORD_APPLICATION_ID ?? process.env.PI_RELAY_DISCORD_CLIENT_ID ?? discordConfig?.applicationId ?? discordConfig?.clientId ?? fileConfig?.PI_RELAY_DISCORD_APPLICATION_ID ?? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID ?? legacyConfig?.applicationId ?? legacyConfig?.clientId,
-    clientId: process.env.PI_RELAY_DISCORD_APPLICATION_ID ?? process.env.PI_RELAY_DISCORD_CLIENT_ID ?? discordConfig?.applicationId ?? discordConfig?.clientId ?? fileConfig?.PI_RELAY_DISCORD_APPLICATION_ID ?? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID ?? legacyConfig?.applicationId ?? legacyConfig?.clientId,
-    allowUserIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS ?? fileConfig?.PI_RELAY_DISCORD_ALLOW_USER_IDS) ?? discordConfig?.allowUserIds ?? legacyConfig?.allowUserIds ?? [],
+    applicationId: (useLegacyFallback ? process.env.PI_RELAY_DISCORD_APPLICATION_ID : undefined) ?? (useLegacyFallback ? process.env.PI_RELAY_DISCORD_CLIENT_ID : undefined) ?? discordConfig?.applicationId ?? discordConfig?.clientId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_APPLICATION_ID : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.applicationId : undefined) ?? (useLegacyFallback ? legacyConfig?.clientId : undefined),
+    clientId: (useLegacyFallback ? process.env.PI_RELAY_DISCORD_APPLICATION_ID : undefined) ?? (useLegacyFallback ? process.env.PI_RELAY_DISCORD_CLIENT_ID : undefined) ?? discordConfig?.applicationId ?? discordConfig?.clientId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_APPLICATION_ID : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_CLIENT_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.applicationId : undefined) ?? (useLegacyFallback ? legacyConfig?.clientId : undefined),
+    allowUserIds: parseStringList((useLegacyFallback ? process.env.PI_RELAY_DISCORD_ALLOW_USER_IDS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ALLOW_USER_IDS : undefined)) ?? discordConfig?.allowUserIds ?? (useLegacyFallback ? legacyConfig?.allowUserIds : undefined) ?? [],
     allowGuildChannels: parseBoolean(
-      process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS ?? configString(fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS),
-      discordConfig?.allowGuildChannels ?? legacyConfig?.allowGuildChannels ?? false,
+      (useLegacyFallback ? process.env.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS : undefined),
+      discordConfig?.allowGuildChannels ?? (useLegacyFallback ? legacyConfig?.allowGuildChannels : undefined) ?? false,
     ),
-    allowGuildIds: parseStringList(process.env.PI_RELAY_DISCORD_ALLOW_GUILD_IDS ?? fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_IDS) ?? discordConfig?.allowGuildIds ?? legacyConfig?.allowGuildIds ?? [],
-    maxTextChars: parseNumber(process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS ?? fileConfig?.PI_RELAY_DISCORD_MAX_TEXT_CHARS, discordConfig?.limits?.maxTextChars ?? discordConfig?.maxTextChars ?? legacyConfig?.maxTextChars ?? 2_000),
-    maxFileBytes: parseNumber(process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES ?? fileConfig?.PI_RELAY_DISCORD_MAX_FILE_BYTES, discordConfig?.limits?.maxFileBytes ?? discordConfig?.maxFileBytes ?? legacyConfig?.maxFileBytes ?? 8 * 1024 * 1024),
-    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES ?? fileConfig?.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES) ?? discordConfig?.limits?.allowedImageMimeTypes ?? discordConfig?.allowedImageMimeTypes ?? legacyConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
+    allowGuildIds: parseStringList((useLegacyFallback ? process.env.PI_RELAY_DISCORD_ALLOW_GUILD_IDS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_IDS : undefined)) ?? discordConfig?.allowGuildIds ?? (useLegacyFallback ? legacyConfig?.allowGuildIds : undefined) ?? [],
+    maxTextChars: parseNumber((useLegacyFallback ? process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_MAX_TEXT_CHARS : undefined), discordConfig?.limits?.maxTextChars ?? discordConfig?.maxTextChars ?? (useLegacyFallback ? legacyConfig?.maxTextChars : undefined) ?? 2_000),
+    maxFileBytes: parseNumber((useLegacyFallback ? process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_MAX_FILE_BYTES : undefined), discordConfig?.limits?.maxFileBytes ?? discordConfig?.maxFileBytes ?? (useLegacyFallback ? legacyConfig?.maxFileBytes : undefined) ?? 8 * 1024 * 1024),
+    allowedImageMimeTypes: parseStringList((useLegacyFallback ? process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES : undefined)) ?? discordConfig?.limits?.allowedImageMimeTypes ?? discordConfig?.allowedImageMimeTypes ?? (useLegacyFallback ? legacyConfig?.allowedImageMimeTypes : undefined) ?? defaultImageMimeTypes,
   };
+}
+
+function resolveDiscordConfigs(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): Record<string, DiscordRelayConfig> {
+  const instanceIds = new Set(Object.keys(fileConfig?.messengers?.discord ?? {}));
+  if (fileConfig?.discord || fileConfig?.PI_RELAY_DISCORD_BOT_TOKEN || process.env.PI_RELAY_DISCORD_BOT_TOKEN || process.env.PI_RELAY_DISCORD_ENABLED) instanceIds.add("default");
+  const configs: Record<string, DiscordRelayConfig> = {};
+  for (const instanceId of instanceIds) {
+    const config = resolveDiscordConfigForInstance(fileConfig, defaultImageMimeTypes, instanceId);
+    if (config) configs[instanceId] = config;
+  }
+  return configs;
+}
+
+function resolveDiscordConfig(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): DiscordRelayConfig | undefined {
+  const configs = resolveDiscordConfigs(fileConfig, defaultImageMimeTypes);
+  return configs.default ?? Object.values(configs)[0];
 }
 
 function resolveSlackEventMode(value: string | undefined): "socket" | "webhook" {
   return value === "webhook" ? "webhook" : "socket";
 }
 
-function resolveSlackConfig(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): SlackRelayConfig | undefined {
-  const slackConfig = fileConfig?.messengers?.slack?.default as LegacyMessengerFileShape | undefined;
+function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[], instanceId: string): SlackRelayConfig | undefined {
+  const slackConfig = fileConfig?.messengers?.slack?.[instanceId] as LegacyMessengerFileShape | undefined;
   const legacyConfig = fileConfig?.slack;
-  const botToken = process.env.PI_RELAY_SLACK_BOT_TOKEN
+  const useLegacyFallback = instanceId === "default";
+  const botToken = (useLegacyFallback ? process.env.PI_RELAY_SLACK_BOT_TOKEN : undefined)
     ?? resolveConfigSecret(slackConfig?.botToken ?? slackConfig?.token, slackConfig?.tokenEnv)
-    ?? fileConfig?.PI_RELAY_SLACK_BOT_TOKEN
-    ?? legacyConfig?.botToken;
-  const signingSecret = process.env.PI_RELAY_SLACK_SIGNING_SECRET
+    ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_BOT_TOKEN : undefined)
+    ?? (useLegacyFallback ? legacyConfig?.botToken : undefined);
+  const signingSecret = (useLegacyFallback ? process.env.PI_RELAY_SLACK_SIGNING_SECRET : undefined)
     ?? resolveConfigSecret(slackConfig?.signingSecret, slackConfig?.signingSecretEnv)
-    ?? fileConfig?.PI_RELAY_SLACK_SIGNING_SECRET
-    ?? legacyConfig?.signingSecret;
+    ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_SIGNING_SECRET : undefined)
+    ?? (useLegacyFallback ? legacyConfig?.signingSecret : undefined);
   const enabled = parseBoolean(
-    process.env.PI_RELAY_SLACK_ENABLED ?? configString(fileConfig?.PI_RELAY_SLACK_ENABLED),
-    slackConfig?.enabled ?? legacyConfig?.enabled ?? Boolean(botToken && signingSecret),
+    (useLegacyFallback ? process.env.PI_RELAY_SLACK_ENABLED : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ENABLED : undefined),
+    slackConfig?.enabled ?? (useLegacyFallback ? legacyConfig?.enabled : undefined) ?? Boolean(botToken && signingSecret),
   );
   if (!enabled && !botToken && !signingSecret) return undefined;
   return {
     enabled,
     botToken,
     signingSecret,
-    eventMode: resolveSlackEventMode(process.env.PI_RELAY_SLACK_EVENT_MODE ?? fileConfig?.PI_RELAY_SLACK_EVENT_MODE ?? slackConfig?.eventMode ?? legacyConfig?.eventMode),
-    workspaceId: process.env.PI_RELAY_SLACK_WORKSPACE_ID ?? slackConfig?.workspaceId ?? fileConfig?.PI_RELAY_SLACK_WORKSPACE_ID ?? legacyConfig?.workspaceId,
-    allowUserIds: parseStringList(process.env.PI_RELAY_SLACK_ALLOW_USER_IDS ?? fileConfig?.PI_RELAY_SLACK_ALLOW_USER_IDS) ?? slackConfig?.allowUserIds ?? legacyConfig?.allowUserIds ?? [],
+    eventMode: resolveSlackEventMode((useLegacyFallback ? process.env.PI_RELAY_SLACK_EVENT_MODE : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_EVENT_MODE : undefined) ?? slackConfig?.eventMode ?? (useLegacyFallback ? legacyConfig?.eventMode : undefined)),
+    workspaceId: (useLegacyFallback ? process.env.PI_RELAY_SLACK_WORKSPACE_ID : undefined) ?? slackConfig?.workspaceId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_WORKSPACE_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.workspaceId : undefined),
+    allowUserIds: parseStringList((useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOW_USER_IDS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOW_USER_IDS : undefined)) ?? slackConfig?.allowUserIds ?? (useLegacyFallback ? legacyConfig?.allowUserIds : undefined) ?? [],
     allowChannelMessages: parseBoolean(
-      process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES ?? configString(fileConfig?.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES),
-      slackConfig?.allowChannelMessages ?? legacyConfig?.allowChannelMessages ?? false,
+      (useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES : undefined),
+      slackConfig?.allowChannelMessages ?? (useLegacyFallback ? legacyConfig?.allowChannelMessages : undefined) ?? false,
     ),
-    maxTextChars: parseNumber(process.env.PI_RELAY_SLACK_MAX_TEXT_CHARS ?? fileConfig?.PI_RELAY_SLACK_MAX_TEXT_CHARS, slackConfig?.limits?.maxTextChars ?? slackConfig?.maxTextChars ?? legacyConfig?.maxTextChars ?? 3_000),
-    maxFileBytes: parseNumber(process.env.PI_RELAY_SLACK_MAX_FILE_BYTES ?? fileConfig?.PI_RELAY_SLACK_MAX_FILE_BYTES, slackConfig?.limits?.maxFileBytes ?? slackConfig?.maxFileBytes ?? legacyConfig?.maxFileBytes ?? 10 * 1024 * 1024),
-    allowedImageMimeTypes: parseStringList(process.env.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES ?? fileConfig?.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES) ?? slackConfig?.limits?.allowedImageMimeTypes ?? slackConfig?.allowedImageMimeTypes ?? legacyConfig?.allowedImageMimeTypes ?? defaultImageMimeTypes,
+    maxTextChars: parseNumber((useLegacyFallback ? process.env.PI_RELAY_SLACK_MAX_TEXT_CHARS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_MAX_TEXT_CHARS : undefined), slackConfig?.limits?.maxTextChars ?? slackConfig?.maxTextChars ?? (useLegacyFallback ? legacyConfig?.maxTextChars : undefined) ?? 3_000),
+    maxFileBytes: parseNumber((useLegacyFallback ? process.env.PI_RELAY_SLACK_MAX_FILE_BYTES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_MAX_FILE_BYTES : undefined), slackConfig?.limits?.maxFileBytes ?? slackConfig?.maxFileBytes ?? (useLegacyFallback ? legacyConfig?.maxFileBytes : undefined) ?? 10 * 1024 * 1024),
+    allowedImageMimeTypes: parseStringList((useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES : undefined)) ?? slackConfig?.limits?.allowedImageMimeTypes ?? slackConfig?.allowedImageMimeTypes ?? (useLegacyFallback ? legacyConfig?.allowedImageMimeTypes : undefined) ?? defaultImageMimeTypes,
   };
+}
+
+function resolveSlackConfigs(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): Record<string, SlackRelayConfig> {
+  const instanceIds = new Set(Object.keys(fileConfig?.messengers?.slack ?? {}));
+  if (fileConfig?.slack || fileConfig?.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_SIGNING_SECRET || process.env.PI_RELAY_SLACK_ENABLED) instanceIds.add("default");
+  const configs: Record<string, SlackRelayConfig> = {};
+  for (const instanceId of instanceIds) {
+    const config = resolveSlackConfigForInstance(fileConfig, defaultImageMimeTypes, instanceId);
+    if (config) configs[instanceId] = config;
+  }
+  return configs;
+}
+
+function resolveSlackConfig(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): SlackRelayConfig | undefined {
+  const configs = resolveSlackConfigs(fileConfig, defaultImageMimeTypes);
+  return configs.default ?? Object.values(configs)[0];
 }
 
 async function collectFileWarnings(configPath: string, warnings: string[]): Promise<void> {
@@ -293,8 +327,10 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     process.env.PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS,
     fileConfig?.maxProgressMessageChars ?? DEFAULT_MAX_PROGRESS_MESSAGE_CHARS,
   );
-  const discord = resolveDiscordConfig(fileConfig, allowedImageMimeTypes);
-  const slack = resolveSlackConfig(fileConfig, allowedImageMimeTypes);
+  const discordInstances = resolveDiscordConfigs(fileConfig, allowedImageMimeTypes);
+  const slackInstances = resolveSlackConfigs(fileConfig, allowedImageMimeTypes);
+  const discord = discordInstances.default ?? Object.values(discordInstances)[0];
+  const slack = slackInstances.default ?? Object.values(slackInstances)[0];
 
   if (pairingExpiryMs < 30_000) {
     throw new ConfigError("pairingExpiryMs must be at least 30000.");
@@ -353,7 +389,9 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     recentActivityLimit,
     maxProgressMessageChars,
     discord,
+    discordInstances,
     slack,
+    slackInstances,
   };
 
   return { config, warnings };

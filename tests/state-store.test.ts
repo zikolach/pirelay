@@ -106,4 +106,36 @@ describe("TunnelStateStore", () => {
     expect(Object.keys(data.bindings)).toEqual(["session-1"]);
     expect(Object.values(data.channelBindings)).toContainEqual(expect.objectContaining({ channel: "discord", userId: "u1", sessionKey: "session-1" }));
   });
+
+  it("keys channel bindings by messenger instance so same-kind pairings do not clobber each other", async () => {
+    const store = await createStore();
+
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "personal",
+      conversationId: "dm-personal",
+      userId: "u1",
+      sessionKey: "session-1",
+      sessionId: "session-1",
+      sessionLabel: "Personal",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "work",
+      conversationId: "dm-work",
+      userId: "u1",
+      sessionKey: "session-1",
+      sessionId: "session-1",
+      sessionLabel: "Work",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    const data = await store.load();
+    expect(Object.keys(data.channelBindings).sort()).toEqual(["discord:personal:session-1", "discord:work:session-1"]);
+    expect(await store.getChannelBindingBySessionKey("discord", "session-1", "personal")).toMatchObject({ conversationId: "dm-personal" });
+    expect(await store.getChannelBindingBySessionKey("discord", "session-1", "work")).toMatchObject({ conversationId: "dm-work" });
+  });
 });
