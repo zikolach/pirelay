@@ -49,9 +49,10 @@ export class DiscordRuntime {
   constructor(
     private readonly config: TelegramTunnelConfig,
     options: DiscordRuntimeOptions = {},
+    private readonly instanceId = "default",
   ) {
     this.store = new TunnelStateStore(config.stateDir);
-    const discordConfig = config.discord;
+    const discordConfig = config.discordInstances?.[this.instanceId] ?? config.discord;
     const operations = options.operations ?? (discordConfig?.enabled && discordConfig.botToken ? createDiscordLiveOperations(discordConfig) : undefined);
     if (discordConfig?.enabled && discordConfig.botToken && operations) {
       this.adapter = new DiscordChannelAdapter(discordConfig, operations);
@@ -59,7 +60,8 @@ export class DiscordRuntime {
   }
 
   getStatus(): DiscordRuntimeStatus {
-    return { enabled: Boolean(this.config.discord?.enabled && this.config.discord.botToken), started: this.started, error: this.lastError };
+    const discordConfig = this.config.discordInstances?.[this.instanceId] ?? this.config.discord;
+    return { enabled: Boolean(discordConfig?.enabled && discordConfig.botToken), started: this.started, error: this.lastError };
   }
 
   async start(): Promise<void> {
@@ -89,7 +91,7 @@ export class DiscordRuntime {
 
   async registerRoute(route: SessionRoute): Promise<void> {
     this.routes.set(route.sessionKey, route);
-    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey);
+    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId);
     if (binding) {
       this.ownedBindingSessionKeys.add(route.sessionKey);
       this.recentBindingBySessionKey.set(route.sessionKey, binding);
@@ -105,7 +107,7 @@ export class DiscordRuntime {
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.stopTypingActivity(route.sessionKey);
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey)
+    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId)
       ?? this.recentBindingBySessionKey.get(route.sessionKey);
     if (!binding) return;
     const text = discordTurnNotificationText(route, status);
@@ -220,7 +222,7 @@ export class DiscordRuntime {
       });
     }
 
-    const binding = await this.store.upsertChannelBinding(result.binding);
+    const binding = await this.store.upsertChannelBinding({ ...result.binding, instanceId: this.instanceId });
     this.recentBindingBySessionKey.set(binding.sessionKey, binding);
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     await this.setActiveSelection(message, binding.sessionKey);
@@ -354,7 +356,7 @@ export class DiscordRuntime {
         return;
       case "disconnect":
         this.stopTypingActivity(binding.sessionKey);
-        await this.store.revokeChannelBinding(DISCORD_CHANNEL, binding.sessionKey);
+        await this.store.revokeChannelBinding(DISCORD_CHANNEL, binding.sessionKey, new Date().toISOString(), this.instanceId);
         this.recentBindingBySessionKey.delete(binding.sessionKey);
         await this.clearActiveSelection(message, binding.sessionKey);
         route.actions.appendAudit("Discord relay disconnected remotely.");
@@ -477,7 +479,7 @@ export class DiscordRuntime {
       await this.sendText(message, result.kind === "matched" ? "Use /disconnect for an online active session. /forget only removes offline sessions." : formatSessionSelectorError(result, args));
       return;
     }
-    await this.store.revokeChannelBinding(DISCORD_CHANNEL, result.entry.sessionKey);
+    await this.store.revokeChannelBinding(DISCORD_CHANNEL, result.entry.sessionKey, new Date().toISOString(), this.instanceId);
     await this.sendText(message, `Forgot offline session ${result.entry.sessionLabel}.`);
   }
 
@@ -561,9 +563,9 @@ export class DiscordRuntime {
 
   private async discordBindingsForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord[]> {
     const persisted = Object.values((await this.store.load()).channelBindings)
-      .filter((binding) => binding.channel === DISCORD_CHANNEL && binding.userId === message.sender.userId && binding.status !== "revoked");
+      .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
     const recent = [...this.recentBindingBySessionKey.values()]
-      .filter((binding) => binding.channel === DISCORD_CHANNEL && binding.userId === message.sender.userId && binding.status !== "revoked");
+      .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
     const bindings = [...new Map([...persisted, ...recent].map((binding) => [binding.sessionKey, binding])).values()];
     const exactConversation = bindings.filter((binding) => binding.conversationId === message.conversation.id);
     return exactConversation.length > 0 ? exactConversation : bindings;
@@ -734,13 +736,14 @@ function getDiscordRuntimeRegistry(): DiscordRuntimeRegistry {
   return globalValue[globalKey]!;
 }
 
-export function getOrCreateDiscordRuntime(config: TelegramTunnelConfig, options?: DiscordRuntimeOptions): DiscordRuntime | undefined {
-  if (!config.discord?.enabled || !config.discord.botToken) return undefined;
-  const key = config.discord.botToken;
+export function getOrCreateDiscordRuntime(config: TelegramTunnelConfig, options?: DiscordRuntimeOptions, instanceId = "default"): DiscordRuntime | undefined {
+  const discordConfig = config.discordInstances?.[instanceId] ?? config.discord;
+  if (!discordConfig?.enabled || !discordConfig.botToken) return undefined;
+  const key = `discord:${instanceId}:${discordConfig.botToken}`;
   const registry = getDiscordRuntimeRegistry();
   const existing = registry.get(key);
   if (existing) return existing;
-  const runtime = new DiscordRuntime(config, options);
+  const runtime = new DiscordRuntime(config, options, instanceId);
   registry.set(key, runtime);
   return runtime;
 }

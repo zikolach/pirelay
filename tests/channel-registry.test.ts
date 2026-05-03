@@ -31,8 +31,9 @@ describe("channel registry", () => {
 
     expect(adapters.map((adapter) => adapter.id)).toEqual(["telegram", "discord", "slack"]);
     expect(enabledChannelKinds(config)).toEqual(["telegram", "discord", "slack"]);
-    expect(channelBindingStorageKey("telegram", "session-1")).toBe("telegram:session-1");
-    expect(channelBindingStorageKey("discord", "session-1")).toBe("discord:session-1");
-    expect(channelBindingStorageKey("slack", "session-1")).toBe("slack:session-1");
+    expect(channelBindingStorageKey("telegram", "session-1")).toBe("telegram:default:session-1");
+    expect(channelBindingStorageKey("discord", "session-1")).toBe("discord:default:session-1");
+    expect(channelBindingStorageKey("slack", "session-1")).toBe("slack:default:session-1");
+    expect(channelBindingStorageKey("discord", "session-1", "work")).toBe("discord:work:session-1");
   });
 });

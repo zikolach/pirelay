@@ -1,22 +1,27 @@
 # npm-distribution Specification
 
 ## Purpose
-TBD - created by archiving change prepare-npm-publishing. Update Purpose after archive.
+Defines npm packaging and distribution requirements for PiRelay, including package metadata, shipped resources, command namespace, and exclusion of removed legacy extension paths.
 ## Requirements
 ### Requirement: PiRelay npm package identity
-The npm-distributed package SHALL use `pirelay` as the public npm package name before first publication while preserving existing Pi runtime resource and Telegram command compatibility.
+The npm-distributed package SHALL use `pirelay` as the public npm package name and SHALL expose PiRelay/relay resources as the canonical runtime namespace.
 
 #### Scenario: Canonical package name is configured
-- **WHEN** the package manifest is prepared for first npm publication
+- **WHEN** the package manifest is prepared for npm publication
 - **THEN** the manifest package name is `pirelay`
 
 #### Scenario: npm install documentation uses canonical name
 - **WHEN** user-facing installation or verification documentation references the npm package source
 - **THEN** it uses `npm:pirelay` or an exact-version form such as `npm:pirelay@<version>`
 
-#### Scenario: Internal tunnel compatibility is preserved
-- **WHEN** the npm package is renamed to `pirelay`
-- **THEN** existing Telegram tunnel commands, extension resource paths, skill paths, and local config paths remain unchanged unless a separate migration is specified
+#### Scenario: Canonical relay resources are packaged
+- **WHEN** the npm package is installed by Pi
+- **THEN** package metadata points to PiRelay/relay extension and skill resources rather than `telegram-tunnel` resources
+
+#### Scenario: Legacy Telegram tunnel namespace is absent
+- **WHEN** a user inspects packaged docs, extension paths, skill paths, local config paths, local commands, package file lists, and exported/importable extension modules for the new release
+- **THEN** they use `/relay` and PiRelay naming as canonical
+- **AND** the package does not ship `extensions/telegram-tunnel/`, `skills/telegram-tunnel/`, `/telegram-tunnel` command behavior, or compatibility re-export shims
 
 ### Requirement: Publishable npm manifest
 The package manifest SHALL be configured so PiRelay can be published as a public npm package while preserving Pi package discovery metadata.

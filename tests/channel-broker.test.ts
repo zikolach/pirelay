@@ -50,9 +50,9 @@ describe("ChannelRelayBroker", () => {
     });
 
     expect(seen).toEqual(["telegram:telegram-u", "discord:discord-u", "slack:slack-u"]);
-    expect(broker.bindingKey("telegram", "s1")).toBe("telegram:s1");
-    expect(broker.bindingKey("discord", "s1")).toBe("discord:s1");
-    expect(broker.bindingKey("slack", "s1")).toBe("slack:s1");
+    expect(broker.bindingKey("telegram", "s1")).toBe("telegram:default:s1");
+    expect(broker.bindingKey("discord", "s1")).toBe("discord:default:s1");
+    expect(broker.bindingKey("slack", "s1")).toBe("slack:default:s1");
     await broker.stop();
   });
 

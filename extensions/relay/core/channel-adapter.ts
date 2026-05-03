@@ -32,6 +32,7 @@ export interface ChannelRouteAddress {
 
 export interface ChannelBinding {
   channel: ChannelAdapterKind;
+  instanceId?: string;
   conversationId: ChannelConversationId;
   userId: ChannelUserId;
   sessionKey: string;

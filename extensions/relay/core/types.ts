@@ -64,7 +64,9 @@ export interface TelegramTunnelConfig {
   recentActivityLimit?: number;
   maxProgressMessageChars?: number;
   discord?: DiscordRelayConfig;
+  discordInstances?: Record<string, DiscordRelayConfig>;
   slack?: SlackRelayConfig;
+  slackInstances?: Record<string, SlackRelayConfig>;
 }
 
 export interface ConfigLoadResult {

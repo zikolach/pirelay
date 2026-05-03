@@ -119,7 +119,7 @@ function getCommandHelp(): string {
 export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let configCache: TelegramTunnelConfig | undefined;
   let runtime: TunnelRuntime | undefined;
-  let discordRuntime: DiscordRuntime | undefined;
+  const discordRuntimes = new Map<string, DiscordRuntime>();
   let currentRoute: SessionRoute | undefined;
   let latestContext: ExtensionContext | undefined;
   let closeConnectQrScreen: (() => void) | undefined;
@@ -146,13 +146,34 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtime;
   }
 
-  async function ensureDiscordRuntime(ctx?: ExtensionContext, interactiveNotice = false): Promise<DiscordRuntime | undefined> {
-    if (discordRuntime) return discordRuntime;
+  function discordInstanceIds(config: TelegramTunnelConfig): string[] {
+    const ids = Object.entries(config.discordInstances ?? {})
+      .filter(([, discord]) => discord.enabled && discord.botToken)
+      .map(([instanceId]) => instanceId);
+    if (ids.length === 0 && config.discord?.enabled && config.discord.botToken) return ["default"];
+    return ids;
+  }
+
+  async function ensureDiscordRuntime(ctx?: ExtensionContext, interactiveNotice = false, instanceId = "default"): Promise<DiscordRuntime | undefined> {
+    const existing = discordRuntimes.get(instanceId);
+    if (existing) return existing;
     const config = await ensureConfig(ctx, interactiveNotice);
-    if (!config.discord?.enabled || !config.discord.botToken) return undefined;
+    const discordConfig = config.discordInstances?.[instanceId] ?? (instanceId === "default" ? config.discord : undefined);
+    if (!discordConfig?.enabled || !discordConfig.botToken) return undefined;
     const { getOrCreateDiscordRuntime } = await import("../adapters/discord/runtime.js");
-    discordRuntime = getOrCreateDiscordRuntime(config);
-    return discordRuntime;
+    const discord = getOrCreateDiscordRuntime(config, undefined, instanceId);
+    if (discord) discordRuntimes.set(instanceId, discord);
+    return discord;
+  }
+
+  async function ensureAllDiscordRuntimes(ctx?: ExtensionContext, interactiveNotice = false): Promise<DiscordRuntime[]> {
+    const config = await ensureConfig(ctx, interactiveNotice);
+    const runtimes: DiscordRuntime[] = [];
+    for (const instanceId of discordInstanceIds(config)) {
+      const runtime = await ensureDiscordRuntime(ctx, interactiveNotice, instanceId);
+      if (runtime) runtimes.push(runtime);
+    }
+    return runtimes;
   }
 
   async function startDiscordRuntime(ctx: ExtensionContext, discord: DiscordRuntime, failHard = false): Promise<boolean> {
@@ -344,8 +365,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute = buildRoute(ctx, restoredBinding);
     runtime = await ensureRuntime();
     await runtime.registerRoute(currentRoute);
-    const discord = await ensureDiscordRuntime();
-    if (discord) {
+    for (const discord of await ensureAllDiscordRuntimes()) {
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, false);
     }
@@ -461,8 +481,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     await tunnelRuntime.registerRoute(currentRoute);
 
-    const discord = await ensureDiscordRuntime(ctx, true);
-    if (discord) {
+    for (const discord of await ensureAllDiscordRuntimes(ctx, true)) {
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, false);
     }
@@ -496,13 +515,17 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(`Open this Telegram pairing link: ${deepLink}`, "info");
   }
 
-  async function handleRelayConnect(ctx: ExtensionContext, channel: RelaySetupChannel, explicitLabel?: string): Promise<void> {
+  async function handleRelayConnect(ctx: ExtensionContext, channel: RelaySetupChannel, explicitLabel?: string, instanceId = "default"): Promise<void> {
     if (channel === "telegram") {
       await handleConnect(ctx, explicitLabel);
       return;
     }
     const config = await ensureConfig(ctx, true);
-    if (!relayChannelReady(config, channel)) {
+    const selectedDiscordConfig = channel === "discord" ? config.discordInstances?.[instanceId] ?? (instanceId === "default" ? config.discord : undefined) : undefined;
+    const channelReady = channel === "discord"
+      ? Boolean(selectedDiscordConfig?.enabled && selectedDiscordConfig.botToken)
+      : relayChannelReady(config, channel);
+    if (!channelReady) {
       const findings = relaySetupDiagnostics(config).filter((finding) => finding.channel === channel && finding.severity === "error");
       ctx.ui.notify(redactSecrets([
         `${channel} is not ready for pairing.`,
@@ -523,7 +546,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       });
     }
     if (channel === "discord") {
-      const discord = await ensureDiscordRuntime(ctx, true);
+      const discord = await ensureDiscordRuntime(ctx, true, instanceId);
       if (!discord) throw new Error("Discord runtime is not configured. Run /relay setup discord or /relay doctor for details.");
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, true);
@@ -538,7 +561,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       codeKind: channel === "discord" ? "pin" : "nonce",
     });
     const expiryMinutes = Math.round((Date.parse(pairing.expiresAt) - Date.now()) / 60_000);
-    const discordApplicationId = config.discord?.applicationId ?? config.discord?.clientId;
+    const discordApplicationId = selectedDiscordConfig?.applicationId ?? selectedDiscordConfig?.clientId;
     if (channel === "discord" && discordApplicationId) {
       const chatUrl = discordBotChatUrl(discordApplicationId);
       const qrLines = renderQrLines(chatUrl);
@@ -619,7 +642,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (runtime) {
       await runtime.unregisterRoute(disconnectedRoute.sessionKey);
     }
-    if (discordRuntime) {
+    for (const discordRuntime of discordRuntimes.values()) {
       await discordRuntime.unregisterRoute(disconnectedRoute.sessionKey);
     }
     currentRoute = undefined;
@@ -669,9 +692,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             case "setup":
               await handleRelaySetup(ctx, intent.channel ?? "telegram");
               return;
-            case "connect":
-              await handleRelayConnect(ctx, intent.channel ?? "telegram", intent.args);
+            case "connect": {
+              const instanceId = intent.messengerRef?.split(":")[1] ?? "default";
+              await handleRelayConnect(ctx, intent.channel ?? "telegram", intent.args, instanceId);
               return;
+            }
             case "doctor":
               await handleRelayDoctor(ctx);
               return;
@@ -879,7 +904,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     publishRouteStateSoon();
     await sendSessionNotification(runtime, currentRoute, status);
-    const discord = await ensureDiscordRuntime();
-    await discord?.notifyTurnCompleted(currentRoute, status);
+    for (const discord of await ensureAllDiscordRuntimes()) {
+      await discord.notifyTurnCompleted(currentRoute, status);
+    }
   });
 }

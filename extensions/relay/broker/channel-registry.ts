@@ -28,6 +28,10 @@ export function createEnabledChannelAdapters(config: TelegramTunnelConfig, opera
   return adapters;
 }
 
-export function channelBindingStorageKey(channel: ChannelAdapterKind, sessionKey: string): string {
+export function channelBindingStorageKey(channel: ChannelAdapterKind, sessionKey: string, instanceId = "default"): string {
+  return `${channel}:${instanceId}:${sessionKey}`;
+}
+
+export function legacyChannelBindingStorageKey(channel: ChannelAdapterKind, sessionKey: string): string {
   return `${channel}:${sessionKey}`;
 }
