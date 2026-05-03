@@ -1,7 +1,7 @@
 # relay-setup-tui Specification
 
 ## Purpose
-TBD - created by archiving change add-interactive-setup-tui. Update Purpose after archive.
+Defines the interactive and fallback setup wizard experience for supported PiRelay messengers, including readiness diagnostics, safe snippets, links, troubleshooting, and secret-safe rendering.
 ## Requirements
 ### Requirement: Interactive messenger setup wizard
 The system SHALL provide an interactive setup wizard for each supported messenger when `/relay setup <messenger>` is invoked from a Pi context with TUI support.

@@ -1,7 +1,7 @@
 # relay-configuration Specification
 
 ## Purpose
-TBD - created by archiving change harden-multi-messenger-support. Update Purpose after archive.
+Defines PiRelay configuration loading, legacy migration, messenger instance naming, safe diagnostics, and secret-handling rules for Telegram, Discord, Slack, and future adapters.
 ## Requirements
 ### Requirement: Namespaced PiRelay configuration
 The system SHALL load canonical configuration from a PiRelay namespace with shared relay defaults and namespaced messenger instances.

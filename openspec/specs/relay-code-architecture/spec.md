@@ -1,7 +1,7 @@
 # relay-code-architecture Specification
 
 ## Purpose
-TBD - created by archiving change harden-multi-messenger-support. Update Purpose after archive.
+Defines the canonical PiRelay source layout, module boundaries, migration constraints, and import-safety rules that keep shared relay logic separate from adapter and runtime side effects.
 ## Requirements
 ### Requirement: Layered TypeScript source layout
 The system SHALL organize PiRelay TypeScript implementation into cohesive domain folders instead of a flat extension directory.

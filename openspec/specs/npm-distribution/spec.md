@@ -1,7 +1,7 @@
 # npm-distribution Specification
 
 ## Purpose
-TBD - created by archiving change prepare-npm-publishing. Update Purpose after archive.
+Defines npm packaging and distribution requirements for PiRelay, including package metadata, shipped resources, command namespace, and exclusion of removed legacy extension paths.
 ## Requirements
 ### Requirement: PiRelay npm package identity
 The npm-distributed package SHALL use `pirelay` as the public npm package name and SHALL expose PiRelay/relay resources as the canonical runtime namespace.

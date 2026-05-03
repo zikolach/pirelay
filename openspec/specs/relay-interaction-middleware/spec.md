@@ -1,7 +1,7 @@
 # relay-interaction-middleware Specification
 
 ## Purpose
-TBD - created by archiving change add-relay-middleware-architecture. Update Purpose after archive.
+Defines the messenger-neutral interaction middleware pipeline for authorization, safety checks, event transformation, tracing, and side-effect ordering before relay actions execute.
 ## Requirements
 ### Requirement: Channel-neutral interaction pipeline
 The system SHALL process relay interactions through a channel-neutral middleware pipeline between channel adapters and Pi session delivery.

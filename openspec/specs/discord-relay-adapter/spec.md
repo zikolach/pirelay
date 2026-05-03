@@ -1,7 +1,7 @@
 # discord-relay-adapter Specification
 
 ## Purpose
-TBD - created by archiving change add-discord-slack-adapters. Update Purpose after archive.
+Defines Discord adapter behavior for DM pairing, authorization, prompt relay, output retrieval, guided actions, and bounded media transport according to Discord platform limits.
 ## Requirements
 ### Requirement: Discord DM pairing and authorization
 The system SHALL allow a local Pi user to pair the active Pi session with an authorized Discord direct-message conversation.

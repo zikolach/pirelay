@@ -1,7 +1,7 @@
 # relay-broker-topology Specification
 
 ## Purpose
-TBD - created by archiving change harden-multi-messenger-support. Update Purpose after archive.
+Defines the local and federated PiRelay broker topology for route registration, ingress ownership, peer communication, failover, and duplicate-bot safety across machines and sessions.
 ## Requirements
 ### Requirement: Machine-local broker supervisor
 The system SHALL run at most one authoritative PiRelay broker per machine for a configured PiRelay state directory.

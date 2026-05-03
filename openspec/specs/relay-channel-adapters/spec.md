@@ -1,7 +1,7 @@
 # relay-channel-adapters Specification
 
 ## Purpose
-TBD - created by archiving change add-channel-adapter-architecture. Update Purpose after archive.
+Defines channel-neutral adapter contracts and parity expectations so Telegram, Discord, Slack, and future messengers expose consistent relay capabilities through platform-specific transports.
 ## Requirements
 ### Requirement: Channel-neutral relay core
 The system SHALL separate messenger-independent PiRelay behavior from messaging-platform-specific transport implementations for all supported messenger adapters.

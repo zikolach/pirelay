@@ -1,7 +1,7 @@
 # slack-relay-adapter Specification
 
 ## Purpose
-TBD - created by archiving change add-discord-slack-adapters. Update Purpose after archive.
+Defines Slack adapter behavior for pairing, authorization, prompt relay, output retrieval, and bounded media transport through Slack DMs or explicitly authorized channel contexts.
 ## Requirements
 ### Requirement: Slack DM pairing and authorization
 The system SHALL allow a local Pi user to pair the active Pi session with an authorized Slack app direct-message conversation.

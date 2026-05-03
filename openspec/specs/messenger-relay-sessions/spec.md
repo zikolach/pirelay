@@ -1,7 +1,7 @@
 # messenger-relay-sessions Specification
 
 ## Purpose
-TBD - created by archiving change harden-multi-messenger-support. Update Purpose after archive.
+Defines messenger-neutral pairing, authorization, session selection, remote controls, notifications, progress, media, and output retrieval semantics shared by all live PiRelay messengers.
 ## Requirements
 ### Requirement: Messenger-neutral session pairing
 The system SHALL allow a local Pi user to pair the active session with any enabled configured messenger instance using a channel-scoped, single-use, expiring pairing flow.

@@ -1,7 +1,7 @@
 # discord-runtime-client Specification
 
 ## Purpose
-TBD - created by archiving change add-discord-runtime-client. Update Purpose after archive.
+Defines the live Discord bot runtime lifecycle, DM pairing, command routing, outbound delivery, and secret-safe diagnostics needed for Discord to operate as a first-class PiRelay messenger.
 ## Requirements
 ### Requirement: Live Discord bot lifecycle
 The system SHALL start and stop a live Discord bot runtime when Discord relay is explicitly enabled and configured.
@@ -20,14 +20,18 @@ The system SHALL start and stop a live Discord bot runtime when Discord relay is
 - **AND** the Telegram runtime remains available when it is otherwise configured
 
 ### Requirement: Discord direct-message pairing
-The system SHALL allow a configured Discord bot DM to pair with a Pi session using a channel-scoped, expiring pairing command.
+The system SHALL allow a configured Discord bot DM to pair with a Pi session using a channel-scoped, expiring pairing command, with `relay pair <pin>` as the reliable user-facing command and `/start <pin>` only as a compatibility alias.
 
 #### Scenario: Discord pairing command is accepted
-- **WHEN** an authorized Discord user sends `/start <code>` in a direct message before the pairing expires
+- **WHEN** an authorized Discord user sends `relay pair <pin>` in a direct message before the pairing expires
 - **THEN** the system consumes the Discord-scoped pending pairing and binds that Discord conversation to the target Pi session
 
+#### Scenario: Discord compatibility pairing alias is accepted
+- **WHEN** an authorized Discord user sends `/start <pin>` in a direct message before the pairing expires
+- **THEN** the system MAY consume the Discord-scoped pending pairing and bind that Discord conversation as a compatibility path, but this alias is not the primary documented pairing flow
+
 #### Scenario: Pairing command is not from a DM
-- **WHEN** a Discord `/start <code>` pairing command is received from a guild channel while guild-channel pairing is not explicitly enabled and allowed
+- **WHEN** a Discord `relay pair <pin>` or `/start <pin>` pairing command is received from a guild channel while guild-channel pairing is not explicitly enabled and allowed
 - **THEN** the system rejects the pairing and does not create a binding
 
 #### Scenario: Pairing command is expired or wrong channel
