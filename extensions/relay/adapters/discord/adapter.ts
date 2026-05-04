@@ -210,7 +210,7 @@ export function discordGatewayEventToChannelEvent(event: DiscordGatewayEvent, co
     : discordMessageToChannelEvent(event.payload as DiscordMessagePayload, config);
 }
 
-export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
+export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes" | "applicationId" | "clientId">): ChannelInboundMessage | undefined {
   if (message.author.bot || message.webhook_id) return undefined;
   const conversation = discordConversation(message.channel_id, message.guild_id);
   const sender = discordIdentity(message.author, message.guild_id);
@@ -223,7 +223,11 @@ export function discordMessageToChannelEvent(message: DiscordMessagePayload, con
     attachments: (message.attachments ?? []).map((attachment) => discordAttachmentToInboundFile(attachment, config)),
     conversation,
     sender,
-    metadata: { guildId: message.guild_id, mentions: discordMentionedUserIds(message.content ?? "") },
+    metadata: {
+      guildId: message.guild_id,
+      mentions: discordMentionedUserIds(message.content ?? ""),
+      sharedRoomAddressing: discordMessageSharedRoomAddressing(message, config.applicationId ?? config.clientId),
+    },
   };
 }
 
@@ -247,9 +251,15 @@ export function discordMentionedUserIds(text: string): string[] {
 }
 
 export function discordMessageSharedRoomAddressing(message: Pick<DiscordMessagePayload, "content">, localBotUserId: string | undefined): SharedRoomAddressing {
-  const mentions = discordMentionedUserIds(message.content ?? "");
-  if (mentions.length === 0) return { kind: "none" };
-  if (localBotUserId && mentions.includes(localBotUserId)) return { kind: "local" };
+  return discordMentionsSharedRoomAddressing(discordMentionedUserIds(message.content ?? ""), localBotUserId);
+}
+
+export function discordMentionsSharedRoomAddressing(mentions: readonly string[], localBotUserId: string | undefined): SharedRoomAddressing {
+  const uniqueMentions = [...new Set(mentions.map((mention) => mention.trim()).filter(Boolean))];
+  if (uniqueMentions.length === 0) return { kind: "none" };
+  if (localBotUserId && uniqueMentions.includes(localBotUserId)) {
+    return uniqueMentions.length === 1 ? { kind: "local" } : { kind: "ambiguous", reason: "multiple bot mentions" };
+  }
   return { kind: "remote" };
 }
 

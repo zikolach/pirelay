@@ -31,6 +31,7 @@ describe("shared-room helpers", () => {
     expect(parseSharedRoomUseArgs("laptop")).toBeUndefined();
     expect(parseSharedRoomToArgs("desktop api run tests")).toEqual({ machineSelector: "desktop", sessionAndPrompt: "api run tests" });
     expect(parseSharedRoomSessionsArgs("all")).toEqual({ kind: "all" });
+    expect(parseSharedRoomSessionsArgs("*")).toEqual({ kind: "all" });
     expect(parseSharedRoomSessionsArgs("desktop")).toEqual({ kind: "machine", machineSelector: "desktop" });
     expect(parseSharedRoomSessionsArgs("")).toEqual({ kind: "local" });
   });

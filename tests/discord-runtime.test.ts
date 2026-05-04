@@ -516,6 +516,26 @@ describe("DiscordRuntime", () => {
     expect(await store.getActiveChannelSelection("discord", "room1", "u1")).toMatchObject({ machineId: "desktop" });
   });
 
+  it("routes shared-room prompts addressed by Discord bot mention", async () => {
+    const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    cfg.machineId = "laptop";
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+
+    await ops.handler?.(discordMessage("<@456> remote should stay silent", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("<@123> local should route", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("<@123> and <@456> ambiguous", { channelId: "room1", guildId: "g1" }));
+
+    expect(sendUserMessage).toHaveBeenCalledOnce();
+    expect(sendUserMessage).toHaveBeenCalledWith("<@123> local should route", undefined);
+    expect(ops.messages.some((message) => message.content.includes("could not determine"))).toBe(true);
+  });
+
   it("routes shared-room prompts only to explicitly selected local machine bot", async () => {
     const cfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
     cfg.machineId = "laptop";

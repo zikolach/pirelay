@@ -110,6 +110,7 @@ export function parseSharedRoomToArgs(args: string): ParsedSharedRoomToArgs | un
 export function parseSharedRoomSessionsArgs(args: string): ParsedSharedRoomSessionsArgs {
   const selector = args.trim();
   if (!selector) return { kind: "local" };
+  if (allMachineSelectors.has(selector.toLowerCase())) return { kind: "all" };
   const normalized = normalizeMachineSelector(selector);
   if (allMachineSelectors.has(normalized)) return { kind: "all" };
   if (localMachineSelectors.has(normalized)) return { kind: "local" };

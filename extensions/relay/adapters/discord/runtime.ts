@@ -1,6 +1,6 @@
 import type { ChannelBinding, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelRouteAddress } from "../../core/channel-adapter.js";
 import { completeDiscordPairing } from "../channel-pairing.js";
-import { DiscordChannelAdapter, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
+import { DiscordChannelAdapter, discordMentionsSharedRoomAddressing, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
@@ -246,7 +246,12 @@ export class DiscordRuntime {
   }
 
   private sharedRoomAddressing(message: ChannelInboundMessage): SharedRoomAddressing | undefined {
-    return sharedRoomAddressingFromEvent(message);
+    const explicit = sharedRoomAddressingFromEvent(message);
+    if (explicit) return explicit;
+    const rawMentions = message.metadata?.mentions;
+    const mentions = Array.isArray(rawMentions) ? rawMentions.filter((mention): mention is string => typeof mention === "string") : [];
+    if (mentions.length === 0) return undefined;
+    return discordMentionsSharedRoomAddressing(mentions, this.config.discord?.applicationId ?? this.config.discord?.clientId);
   }
 
   private isSharedRoomMessage(message: Pick<ChannelInboundMessage, "conversation">): boolean {
