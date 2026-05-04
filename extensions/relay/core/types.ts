@@ -15,6 +15,13 @@ export interface ProgressActivityEntry {
   at: number;
 }
 
+export interface SharedRoomRelayConfig {
+  enabled?: boolean;
+  roomHint?: string;
+  plainText?: "auto" | "enabled" | "addressed-only";
+  machineAliases?: string[];
+}
+
 export interface DiscordRelayConfig {
   enabled?: boolean;
   botToken?: string;
@@ -23,6 +30,7 @@ export interface DiscordRelayConfig {
   allowUserIds?: string[];
   allowGuildChannels?: boolean;
   allowGuildIds?: string[];
+  sharedRoom?: SharedRoomRelayConfig;
   maxTextChars?: number;
   maxFileBytes?: number;
   allowedImageMimeTypes?: string[];
@@ -36,6 +44,7 @@ export interface SlackRelayConfig {
   workspaceId?: string;
   allowUserIds?: string[];
   allowChannelMessages?: boolean;
+  sharedRoom?: SharedRoomRelayConfig;
   maxTextChars?: number;
   maxFileBytes?: number;
   allowedImageMimeTypes?: string[];
@@ -45,6 +54,9 @@ export interface TelegramTunnelConfig {
   botToken: string;
   configPath?: string;
   stateDir: string;
+  machineId?: string;
+  machineDisplayName?: string;
+  machineAliases?: string[];
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;
   allowUserIds: number[];
@@ -146,6 +158,8 @@ export interface ChannelActiveSelectionRecord {
   userId: string;
   sessionKey: string;
   updatedAt: string;
+  machineId?: string;
+  machineDisplayName?: string;
 }
 
 export interface TrustedRelayUserRecord {

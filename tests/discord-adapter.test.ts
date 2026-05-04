@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DiscordChannelAdapter, discordCapabilities, discordMessageToChannelEvent, discordPairingCommand, escapeDiscordPlainText, isDiscordGuildMessage, isDiscordIdentityAllowed } from "../extensions/relay/adapters/discord/adapter.js";
+import { DiscordChannelAdapter, discordCapabilities, discordMentionedUserIds, discordMessageSharedRoomAddressing, discordMessageToChannelEvent, discordPairingCommand, escapeDiscordPlainText, isDiscordGuildMessage, isDiscordIdentityAllowed } from "../extensions/relay/adapters/discord/adapter.js";
 
 const config = {
   enabled: true,
@@ -142,6 +142,13 @@ describe("DiscordChannelAdapter", () => {
     expect(isDiscordIdentityAllowed({ channel: "discord", userId: "u1", metadata: { guildId: "g1" } }, { ...config, allowGuildChannels: true })).toBe(false);
     expect(isDiscordIdentityAllowed({ channel: "discord", userId: "u1", metadata: { guildId: "g1" } }, { ...config, allowGuildChannels: true, allowGuildIds: ["g1"] })).toBe(true);
     expect(discordPairingCommand("abc")).toBe("/start abc");
+  });
+
+  it("normalizes Discord shared-room mentions", () => {
+    expect(discordMentionedUserIds("hi <@123> and <@!456>")).toEqual(["123", "456"]);
+    expect(discordMessageSharedRoomAddressing({ content: "hi <@123>" }, "123")).toEqual({ kind: "local" });
+    expect(discordMessageSharedRoomAddressing({ content: "hi <@456>" }, "123")).toEqual({ kind: "remote" });
+    expect(discordMessageSharedRoomAddressing({ content: "hi" }, "123")).toEqual({ kind: "none" });
   });
 
   it("declares conservative Discord DM capabilities", () => {

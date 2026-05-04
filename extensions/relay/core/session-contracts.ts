@@ -23,6 +23,8 @@ export interface RelayActiveSelection {
   userId: string;
   sessionKey: string;
   selectedAt: string;
+  machineId?: string;
+  machineDisplayName?: string;
 }
 
 export interface RelayActionScope {

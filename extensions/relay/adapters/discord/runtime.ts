@@ -11,6 +11,7 @@ import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
+import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
 
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -143,10 +144,20 @@ export class DiscordRuntime {
     }
 
     const command = parseDiscordCommand(text);
-    const preferredSessionKey = command?.name === "to" ? await this.targetSessionKeyForToCommand(message, command.args) : undefined;
-    const binding = await this.findDiscordBinding(message, { preferredSessionKey });
-    if (!binding || !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
-      await this.sendText(message, "This Discord chat is not paired with a Pi session. Run /relay connect discord locally first.");
+    if (this.isSharedRoomMessage(message) && !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
+      if (this.shouldRejectUnauthorizedSharedRoomEvent(message, command)) {
+        await this.sendText(message, "This Discord identity is not authorized to control this PiRelay machine bot.");
+      }
+      return;
+    }
+    const sharedRoomDecision = await this.applySharedRoomPreRouting(message, command);
+    if (sharedRoomDecision.kind === "silent") return;
+    const routedMessage = sharedRoomDecision.message ?? message;
+    const routedCommand = sharedRoomDecision.command ?? command;
+    const preferredSessionKey = routedCommand?.name === "to" ? await this.targetSessionKeyForToCommand(routedMessage, routedCommand.args) : await this.sharedRoomPreferredSessionKey(routedMessage);
+    const binding = await this.findDiscordBinding(routedMessage, { preferredSessionKey });
+    if (!binding || !isDiscordIdentityAllowed(routedMessage.sender, this.config.discord)) {
+      await this.sendText(routedMessage, "This Discord chat is not paired with a Pi session. Run /relay connect discord locally first.");
       return;
     }
 
@@ -157,11 +168,107 @@ export class DiscordRuntime {
       // clients (including route-less stale clients) must stay silent instead
       // of sending a false offline response before the owner handles it.
       if (!this.ownedBindingSessionKeys.has(binding.sessionKey)) return;
-      await this.sendText(message, `The target Pi session (${binding.sessionLabel}) is not online. Re-run /relay connect discord locally.`);
+      await this.sendText(routedMessage, `The target Pi session (${binding.sessionLabel}) is not online. Re-run /relay connect discord locally.`);
       return;
     }
 
-    await this.handleBoundMessage(message, binding, route);
+    await this.handleBoundMessage(routedMessage, binding, route);
+  }
+
+  private async applySharedRoomPreRouting(message: ChannelInboundMessage, command: DiscordCommand | undefined): Promise<{ kind: "continue"; message?: ChannelInboundMessage; command?: DiscordCommand } | { kind: "silent" }> {
+    if (!this.isSharedRoomMessage(message)) return { kind: "continue" };
+    const localMachine = this.sharedRoomMachineIdentity();
+    const explicitAddressing = this.sharedRoomAddressing(message);
+    if (command?.name === "use") {
+      const parsed = parseSharedRoomUseArgs(command.args);
+      if (!parsed) return { kind: "continue" };
+      const target = resolveSharedRoomMachineTarget({ selector: parsed.machineSelector, localMachine });
+      if (target.kind === "local") {
+        const rewritten = { name: "use" as const, args: parsed.sessionSelector };
+        return { kind: "continue", command: rewritten, message: { ...message, text: `relay use ${parsed.sessionSelector}` } };
+      }
+      const remoteMachineId = target.kind === "remote" ? target.machineId ?? normalizeMachineSelector(parsed.machineSelector) : normalizeMachineSelector(parsed.machineSelector);
+      await this.setActiveSelection(message, `remote:${remoteMachineId}:${parsed.sessionSelector}`, { machineId: remoteMachineId, machineDisplayName: parsed.machineSelector });
+      return { kind: "silent" };
+    }
+
+    if (command?.name === "to") {
+      const parsed = parseSharedRoomToArgs(command.args);
+      if (!parsed) return { kind: "continue" };
+      const target = resolveSharedRoomMachineTarget({ selector: parsed.machineSelector, localMachine });
+      if (target.kind === "local") {
+        const rewritten = { name: "to" as const, args: parsed.sessionAndPrompt };
+        return { kind: "continue", command: rewritten, message: { ...message, text: `relay to ${parsed.sessionAndPrompt}` } };
+      }
+      return { kind: "silent" };
+    }
+
+    if (command?.name === "sessions") {
+      const parsed = parseSharedRoomSessionsArgs(command.args);
+      if (parsed.kind === "machine") {
+        const target = resolveSharedRoomMachineTarget({ selector: parsed.machineSelector ?? "", localMachine });
+        if (target.kind !== "local") return { kind: "silent" };
+        return { kind: "continue", command: { name: "sessions", args: "" }, message: { ...message, text: "relay sessions" } };
+      }
+      return { kind: "continue" };
+    }
+
+    const active = await this.store.getActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId);
+    const classification = classifySharedRoomEvent({ explicitAddressing, activeSelection: active, localMachine });
+    switch (classification.kind) {
+      case "explicit-local":
+      case "active-local":
+        return { kind: "continue" };
+      case "explicit-ambiguous":
+        await this.sendText(message, `I could not determine which PiRelay machine bot was addressed${classification.reason ? `: ${classification.reason}` : "."}`);
+        return { kind: "silent" };
+      case "explicit-remote":
+      case "active-remote":
+      case "no-target":
+        return { kind: "silent" };
+    }
+  }
+
+  private shouldRejectUnauthorizedSharedRoomEvent(message: ChannelInboundMessage, command: DiscordCommand | undefined): boolean {
+    if (!this.isSharedRoomMessage(message)) return false;
+    const localMachine = this.sharedRoomMachineIdentity();
+    const targetSelector = command?.name === "use"
+      ? parseSharedRoomUseArgs(command.args)?.machineSelector
+      : command?.name === "to"
+        ? parseSharedRoomToArgs(command.args)?.machineSelector
+        : command?.name === "sessions"
+          ? parseSharedRoomSessionsArgs(command.args).machineSelector
+          : undefined;
+    if (targetSelector) {
+      return resolveSharedRoomMachineTarget({ selector: targetSelector, localMachine }).kind === "local";
+    }
+    return this.sharedRoomAddressing(message)?.kind === "local";
+  }
+
+  private sharedRoomAddressing(message: ChannelInboundMessage): SharedRoomAddressing | undefined {
+    return sharedRoomAddressingFromEvent(message);
+  }
+
+  private isSharedRoomMessage(message: Pick<ChannelInboundMessage, "conversation">): boolean {
+    return Boolean(this.config.discord?.sharedRoom?.enabled) && message.conversation.kind !== "private";
+  }
+
+  private sharedRoomMachineIdentity(): SharedRoomMachineIdentity {
+    const aliases = [
+      ...(this.config.machineAliases ?? []),
+      ...(this.config.discord?.sharedRoom?.machineAliases ?? []),
+    ];
+    return sharedRoomMachineIdentity({
+      machineId: this.config.machineId ?? "local",
+      displayName: this.config.machineDisplayName,
+      aliases,
+    });
+  }
+
+  private async sharedRoomPreferredSessionKey(message: ChannelInboundMessage): Promise<string | undefined> {
+    if (!this.isSharedRoomMessage(message)) return undefined;
+    const active = await this.store.getActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId);
+    return active?.machineId && active.machineId !== this.sharedRoomMachineIdentity().machineId ? undefined : active?.sessionKey;
   }
 
   private async handlePairing(message: ChannelInboundMessage, code: string): Promise<void> {
@@ -290,7 +397,7 @@ export class DiscordRuntime {
         await this.sendText(message, this.statusTextForRoute(route, binding, true));
         return;
       case "sessions":
-        await this.sendText(message, formatSessionList(await this.sessionEntriesForMessage(message), await this.activeSelectionForMessage(message) ?? route.sessionKey));
+        await this.sendText(message, this.formatSessionListForMessage(message, await this.sessionEntriesForMessage(message), await this.activeSelectionForMessage(message) ?? route.sessionKey));
         return;
       case "use":
         await this.handleUseCommand(message, command.args);
@@ -426,7 +533,7 @@ export class DiscordRuntime {
       await this.sendText(message, formatSessionSelectorError(result, args));
       return;
     }
-    await this.setActiveSelection(message, result.entry.sessionKey);
+    await this.setActiveSelection(message, result.entry.sessionKey, this.isSharedRoomMessage(message) ? { machineId: this.sharedRoomMachineIdentity().machineId, machineDisplayName: this.sharedRoomMachineIdentity().displayName } : {});
     const binding = await this.findBindingForSession(message, result.entry.sessionKey);
     const route = this.routes.get(result.entry.sessionKey);
     await this.sendText(message, route && binding ? this.statusTextForRoute(route, binding, true) : `Active session selected: ${result.entry.sessionLabel}`);
@@ -561,6 +668,14 @@ export class DiscordRuntime {
     return [...byKey.values()];
   }
 
+  private formatSessionListForMessage(message: ChannelInboundMessage, entries: SessionListEntry[], activeSessionKey: string | undefined): string {
+    const list = formatSessionList(entries, activeSessionKey);
+    if (!this.isSharedRoomMessage(message)) return list;
+    const machine = this.sharedRoomMachineIdentity();
+    const aliasText = machine.aliases.length > 0 ? `\nAliases: ${machine.aliases.join(", ")}` : "";
+    return [`Machine: ${machine.displayName ?? machine.machineId} (${machine.machineId})${aliasText}`, "", list].join("\n");
+  }
+
   private async discordBindingsForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord[]> {
     const persisted = Object.values((await this.store.load()).channelBindings)
       .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
@@ -595,9 +710,9 @@ export class DiscordRuntime {
     return persisted?.sessionKey ?? this.activeSessionByConversationUser.get(this.activeSelectionKey(message));
   }
 
-  private async setActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey: string): Promise<void> {
+  private async setActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey: string, options: { machineId?: string; machineDisplayName?: string } = {}): Promise<void> {
     this.activeSessionByConversationUser.set(this.activeSelectionKey(message), sessionKey);
-    await this.store.setActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId, sessionKey);
+    await this.store.setActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId, sessionKey, options);
   }
 
   private async clearActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey?: string): Promise<void> {

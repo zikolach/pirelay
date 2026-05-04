@@ -13,6 +13,7 @@ import type {
   ChannelOutboundPayload,
   ChannelRouteAddress,
 } from "../../core/channel-adapter.js";
+import type { SharedRoomAddressing } from "../../core/shared-room.js";
 import { TelegramApiClient } from "./api.js";
 import type {
   TelegramChatSummary,
@@ -127,6 +128,14 @@ export function telegramCapabilities(config: TelegramTunnelConfig): ChannelCapab
     maxImageBytes: config.maxOutboundImageBytes,
     supportedImageMimeTypes: config.allowedImageMimeTypes,
     supportsMarkdown: false,
+    sharedRooms: {
+      ordinaryText: false,
+      mentions: true,
+      replies: true,
+      platformCommands: true,
+      mediaAttachments: true,
+      membershipEvents: false,
+    },
   };
 }
 
@@ -190,7 +199,19 @@ export function telegramUpdateToChannelEvent(update: TelegramInboundMessage | Te
     attachments: update.images?.map(telegramImageReferenceToInboundFile) ?? [],
     conversation: telegramChatToChannelConversation(update.chat),
     sender: telegramUserToChannelIdentity(update.user),
+    metadata: { botMentions: telegramMentionedBotUsernames(update.text) },
   } satisfies ChannelInboundMessage;
+}
+
+export function telegramMentionedBotUsernames(text: string): string[] {
+  return [...text.matchAll(/@([A-Za-z][A-Za-z0-9_]{4,31})/g)].map((match) => match[1]!).filter(Boolean);
+}
+
+export function telegramMessageSharedRoomAddressing(text: string, localBotUsername: string | undefined): SharedRoomAddressing {
+  const mentions = telegramMentionedBotUsernames(text).map((username) => username.toLowerCase());
+  if (mentions.length === 0) return { kind: "none" };
+  if (localBotUsername && mentions.includes(localBotUsername.replace(/^@/, "").toLowerCase())) return { kind: "local" };
+  return { kind: "remote" };
 }
 
 export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineKeyboard {

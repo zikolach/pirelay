@@ -148,7 +148,8 @@ export function renderRelayDoctorReport(config: TelegramTunnelConfig, findings: 
   lines.push("");
   lines.push("Broker topology");
   lines.push("  ✅ PiRelay uses one local broker per machine/state directory.");
-  lines.push("  ⚠️ If a bot/account is configured on multiple machines, configure one ingress owner and broker federation before enabling polling on each machine.");
+  lines.push("  ⚠️ If the same bot/account is configured on multiple machines, configure one ingress owner and broker federation before enabling polling on each machine.");
+  lines.push("  ✅ No-federation shared-room mode uses one dedicated bot/app identity per machine in a shared group/channel; non-target bots remain silent.");
 
   return redactSecrets(lines.join("\n").trimEnd());
 }
@@ -161,6 +162,7 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Set TELEGRAM_BOT_TOKEN or telegram.botToken in ~/.pi/agent/pirelay/config.json, or use a tokenEnv reference.",
         "Run /relay setup telegram, then /relay connect telegram.",
         "Pairing uses a private Telegram chat and local confirmation unless allowUserIds is configured.",
+        "Shared-room mode: create one Telegram group/supergroup, invite one dedicated machine bot per broker, and disable bot privacy mode or use mentions/replies for addressed commands.",
       ].join("\n");
     case "discord":
       return [
@@ -172,6 +174,7 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Invite scope: bot applications.commands. Use permissions=0 for DM-first operation.",
         "Keep Discord DM-first; set allowUserIds before enabling live control.",
         "Run /relay connect discord [name], then send the displayed /start code to the bot in a DM.",
+        "Shared-room mode: use a dedicated Discord application/bot per machine in one server channel; prefer `relay <command>` text-prefix or @mention forms over collision-prone top-level slash commands.",
       ].join("\n");
     case "slack":
       return [
@@ -182,6 +185,7 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Use slack.eventMode=socket for local Pi, or webhook mode with raw-body signature verification.",
         "Keep Slack DM-first; set allowUserIds before enabling live control.",
         "Run /relay connect slack [name], then send the displayed /pirelay code to the app in a DM.",
+        "Shared-room mode: use a dedicated Slack app/bot per machine in one channel with app mention or channel-message scopes, and keep user allow-lists explicit.",
       ].join("\n");
   }
 }
@@ -339,6 +343,7 @@ function telegramGuidance(config: TelegramTunnelConfig): string {
     "Set TELEGRAM_BOT_TOKEN or telegram.botToken in ~/.pi/agent/pirelay/config.json, or use a tokenEnv reference.",
     "Run /relay setup telegram, then /relay connect telegram.",
     "Pairing uses a private Telegram chat and local confirmation unless allowUserIds is configured.",
+    "Shared-room mode uses a Telegram group/supergroup with one dedicated bot per machine; ordinary unaddressed prompts require bot privacy mode/permissions that allow group messages, otherwise use mentions or replies.",
   ].join("\n");
 }
 
@@ -353,6 +358,7 @@ function discordGuidance(config: DiscordRelayConfig | undefined): string {
     "Invite scope: bot applications.commands with permissions=0 for DM-first operation.",
     "Keep Discord DM-first; set allowUserIds before enabling live control.",
     "After inviting the bot to a server, DM it from the member list or server profile. If DM is unavailable, check Discord privacy settings for server member DMs.",
+    "Shared-room mode uses one dedicated Discord application/bot per machine in a shared server channel; prefer `relay <command>` or @mention forms for reliable multi-bot routing.",
   ];
   const applicationId = config?.applicationId ?? config?.clientId;
   if (applicationId) {
@@ -375,6 +381,7 @@ function slackGuidance(config: SlackRelayConfig | undefined): string {
     "Set slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET from Basic Information > App Credentials, and preferably slack.workspaceId.",
     `Event mode: ${mode}. ${mode === "socket" ? "Socket Mode is recommended for local Pi usage." : "Webhook mode must verify Slack signatures against the raw request body."}`,
     "Keep Slack DM-first; set allowUserIds before enabling live control.",
+    "Shared-room mode uses one dedicated Slack app/bot per machine in a shared channel with app mention or channel-message scopes.",
     "Run /relay connect slack [name], then send the displayed /pirelay code to the app in a DM.",
   ].join("\n");
 }

@@ -469,6 +469,143 @@ describe("DiscordRuntime", () => {
     expect(sendUserMessage).toHaveBeenCalledWith("after restart", undefined);
   });
 
+  it("keeps shared-room active selections independent across messenger conversations", async () => {
+    const laptopCfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    laptopCfg.machineId = "laptop";
+    laptopCfg.machineDisplayName = "Laptop";
+    laptopCfg.machineAliases = ["lap"];
+    const laptopOps = new FakeDiscordOperations();
+    const laptopRuntime = new DiscordRuntime(laptopCfg, { operations: laptopOps });
+    const { route: laptopRoute, sendUserMessage: laptopSend } = route();
+    await laptopRuntime.registerRoute(laptopRoute);
+    await laptopRuntime.start();
+    const store = new TunnelStateStore(laptopCfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room-discord", userId: "u1", sessionKey: laptopRoute.sessionKey, sessionId: laptopRoute.sessionId, sessionLabel: laptopRoute.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room-telegram", userId: "u1", sessionKey: laptopRoute.sessionKey, sessionId: laptopRoute.sessionId, sessionLabel: laptopRoute.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+
+    await laptopOps.handler?.(discordMessage("relay use lap docs", { channelId: "room-discord", guildId: "g1" }));
+    await store.setActiveChannelSelection("discord", "room-telegram", "u1", "remote:desktop:api", { machineId: "desktop", machineDisplayName: "desktop" });
+    await laptopOps.handler?.(discordMessage("go from discord room", { channelId: "room-discord", guildId: "g1" }));
+    await laptopOps.handler?.(discordMessage("telegram room should be remote", { channelId: "room-telegram", guildId: "g1" }));
+
+    expect(laptopSend).toHaveBeenCalledOnce();
+    expect(laptopSend).toHaveBeenCalledWith("go from discord room", undefined);
+    expect(await store.getActiveChannelSelection("discord", "room-discord", "u1")).toMatchObject({ machineId: "laptop", sessionKey: laptopRoute.sessionKey });
+    expect(await store.getActiveChannelSelection("discord", "room-telegram", "u1")).toMatchObject({ machineId: "desktop" });
+  });
+
+  it("keeps non-target shared-room machine brokers silent", async () => {
+    const cfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    cfg.machineId = "laptop";
+    cfg.machineAliases = ["lap"];
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+
+    await ops.handler?.(discordMessage("unselected plain text", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("relay use desktop api", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("remote active plain text", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("relay to desktop api run tests", { channelId: "room1", guildId: "g1" }));
+
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(ops.messages).toHaveLength(0);
+    expect(await store.getActiveChannelSelection("discord", "room1", "u1")).toMatchObject({ machineId: "desktop" });
+  });
+
+  it("routes shared-room prompts only to explicitly selected local machine bot", async () => {
+    const cfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    cfg.machineId = "laptop";
+    cfg.machineAliases = ["lap"];
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+
+    await ops.handler?.(discordMessage("relay use lap docs", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("plain prompt", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("relay to lap docs targeted prompt", { channelId: "room1", guildId: "g1" }));
+
+    expect(sendUserMessage).toHaveBeenCalledTimes(2);
+    expect(sendUserMessage).toHaveBeenNthCalledWith(1, "plain prompt", undefined);
+    expect(sendUserMessage).toHaveBeenNthCalledWith(2, "targeted prompt", undefined);
+    expect(ops.messages.some((message) => message.content.includes("Prompt delivered to Pi."))).toBe(true);
+  });
+
+  it("coordinates two independent shared-room machine brokers through visible Discord commands", async () => {
+    const laptopCfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    laptopCfg.machineId = "laptop";
+    laptopCfg.machineDisplayName = "Laptop";
+    laptopCfg.machineAliases = ["lap"];
+    const desktopCfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    desktopCfg.machineId = "desktop";
+    desktopCfg.machineDisplayName = "Desktop";
+    desktopCfg.machineAliases = ["desk"];
+    const laptopOps = new FakeDiscordOperations();
+    const desktopOps = new FakeDiscordOperations();
+    const laptopRuntime = new DiscordRuntime(laptopCfg, { operations: laptopOps });
+    const desktopRuntime = new DiscordRuntime(desktopCfg, { operations: desktopOps });
+    const { route: laptopRoute, sendUserMessage: laptopSend } = route();
+    const { route: desktopRoute, sendUserMessage: desktopSend } = route();
+    desktopRoute.sessionKey = "desktop-session:memory";
+    desktopRoute.sessionId = "desktop-session";
+    desktopRoute.sessionLabel = "API";
+    await laptopRuntime.registerRoute(laptopRoute);
+    await desktopRuntime.registerRoute(desktopRoute);
+    await laptopRuntime.start();
+    await desktopRuntime.start();
+    const now = new Date().toISOString();
+    await new TunnelStateStore(laptopCfg.stateDir).upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: laptopRoute.sessionKey, sessionId: laptopRoute.sessionId, sessionLabel: laptopRoute.sessionLabel, metadata: { alias: "docs" }, boundAt: now, lastSeenAt: now });
+    await new TunnelStateStore(desktopCfg.stateDir).upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: desktopRoute.sessionKey, sessionId: desktopRoute.sessionId, sessionLabel: desktopRoute.sessionLabel, metadata: { alias: "api" }, boundAt: now, lastSeenAt: now });
+
+    const selectLaptop = discordMessage("relay use lap docs", { channelId: "room1", guildId: "g1" });
+    await laptopOps.handler?.(selectLaptop);
+    await desktopOps.handler?.(selectLaptop);
+    const laptopPrompt = discordMessage("run docs tests", { channelId: "room1", guildId: "g1" });
+    await laptopOps.handler?.(laptopPrompt);
+    await desktopOps.handler?.(laptopPrompt);
+    const desktopOneShot = discordMessage("relay to desk api deploy preview", { channelId: "room1", guildId: "g1" });
+    await laptopOps.handler?.(desktopOneShot);
+    await desktopOps.handler?.(desktopOneShot);
+
+    expect(laptopSend).toHaveBeenCalledOnce();
+    expect(laptopSend).toHaveBeenCalledWith("run docs tests", undefined);
+    expect(desktopSend).toHaveBeenCalledOnce();
+    expect(desktopSend).toHaveBeenCalledWith("deploy preview", undefined);
+    expect(laptopOps.messages.filter((message) => message.content.includes("Prompt delivered to Pi."))).toHaveLength(1);
+    expect(desktopOps.messages.filter((message) => message.content.includes("Prompt delivered to Pi."))).toHaveLength(1);
+  });
+
+  it("reports shared-room sessions only for the addressed local machine", async () => {
+    const cfg = await config({ allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    cfg.machineId = "laptop";
+    cfg.machineDisplayName = "Laptop";
+    cfg.machineAliases = ["lap"];
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+
+    await ops.handler?.(discordMessage("relay sessions desktop", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("relay sessions lap", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("relay sessions all", { channelId: "room1", guildId: "g1" }));
+
+    expect(ops.messages).toHaveLength(2);
+    expect(ops.messages[0]?.content).toContain("Machine: Laptop (laptop)");
+    expect(ops.messages[0]?.content).toContain("Aliases: lap");
+    expect(ops.messages[0]?.content).toContain("Pi sessions");
+    expect(ops.messages[1]?.content).toContain("Machine: Laptop (laptop)");
+  });
+
   it("routes authorized Discord prompts and busy delivery", async () => {
     const cfg = await config({ maxFileBytes: 1 });
     const ops = new FakeDiscordOperations();

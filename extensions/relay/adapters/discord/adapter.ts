@@ -14,6 +14,7 @@ import type {
 } from "../../core/channel-adapter.js";
 import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "../../core/channel-adapter.js";
 import type { DiscordRelayConfig } from "../../core/types.js";
+import type { SharedRoomAddressing } from "../../core/shared-room.js";
 
 export interface DiscordApiOperations {
   connect?(handler: (event: DiscordGatewayEvent) => Promise<void>): Promise<void>;
@@ -192,6 +193,14 @@ export function discordCapabilities(config: Pick<DiscordRelayConfig, "allowGuild
     maxImageBytes: config.maxFileBytes ?? DEFAULT_DISCORD_MAX_FILE_BYTES,
     supportedImageMimeTypes: config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES,
     supportsMarkdown: true,
+    sharedRooms: {
+      ordinaryText: Boolean(config.allowGuildChannels),
+      mentions: Boolean(config.allowGuildChannels),
+      replies: Boolean(config.allowGuildChannels),
+      platformCommands: Boolean(config.allowGuildChannels),
+      mediaAttachments: Boolean(config.allowGuildChannels),
+      membershipEvents: false,
+    },
   };
 }
 
@@ -214,7 +223,7 @@ export function discordMessageToChannelEvent(message: DiscordMessagePayload, con
     attachments: (message.attachments ?? []).map((attachment) => discordAttachmentToInboundFile(attachment, config)),
     conversation,
     sender,
-    metadata: { guildId: message.guild_id },
+    metadata: { guildId: message.guild_id, mentions: discordMentionedUserIds(message.content ?? "") },
   };
 }
 
@@ -231,6 +240,17 @@ export function discordInteractionToChannelEvent(interaction: DiscordInteraction
     sender: discordIdentity(user, interaction.guild_id),
     metadata: { guildId: interaction.guild_id },
   };
+}
+
+export function discordMentionedUserIds(text: string): string[] {
+  return [...text.matchAll(/<@!?(\d+)>/g)].map((match) => match[1]!).filter(Boolean);
+}
+
+export function discordMessageSharedRoomAddressing(message: Pick<DiscordMessagePayload, "content">, localBotUserId: string | undefined): SharedRoomAddressing {
+  const mentions = discordMentionedUserIds(message.content ?? "");
+  if (mentions.length === 0) return { kind: "none" };
+  if (localBotUserId && mentions.includes(localBotUserId)) return { kind: "local" };
+  return { kind: "remote" };
 }
 
 export function isDiscordGuildMessage(event: ChannelInboundEvent): boolean {

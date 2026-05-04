@@ -84,7 +84,11 @@ function usageForDefinition(definition: RemoteCommandDefinition, commandPrefix: 
   return definition.usage.startsWith("/") ? `${commandPrefix} ${definition.usage.slice(1)}` : `${commandPrefix} ${definition.usage}`;
 }
 
-export function buildHelpText(options: { includeBrokerOnly?: boolean; title?: string; commandPrefix?: string; footerLines?: string[] } = {}): string {
+export function buildHelpText(options: { includeBrokerOnly?: boolean; title?: string; commandPrefix?: string; footerLines?: string[]; includeSharedRoomHints?: boolean } = {}): string {
+  const sharedRoomLines = options.includeSharedRoomHints === false ? [] : [
+    "",
+    "Shared-room machine bots: use /use <machine> <session> to select a machine session, /to <machine> <session> <prompt> for one-shot prompts, or mention/reply to a machine bot when plain room text is unavailable.",
+  ];
   return [
     options.title ?? "PiRelay commands:",
     ...CANONICAL_REMOTE_COMMANDS
@@ -92,6 +96,7 @@ export function buildHelpText(options: { includeBrokerOnly?: boolean; title?: st
       .filter((definition) => options.includeBrokerOnly || !("brokerOnly" in definition && definition.brokerOnly))
       .map((definition) => `${usageForDefinition(definition, options.commandPrefix)} - ${definition.description}`),
     "answer - start a guided answer flow when the latest output contains choices/questions",
+    ...sharedRoomLines,
     ...(options.footerLines ?? []),
   ].join("\n");
 }

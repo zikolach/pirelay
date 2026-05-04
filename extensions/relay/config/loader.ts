@@ -71,6 +71,12 @@ function envAllowUserIds(env: NodeJS.ProcessEnv, kind: string): string[] | undef
   return undefined;
 }
 
+function relayMachineAliases(fileConfig: RelayConfigFile, env: NodeJS.ProcessEnv): string[] {
+  const fileAliases = Array.isArray(fileConfig.relay?.aliases) ? fileConfig.relay.aliases : [];
+  const envAliases = parseStringList(env.PI_RELAY_MACHINE_ALIASES) ?? [];
+  return [...new Set([...fileAliases, ...envAliases].map((alias) => alias.trim()).filter(Boolean))];
+}
+
 function resolveSecret(env: NodeJS.ProcessEnv, value: string | undefined, envName: string | undefined): string | undefined {
   if (value) return value;
   if (envName) return env[envName];
@@ -134,6 +140,7 @@ function resolveMessengerInstance(input: {
     allowGuildChannels: config.allowGuildChannels,
     allowGuildIds: config.allowGuildIds ?? [],
     allowChannelMessages: config.allowChannelMessages,
+    sharedRoom: config.sharedRoom ?? {},
     ingressPolicy: normalizePolicy(config, relay),
     ownerMachineId: config.ownerMachineId,
     brokerGroup: config.brokerGroup ?? relay.brokerGroup,
@@ -185,6 +192,8 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
   const relay: RelayMachineConfig = {
     machineId: fileConfig.relay?.machineId ?? fileConfig.relay?.machine?.id ?? env.PI_RELAY_MACHINE_ID ?? randomUUID(),
     stateDir: expandHome(fileConfig.relay?.stateDir ?? env.PI_RELAY_STATE_DIR ?? env.PI_TELEGRAM_TUNNEL_STATE_DIR ?? fileConfig.stateDir ?? DEFAULT_PIRELAY_STATE_DIR),
+    displayName: fileConfig.relay?.displayName ?? env.PI_RELAY_MACHINE_DISPLAY_NAME,
+    aliases: relayMachineAliases(fileConfig, env),
     brokerGroup: fileConfig.relay?.brokerGroup ?? env.PI_RELAY_BROKER_GROUP,
     brokerPeers: fileConfig.relay?.brokerPeers ?? [],
   };
