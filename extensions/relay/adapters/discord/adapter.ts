@@ -260,7 +260,7 @@ export function discordMentionsSharedRoomAddressing(mentions: readonly string[],
   if (localBotUserId && uniqueMentions.includes(localBotUserId)) {
     return uniqueMentions.length === 1 ? { kind: "local" } : { kind: "ambiguous", reason: "multiple bot mentions" };
   }
-  return { kind: "remote" };
+  return { kind: "none" };
 }
 
 export function isDiscordGuildMessage(event: ChannelInboundEvent): boolean {

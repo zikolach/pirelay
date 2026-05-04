@@ -143,7 +143,7 @@ export class DiscordRuntime {
       return;
     }
 
-    const command = parseDiscordCommand(text);
+    const command = parseDiscordCommand(text) ?? parseDiscordCommand(stripLeadingDiscordMentions(text));
     if (this.isSharedRoomMessage(message) && !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
       if (this.shouldRejectUnauthorizedSharedRoomEvent(message, command)) {
         await this.sendText(message, "This Discord identity is not authorized to control this PiRelay machine bot.");
@@ -181,7 +181,11 @@ export class DiscordRuntime {
     const explicitAddressing = this.sharedRoomAddressing(message);
     if (command?.name === "use") {
       const parsed = parseSharedRoomUseArgs(command.args);
-      if (!parsed) return { kind: "continue" };
+      if (!parsed) {
+        return explicitAddressing?.kind === "local"
+          ? { kind: "continue", message: { ...message, text: stripLeadingDiscordMentions(message.text) } }
+          : { kind: "silent" };
+      }
       const target = resolveSharedRoomMachineTarget({ selector: parsed.machineSelector, localMachine });
       if (target.kind === "local") {
         const rewritten = { name: "use" as const, args: parsed.sessionSelector };
@@ -194,7 +198,11 @@ export class DiscordRuntime {
 
     if (command?.name === "to") {
       const parsed = parseSharedRoomToArgs(command.args);
-      if (!parsed) return { kind: "continue" };
+      if (!parsed) {
+        return explicitAddressing?.kind === "local"
+          ? { kind: "continue", message: { ...message, text: stripLeadingDiscordMentions(message.text) } }
+          : { kind: "silent" };
+      }
       const target = resolveSharedRoomMachineTarget({ selector: parsed.machineSelector, localMachine });
       if (target.kind === "local") {
         const rewritten = { name: "to" as const, args: parsed.sessionAndPrompt };
@@ -874,6 +882,10 @@ export function parseDiscordPairingCode(text: string): string | undefined {
   if (start?.[1]) return start[1].trim();
   const pair = trimmed.match(/^(?:relay|pirelay)\s+pair\s+(.+)$/i);
   return pair?.[1]?.trim();
+}
+
+function stripLeadingDiscordMentions(text: string): string {
+  return text.replace(/^(?:\s*<@!?\d+>)+\s*/, "").trim();
 }
 
 export function parseDiscordCommand(text: string): DiscordCommand | undefined {

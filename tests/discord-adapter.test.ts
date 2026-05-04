@@ -147,7 +147,7 @@ describe("DiscordChannelAdapter", () => {
   it("normalizes Discord shared-room mentions", () => {
     expect(discordMentionedUserIds("hi <@123> and <@!456>")).toEqual(["123", "456"]);
     expect(discordMessageSharedRoomAddressing({ content: "hi <@123>" }, "123")).toEqual({ kind: "local" });
-    expect(discordMessageSharedRoomAddressing({ content: "hi <@456>" }, "123")).toEqual({ kind: "remote" });
+    expect(discordMessageSharedRoomAddressing({ content: "hi <@456>" }, "123")).toEqual({ kind: "none" });
     expect(discordMessageSharedRoomAddressing({ content: "hi <@123> and <@456>" }, "123")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
     expect(discordMessageSharedRoomAddressing({ content: "hi" }, "123")).toEqual({ kind: "none" });
   });
@@ -171,7 +171,7 @@ describe("DiscordChannelAdapter", () => {
     }, { ...config, applicationId: "123" });
 
     expect(local?.metadata?.sharedRoomAddressing).toEqual({ kind: "local" });
-    expect(remote?.metadata?.sharedRoomAddressing).toEqual({ kind: "remote" });
+    expect(remote?.metadata?.sharedRoomAddressing).toEqual({ kind: "none" });
   });
 
   it("declares conservative Discord DM capabilities", () => {

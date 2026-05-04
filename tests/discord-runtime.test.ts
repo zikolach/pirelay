@@ -516,6 +516,44 @@ describe("DiscordRuntime", () => {
     expect(await store.getActiveChannelSelection("discord", "room1", "u1")).toMatchObject({ machineId: "desktop" });
   });
 
+  it("does not treat arbitrary Discord user mentions as remote bot targeting", async () => {
+    const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    cfg.machineId = "laptop";
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    await store.setActiveChannelSelection("discord", "room1", "u1", session.sessionKey, { machineId: "laptop" });
+
+    await ops.handler?.(discordMessage("ask <@456> about docs", { channelId: "room1", guildId: "g1" }));
+
+    expect(sendUserMessage).toHaveBeenCalledOnce();
+    expect(sendUserMessage).toHaveBeenCalledWith("ask <@456> about docs", undefined);
+  });
+
+  it("keeps legacy shared-room use/to commands silent unless this bot is mentioned", async () => {
+    const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
+    cfg.machineId = "laptop";
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+
+    await ops.handler?.(discordMessage("relay use docs", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("relay to docs run tests", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("<@123> relay use docs", { channelId: "room1", guildId: "g1" }));
+
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(ops.messages.length).toBeGreaterThan(0);
+    expect(await store.getActiveChannelSelection("discord", "room1", "u1")).toMatchObject({ sessionKey: session.sessionKey, machineId: "laptop" });
+  });
+
   it("routes shared-room prompts addressed by Discord bot mention", async () => {
     const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
     cfg.machineId = "laptop";
