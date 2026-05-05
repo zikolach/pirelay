@@ -57,8 +57,11 @@ interface DiscordMessageLike {
   author: DiscordUserLike;
   webhookId: string | null;
   content: string;
+  mentions?: { users?: Iterable<DiscordUserLike> | { values(): Iterable<DiscordUserLike> } };
   attachments: Iterable<DiscordAttachmentLike> | { values(): Iterable<DiscordAttachmentLike> };
 }
+
+type DiscordMentionUsersLike = NonNullable<DiscordMessageLike["mentions"]>["users"];
 
 interface DiscordInteractionLike {
   id: string;
@@ -209,6 +212,7 @@ export function discordJsMessageToPayload(message: DiscordMessageLike): DiscordM
     },
     webhook_id: message.webhookId ?? undefined,
     content: message.content,
+    mentions: discordMentionValues(message.mentions?.users).map((user) => ({ id: user.id, bot: user.bot })),
     attachments: [...discordAttachmentValues(message.attachments)].map((attachment) => ({
       id: attachment.id,
       filename: attachment.name ?? undefined,
@@ -224,6 +228,12 @@ export function discordJsMessageToPayload(message: DiscordMessageLike): DiscordM
 function discordAttachmentValues(attachments: DiscordMessageLike["attachments"]): Iterable<DiscordAttachmentLike> {
   if (Symbol.iterator in Object(attachments)) return attachments as Iterable<DiscordAttachmentLike>;
   return (attachments as { values(): Iterable<DiscordAttachmentLike> }).values();
+}
+
+function discordMentionValues(users: DiscordMentionUsersLike): DiscordUserLike[] {
+  if (!users) return [];
+  if (Symbol.iterator in Object(users)) return [...users as Iterable<DiscordUserLike>];
+  return [...(users as { values(): Iterable<DiscordUserLike> }).values()];
 }
 
 export function discordJsChatInputInteractionToMessagePayload(interaction: DiscordChatInputInteractionLike): DiscordMessagePayload {

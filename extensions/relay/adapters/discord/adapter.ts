@@ -38,7 +38,13 @@ export interface DiscordMessagePayload {
   author: { id: string; username?: string; global_name?: string; discriminator?: string; bot?: boolean };
   webhook_id?: string;
   content?: string;
+  mentions?: DiscordMentionPayload[];
   attachments?: DiscordAttachmentPayload[];
+}
+
+export interface DiscordMentionPayload {
+  id: string;
+  bot?: boolean;
 }
 
 export interface DiscordAttachmentPayload {
@@ -225,7 +231,7 @@ export function discordMessageToChannelEvent(message: DiscordMessagePayload, con
     sender,
     metadata: {
       guildId: message.guild_id,
-      mentions: discordMentionedUserIds(message.content ?? ""),
+      mentions: discordMessageMentionedUserIds(message),
       sharedRoomAddressing: discordMessageSharedRoomAddressing(message, config.applicationId ?? config.clientId),
     },
   };
@@ -250,15 +256,34 @@ export function discordMentionedUserIds(text: string): string[] {
   return [...text.matchAll(/<@!?(\d+)>/g)].map((match) => match[1]!).filter(Boolean);
 }
 
-export function discordMessageSharedRoomAddressing(message: Pick<DiscordMessagePayload, "content">, localBotUserId: string | undefined): SharedRoomAddressing {
-  return discordMentionsSharedRoomAddressing(discordMentionedUserIds(message.content ?? ""), localBotUserId);
+export function discordMessageMentionedUserIds(message: Pick<DiscordMessagePayload, "content" | "mentions">): string[] {
+  const payloadMentions = (message.mentions ?? []).map((mention) => mention.id.trim()).filter(Boolean);
+  return payloadMentions.length > 0 ? [...new Set(payloadMentions)] : discordMentionedUserIds(message.content ?? "");
+}
+
+export function discordMessageSharedRoomAddressing(message: Pick<DiscordMessagePayload, "content" | "mentions">, localBotUserId: string | undefined): SharedRoomAddressing {
+  return message.mentions && message.mentions.length > 0
+    ? discordMentionPayloadsSharedRoomAddressing(message.mentions, localBotUserId)
+    : discordMentionsSharedRoomAddressing(discordMentionedUserIds(message.content ?? ""), localBotUserId);
+}
+
+export function discordMentionPayloadsSharedRoomAddressing(mentions: readonly DiscordMentionPayload[], localBotUserId: string | undefined): SharedRoomAddressing {
+  const botMentionIds = [...new Set(mentions
+    .filter((mention) => mention.bot)
+    .map((mention) => mention.id.trim())
+    .filter(Boolean))];
+  if (localBotUserId && botMentionIds.includes(localBotUserId)) {
+    return botMentionIds.length === 1 ? { kind: "local" } : { kind: "ambiguous", reason: "multiple bot mentions" };
+  }
+  if (botMentionIds.length > 0) return { kind: "remote", machineId: botMentionIds[0] };
+  return { kind: "none" };
 }
 
 export function discordMentionsSharedRoomAddressing(mentions: readonly string[], localBotUserId: string | undefined): SharedRoomAddressing {
   const uniqueMentions = [...new Set(mentions.map((mention) => mention.trim()).filter(Boolean))];
   if (uniqueMentions.length === 0) return { kind: "none" };
   if (localBotUserId && uniqueMentions.includes(localBotUserId)) {
-    return uniqueMentions.length === 1 ? { kind: "local" } : { kind: "ambiguous", reason: "multiple bot mentions" };
+    return { kind: "local" };
   }
   return { kind: "none" };
 }

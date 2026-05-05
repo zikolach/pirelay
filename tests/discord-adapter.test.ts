@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DiscordChannelAdapter, discordCapabilities, discordMentionedUserIds, discordMessageSharedRoomAddressing, discordMessageToChannelEvent, discordPairingCommand, escapeDiscordPlainText, isDiscordGuildMessage, isDiscordIdentityAllowed } from "../extensions/relay/adapters/discord/adapter.js";
+import { DiscordChannelAdapter, discordCapabilities, discordMentionedUserIds, discordMentionPayloadsSharedRoomAddressing, discordMessageSharedRoomAddressing, discordMessageToChannelEvent, discordPairingCommand, escapeDiscordPlainText, isDiscordGuildMessage, isDiscordIdentityAllowed } from "../extensions/relay/adapters/discord/adapter.js";
 
 const config = {
   enabled: true,
@@ -148,8 +148,11 @@ describe("DiscordChannelAdapter", () => {
     expect(discordMentionedUserIds("hi <@123> and <@!456>")).toEqual(["123", "456"]);
     expect(discordMessageSharedRoomAddressing({ content: "hi <@123>" }, "123")).toEqual({ kind: "local" });
     expect(discordMessageSharedRoomAddressing({ content: "hi <@456>" }, "123")).toEqual({ kind: "none" });
-    expect(discordMessageSharedRoomAddressing({ content: "hi <@123> and <@456>" }, "123")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
+    expect(discordMessageSharedRoomAddressing({ content: "hi <@123> and <@456>" }, "123")).toEqual({ kind: "local" });
     expect(discordMessageSharedRoomAddressing({ content: "hi" }, "123")).toEqual({ kind: "none" });
+    expect(discordMentionPayloadsSharedRoomAddressing([{ id: "123", bot: true }, { id: "u1", bot: false }], "123")).toEqual({ kind: "local" });
+    expect(discordMentionPayloadsSharedRoomAddressing([{ id: "123", bot: true }, { id: "456", bot: true }], "123")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
+    expect(discordMentionPayloadsSharedRoomAddressing([{ id: "456", bot: true }], "123")).toEqual({ kind: "remote", machineId: "456" });
   });
 
   it("attaches shared-room addressing metadata from configured bot id", () => {
@@ -167,11 +170,12 @@ describe("DiscordChannelAdapter", () => {
       guild_id: "g1",
       author: { id: "u1", username: "dev" },
       content: "<@456> status",
+      mentions: [{ id: "456", bot: true }],
       attachments: [],
     }, { ...config, applicationId: "123" });
 
     expect(local?.metadata?.sharedRoomAddressing).toEqual({ kind: "local" });
-    expect(remote?.metadata?.sharedRoomAddressing).toEqual({ kind: "none" });
+    expect(remote?.metadata?.sharedRoomAddressing).toEqual({ kind: "remote", machineId: "456" });
   });
 
   it("declares conservative Discord DM capabilities", () => {

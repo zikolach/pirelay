@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordGatewayEvent, DiscordSendFilePayload, DiscordSendMessagePayload } from "../extensions/relay/adapters/discord/adapter.js";
+import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordGatewayEvent, DiscordMentionPayload, DiscordSendFilePayload, DiscordSendMessagePayload } from "../extensions/relay/adapters/discord/adapter.js";
 import { createDiscordRuntime, DiscordRuntime, getOrCreateDiscordRuntime } from "../extensions/relay/adapters/discord/runtime.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
@@ -96,7 +96,7 @@ function route(options: { idle?: boolean; promptLocalConfirmation?: SessionRoute
   };
 }
 
-function discordMessage(content: string, options: { userId?: string; channelId?: string; guildId?: string; bot?: boolean; attachments?: DiscordAttachmentPayload[] } = {}): DiscordGatewayEvent {
+function discordMessage(content: string, options: { userId?: string; channelId?: string; guildId?: string; bot?: boolean; mentions?: DiscordMentionPayload[]; attachments?: DiscordAttachmentPayload[] } = {}): DiscordGatewayEvent {
   return {
     type: "message",
     payload: {
@@ -104,6 +104,7 @@ function discordMessage(content: string, options: { userId?: string; channelId?:
       channel_id: options.channelId ?? "dm1",
       guild_id: options.guildId,
       content,
+      mentions: options.mentions,
       author: { id: options.userId ?? "u1", username: "nik", bot: options.bot ?? false },
       attachments: options.attachments ?? [],
     },
@@ -565,9 +566,9 @@ describe("DiscordRuntime", () => {
     const store = new TunnelStateStore(cfg.stateDir);
     await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
 
-    await ops.handler?.(discordMessage("<@456> remote should stay silent", { channelId: "room1", guildId: "g1" }));
-    await ops.handler?.(discordMessage("<@123> local should route", { channelId: "room1", guildId: "g1" }));
-    await ops.handler?.(discordMessage("<@123> and <@456> ambiguous", { channelId: "room1", guildId: "g1" }));
+    await ops.handler?.(discordMessage("<@456> remote should stay silent", { channelId: "room1", guildId: "g1", mentions: [{ id: "456", bot: true }] }));
+    await ops.handler?.(discordMessage("<@123> local should route", { channelId: "room1", guildId: "g1", mentions: [{ id: "123", bot: true }] }));
+    await ops.handler?.(discordMessage("<@123> and <@456> ambiguous", { channelId: "room1", guildId: "g1", mentions: [{ id: "123", bot: true }, { id: "456", bot: true }] }));
 
     expect(sendUserMessage).toHaveBeenCalledOnce();
     expect(sendUserMessage).toHaveBeenCalledWith("<@123> local should route", undefined);
