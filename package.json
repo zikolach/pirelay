@@ -1,6 +1,6 @@
 {
   "name": "pirelay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi package that pairs messenger chats to active Pi sessions for notifications and remote control.",
   "type": "module",
   "license": "MIT",
