@@ -261,8 +261,16 @@ export class TunnelStateStore {
     return revoked;
   }
 
-  async setActiveChannelSelection(channel: ChannelBinding["channel"], conversationId: string, userId: string, sessionKey: string): Promise<ChannelActiveSelectionRecord> {
-    const record: ChannelActiveSelectionRecord = { channel, conversationId, userId, sessionKey, updatedAt: toIsoNow() };
+  async setActiveChannelSelection(channel: ChannelBinding["channel"], conversationId: string, userId: string, sessionKey: string, options: { machineId?: string; machineDisplayName?: string } = {}): Promise<ChannelActiveSelectionRecord> {
+    const record: ChannelActiveSelectionRecord = {
+      channel,
+      conversationId,
+      userId,
+      sessionKey,
+      updatedAt: toIsoNow(),
+      machineId: options.machineId,
+      machineDisplayName: options.machineDisplayName,
+    };
     await this.update((data) => {
       data.activeChannelSelections[channelSelectionStorageKey(channel, conversationId, userId)] = record;
     });

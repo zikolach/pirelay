@@ -161,6 +161,15 @@ export interface RelayOutboundActionAnswer {
 
 export type RelayOutboundPayload = RelayOutboundText | RelayOutboundDocument | RelayOutboundImage | RelayOutboundActivity | RelayOutboundActionAnswer;
 
+export interface MessengerSharedRoomCapabilities {
+  ordinaryText: boolean;
+  mentions: boolean;
+  replies: boolean;
+  platformCommands: boolean;
+  mediaAttachments: boolean;
+  membershipEvents: boolean;
+}
+
 export interface MessengerCapabilities {
   inlineButtons: boolean;
   textMessages: boolean;
@@ -175,6 +184,7 @@ export interface MessengerCapabilities {
   maxImageBytes?: number;
   supportedImageMimeTypes: string[];
   supportsMarkdown?: boolean;
+  sharedRooms?: MessengerSharedRoomCapabilities;
 }
 
 export interface MessengerAdapterMetadata {

@@ -149,6 +149,7 @@ function resolveDiscordConfigForInstance(fileConfig: ConfigFileShape | undefined
       discordConfig?.allowGuildChannels ?? (useLegacyFallback ? legacyConfig?.allowGuildChannels : undefined) ?? false,
     ),
     allowGuildIds: parseStringList((useLegacyFallback ? process.env.PI_RELAY_DISCORD_ALLOW_GUILD_IDS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ALLOW_GUILD_IDS : undefined)) ?? discordConfig?.allowGuildIds ?? (useLegacyFallback ? legacyConfig?.allowGuildIds : undefined) ?? [],
+    sharedRoom: discordConfig?.sharedRoom ?? (useLegacyFallback ? legacyConfig?.sharedRoom : undefined),
     maxTextChars: parseNumber((useLegacyFallback ? process.env.PI_RELAY_DISCORD_MAX_TEXT_CHARS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_MAX_TEXT_CHARS : undefined), discordConfig?.limits?.maxTextChars ?? discordConfig?.maxTextChars ?? (useLegacyFallback ? legacyConfig?.maxTextChars : undefined) ?? 2_000),
     maxFileBytes: parseNumber((useLegacyFallback ? process.env.PI_RELAY_DISCORD_MAX_FILE_BYTES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_MAX_FILE_BYTES : undefined), discordConfig?.limits?.maxFileBytes ?? discordConfig?.maxFileBytes ?? (useLegacyFallback ? legacyConfig?.maxFileBytes : undefined) ?? 8 * 1024 * 1024),
     allowedImageMimeTypes: parseStringList((useLegacyFallback ? process.env.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_DISCORD_ALLOWED_IMAGE_MIME_TYPES : undefined)) ?? discordConfig?.limits?.allowedImageMimeTypes ?? discordConfig?.allowedImageMimeTypes ?? (useLegacyFallback ? legacyConfig?.allowedImageMimeTypes : undefined) ?? defaultImageMimeTypes,
@@ -203,6 +204,7 @@ function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, 
       (useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES : undefined),
       slackConfig?.allowChannelMessages ?? (useLegacyFallback ? legacyConfig?.allowChannelMessages : undefined) ?? false,
     ),
+    sharedRoom: slackConfig?.sharedRoom ?? (useLegacyFallback ? legacyConfig?.sharedRoom : undefined),
     maxTextChars: parseNumber((useLegacyFallback ? process.env.PI_RELAY_SLACK_MAX_TEXT_CHARS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_MAX_TEXT_CHARS : undefined), slackConfig?.limits?.maxTextChars ?? slackConfig?.maxTextChars ?? (useLegacyFallback ? legacyConfig?.maxTextChars : undefined) ?? 3_000),
     maxFileBytes: parseNumber((useLegacyFallback ? process.env.PI_RELAY_SLACK_MAX_FILE_BYTES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_MAX_FILE_BYTES : undefined), slackConfig?.limits?.maxFileBytes ?? slackConfig?.maxFileBytes ?? (useLegacyFallback ? legacyConfig?.maxFileBytes : undefined) ?? 10 * 1024 * 1024),
     allowedImageMimeTypes: parseStringList((useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOWED_IMAGE_MIME_TYPES : undefined)) ?? slackConfig?.limits?.allowedImageMimeTypes ?? slackConfig?.allowedImageMimeTypes ?? (useLegacyFallback ? legacyConfig?.allowedImageMimeTypes : undefined) ?? defaultImageMimeTypes,
@@ -265,6 +267,9 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   }
 
   const stateDir = expandHome(process.env.PI_RELAY_STATE_DIR || process.env.PI_TELEGRAM_TUNNEL_STATE_DIR || fileConfig?.relay?.stateDir || fileConfig?.stateDir || DEFAULT_STATE_DIR);
+  const machineId = fileConfig?.relay?.machineId ?? fileConfig?.relay?.machine?.id ?? process.env.PI_RELAY_MACHINE_ID;
+  const machineDisplayName = fileConfig?.relay?.displayName ?? process.env.PI_RELAY_MACHINE_DISPLAY_NAME;
+  const machineAliases = [...new Set([...(fileConfig?.relay?.aliases ?? []), ...(parseStringList(process.env.PI_RELAY_MACHINE_ALIASES) ?? [])].map((alias) => alias.trim()).filter(Boolean))];
   const busyDeliveryMode = (process.env.PI_TELEGRAM_TUNNEL_BUSY_MODE || fileConfig?.defaults?.busyDeliveryMode || fileConfig?.busyDeliveryMode || "followUp") as
     | "followUp"
     | "steer";
@@ -370,6 +375,9 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     botToken,
     configPath,
     stateDir,
+    machineId,
+    machineDisplayName,
+    machineAliases,
     pairingExpiryMs,
     busyDeliveryMode,
     allowUserIds,

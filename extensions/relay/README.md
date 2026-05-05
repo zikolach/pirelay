@@ -20,4 +20,10 @@ Folder ownership:
 - `ui/`: local pairing UI and QR rendering.
 - `testing/`: shared fakes and fixtures for relay tests.
 
+## Shared-room machine-bot topology
+
+PiRelay also supports a no-federation multi-machine topology where each machine uses its own dedicated bot/app token and all machine bots join one messenger group/channel. The shared room is the coordination surface: `/use <machine> <session>` selects the active machine session for that messenger conversation/user, `/to <machine> <session> <prompt>` sends a one-shot prompt, and non-target brokers remain silent.
+
+This mode is distinct from broker federation. Sharing one bot/account token across unaware brokers remains unsafe; configure one ingress owner with federation for shared-token deployments. Telegram shared rooms require a group/supergroup and ordinary unaddressed prompts only work when bot privacy mode or permissions allow the bot to see group messages; otherwise use mentions or replies. Discord and Slack shared rooms should prefer text-prefix commands, mentions, or replies over collision-prone top-level slash commands.
+
 Shared folders must not import concrete adapter implementations, broker entrypoints, Pi runtime side effects, sockets, timers, or filesystem side-effect modules except through explicit edge contracts.

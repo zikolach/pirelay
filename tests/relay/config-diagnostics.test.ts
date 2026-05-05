@@ -5,7 +5,7 @@ import type { ResolvedRelayConfig } from "../../extensions/relay/config/index.js
 function baseConfig(): ResolvedRelayConfig {
   return {
     configPath: "/tmp/config.json",
-    relay: { machineId: "laptop", stateDir: "/tmp/state", brokerGroup: "personal", brokerPeers: [] },
+    relay: { machineId: "laptop", stateDir: "/tmp/state", aliases: [], brokerGroup: "personal", brokerPeers: [] },
     defaults: {
       pairingExpiryMs: 300000,
       busyDeliveryMode: "followUp",
@@ -30,6 +30,7 @@ describe("relay diagnostics", () => {
         token: "telegram-token",
         allowUserIds: [],
         allowGuildIds: [],
+        sharedRoom: {},
         ingressPolicy: { kind: "owner", machineId: "laptop" },
         limits: { maxTextChars: 3900, maxFileBytes: 1, allowedImageMimeTypes: ["image/png"] },
         unsupported: false,
@@ -40,6 +41,7 @@ describe("relay diagnostics", () => {
         displayName: "discord",
         allowUserIds: [],
         allowGuildIds: [],
+        sharedRoom: {},
         ingressPolicy: { kind: "auto" },
         limits: { maxTextChars: 2000, maxFileBytes: 1, allowedImageMimeTypes: ["image/png"] },
         unsupported: false,
@@ -51,6 +53,7 @@ describe("relay diagnostics", () => {
         token: "matrix-token",
         allowUserIds: [],
         allowGuildIds: [],
+        sharedRoom: {},
         ingressPolicy: { kind: "auto" },
         limits: { maxTextChars: 2000, maxFileBytes: 1, allowedImageMimeTypes: ["image/png"] },
         unsupported: true,
@@ -63,6 +66,31 @@ describe("relay diagnostics", () => {
     expect(diagnostics.some((item) => item.level === "warning" && item.message.includes("matrix: configured but adapter is not installed"))).toBe(true);
   });
 
+  it("reports shared-room machine identity and platform caveats", () => {
+    const config = baseConfig();
+    config.relay.displayName = "Laptop";
+    config.relay.aliases = ["lap"];
+    config.messengers = [{
+      ref: { kind: "telegram", instanceId: "default" },
+      enabled: true,
+      displayName: "telegram",
+      token: "telegram-token",
+      allowUserIds: [],
+      allowGuildIds: [],
+      sharedRoom: { enabled: true },
+      ingressPolicy: { kind: "owner", machineId: "laptop" },
+      limits: { maxTextChars: 3900, maxFileBytes: 1, allowedImageMimeTypes: ["image/png"] },
+      unsupported: false,
+    }];
+
+    const rendered = renderRelayDiagnostics(config);
+    expect(rendered).toContain("Machine: laptop (Laptop)");
+    expect(rendered).toContain("Machine aliases: lap");
+    expect(rendered).toContain("shared-room machine bot identity Laptop");
+    expect(rendered).toContain("Telegram shared-room plain text requires");
+    expect(rendered).not.toContain("telegram-token");
+  });
+
   it("reports duplicate bot fingerprints without printing token values", () => {
     const config = baseConfig();
     config.messengers = ["personal", "work"].map((instanceId) => ({
@@ -72,6 +100,7 @@ describe("relay diagnostics", () => {
       token: "same-token",
       allowUserIds: [],
       allowGuildIds: [],
+      sharedRoom: {},
       ingressPolicy: { kind: "auto" as const },
       limits: { maxTextChars: 3900, maxFileBytes: 1, allowedImageMimeTypes: ["image/png"] },
       unsupported: false,

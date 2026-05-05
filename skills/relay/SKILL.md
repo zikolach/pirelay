@@ -55,6 +55,8 @@ During long-running turns, PiRelay sends safe, rate-limited progress updates by 
 
 PiRelay runs one authoritative broker per machine. Multiple same-machine Pi sessions share that broker. If the same bot/account is configured on multiple machines, configure one ingress owner and broker federation so non-owner machines register routes instead of polling the same bot concurrently.
 
+No-federation shared-room mode uses one dedicated bot/app identity per machine. Invite those machine bots into one Telegram group, Discord channel, or Slack channel, then use machine-aware commands such as `/use <machine> <session>` and `/to <machine> <session> <prompt>`. Only the selected or explicitly addressed machine bot should answer; other bots stay silent. Telegram group plain-text prompts require bot privacy mode/permissions that let the bot see ordinary messages, otherwise use mentions or replies.
+
 Configure credentials in namespaced `messengers.<kind>.<instance>` config entries, preferably with `tokenEnv` / `signingSecretEnv`. Use `/relay setup discord` for bot-token/client-id invite guidance, Message Content Intent reminders, and DM troubleshooting. Use `/relay setup slack` for Socket Mode/webhook signing guidance. The setup output links to Telegram BotFather docs (<https://core.telegram.org/bots/features#botfather>), Discord Developer Portal bot docs (<https://discord.com/developers/docs/quick-start/getting-started>), and Slack app setup (<https://api.slack.com/apps>).
 
 ## Guided Telegram answer flow

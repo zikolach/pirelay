@@ -15,6 +15,7 @@ import type {
 } from "../../core/channel-adapter.js";
 import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "../../core/channel-adapter.js";
 import type { SlackRelayConfig } from "../../core/types.js";
+import type { SharedRoomAddressing } from "../../core/shared-room.js";
 
 export interface SlackApiOperations {
   startSocketMode?(handler: (event: SlackEnvelope) => Promise<void>): Promise<void>;
@@ -207,7 +208,26 @@ export function slackCapabilities(config: Pick<SlackRelayConfig, "allowChannelMe
     maxImageBytes: config.maxFileBytes ?? DEFAULT_SLACK_MAX_FILE_BYTES,
     supportedImageMimeTypes: config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES,
     supportsMarkdown: true,
+    sharedRooms: {
+      ordinaryText: Boolean(config.allowChannelMessages),
+      mentions: true,
+      replies: false,
+      platformCommands: Boolean(config.allowChannelMessages),
+      mediaAttachments: Boolean(config.allowChannelMessages),
+      membershipEvents: false,
+    },
   };
+}
+
+export function slackMentionedUserIds(text: string): string[] {
+  return [...text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!).filter(Boolean);
+}
+
+export function slackMessageSharedRoomAddressing(text: string, localBotUserId: string | undefined): SharedRoomAddressing {
+  const mentions = slackMentionedUserIds(text);
+  if (mentions.length === 0) return { kind: "none" };
+  if (localBotUserId && mentions.includes(localBotUserId)) return { kind: "local" };
+  return { kind: "none" };
 }
 
 export function verifySlackSignature(input: { body: string; timestamp: string; signature: string; signingSecret: string; nowSeconds?: number }): boolean {

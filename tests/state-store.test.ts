@@ -107,6 +107,23 @@ describe("TunnelStateStore", () => {
     expect(Object.values(data.channelBindings)).toContainEqual(expect.objectContaining({ channel: "discord", userId: "u1", sessionKey: "session-1" }));
   });
 
+  it("persists active channel selections with optional machine identity", async () => {
+    const store = await createStore();
+
+    await store.setActiveChannelSelection("discord", "room1", "u1", "session-1", { machineId: "laptop", machineDisplayName: "Laptop" });
+    await store.setActiveChannelSelection("telegram", "room1", "u1", "session-2", { machineId: "desktop" });
+
+    expect(await store.getActiveChannelSelection("discord", "room1", "u1")).toMatchObject({
+      channel: "discord",
+      conversationId: "room1",
+      userId: "u1",
+      sessionKey: "session-1",
+      machineId: "laptop",
+      machineDisplayName: "Laptop",
+    });
+    expect(await store.getActiveChannelSelection("telegram", "room1", "u1")).toMatchObject({ sessionKey: "session-2", machineId: "desktop" });
+  });
+
   it("keys channel bindings by messenger instance so same-kind pairings do not clobber each other", async () => {
     const store = await createStore();
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { TelegramChannelAdapter, telegramCapabilities, telegramUpdateToChannelEvent, toTelegramKeyboard, type TelegramApiOperations } from "../extensions/relay/adapters/telegram/adapter.js";
+import { TelegramChannelAdapter, telegramCapabilities, telegramMentionedBotUsernames, telegramMessageSharedRoomAddressing, telegramUpdateToChannelEvent, toTelegramKeyboard, type TelegramApiOperations } from "../extensions/relay/adapters/telegram/adapter.js";
 import type { TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 function config(): TelegramTunnelConfig {
@@ -31,6 +31,7 @@ describe("telegram channel adapter", () => {
       maxDocumentBytes: undefined,
       maxImageBytes: 200,
       supportedImageMimeTypes: ["image/png"],
+      sharedRooms: expect.objectContaining({ ordinaryText: false, mentions: true, replies: true }),
     });
   });
 
@@ -75,6 +76,13 @@ describe("telegram channel adapter", () => {
       user: { id: 41 },
     });
     expect(channelPost).toMatchObject({ conversation: { kind: "channel" } });
+  });
+
+  it("normalizes Telegram shared-room mentions", () => {
+    expect(telegramMentionedBotUsernames("hi @PiLaptopBot and @PiDesktopBot")).toEqual(["PiLaptopBot", "PiDesktopBot"]);
+    expect(telegramMessageSharedRoomAddressing("hi @PiLaptopBot", "PiLaptopBot")).toEqual({ kind: "local" });
+    expect(telegramMessageSharedRoomAddressing("hi @PiDesktopBot", "PiLaptopBot")).toEqual({ kind: "none" });
+    expect(telegramMessageSharedRoomAddressing("hi", "PiLaptopBot")).toEqual({ kind: "none" });
   });
 
   it("maps outbound payloads to Telegram API operations", async () => {

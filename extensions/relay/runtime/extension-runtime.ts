@@ -503,7 +503,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       try {
         await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
           closeConnectQrScreen = () => done(undefined);
-          return new PairingQrScreen(theme, "Telegram relay pairing", currentRoute!.sessionLabel, qrLines, deepLink, expiryMinutes, ["Scan the QR code or open the link in Telegram, then press Start.", "Re-run /relay connect telegram to show this again."], () => done(undefined));
+          return new PairingQrScreen(theme, "Telegram relay pairing", currentRoute!.sessionLabel, qrLines, deepLink, expiryMinutes, ["Scan the QR code or open the link in Telegram, then press Start.", "Shared-room mode uses a Telegram group/supergroup with one dedicated bot per machine; pair/trust the user first, then invite the machine bots and use /use <machine> <session> or mentions/replies.", "Re-run /relay connect telegram to show this again."], () => done(undefined));
         });
       } finally {
         closeConnectQrScreen = undefined;
@@ -512,7 +512,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    ctx.ui.notify(`Open this Telegram pairing link: ${deepLink}`, "info");
+    ctx.ui.notify(`Open this Telegram pairing link: ${deepLink}\nShared-room mode: use a Telegram group/supergroup with one dedicated bot per machine after pairing/trusting the user; target this machine with /use <machine> <session>, /to <machine> <session> <prompt>, mentions, or replies.`, "info");
   }
 
   async function handleRelayConnect(ctx: ExtensionContext, channel: RelaySetupChannel, explicitLabel?: string, instanceId = "default"): Promise<void> {
@@ -568,7 +568,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const instructions = [
         "Scan the QR code to open the Discord bot profile/DM.",
         "Bot authorization/invite is handled by /relay setup discord; make sure you and the bot already share a server and that Discord DMs are allowed.",
-        `Then DM the bot: relay pair ${nonce}`,
+        "For shared-room mode, invite one dedicated PiRelay bot per machine into the same authorized server channel and run the pairing command in that channel when guild-channel control is enabled, or pair in DM first and then use machine-aware commands in the shared channel.",
+        `Then send to the bot DM or authorized shared channel: relay pair ${nonce}`,
         `${`/start ${nonce}`} is also accepted as a compatibility alias.`,
       ];
       if (ctx.hasUI) {
@@ -588,7 +589,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         `Discord pairing ready for session ${currentRoute.sessionLabel}.`,
         `Open bot profile/DM: ${chatUrl}`,
         "Bot authorization/invite is handled by /relay setup discord; make sure you and the bot already share a server and that Discord DMs are allowed.",
-        `DM the bot: relay pair ${nonce}`,
+        "Shared-room mode: invite one dedicated PiRelay bot per machine into the same authorized server channel; when guild-channel control is enabled you may pair from that channel, otherwise pair in DM and then use machine-aware commands in the shared channel.",
+        `Send to the bot DM or authorized shared channel: relay pair ${nonce}`,
         `/start ${nonce} is also accepted as a compatibility alias.`,
         `Expires in about ${expiryMinutes} minute(s).`,
       ].join("\n")), "info");
@@ -597,6 +599,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(redactSecrets([
       `${channel} pairing ready for session ${currentRoute.sessionLabel}.`,
       relayPairingInstruction(channel, nonce),
+      channel === "discord" ? "Shared-room mode: use one dedicated Discord bot per machine in the same authorized server channel; with guild-channel control enabled, send the pairing PIN in that channel to bind this room." : undefined,
       channel === "discord" ? "QR redirect unavailable: set discord.applicationId (or clientId) or PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) from Discord Developer Portal > General Information > Application ID." : undefined,
       `Expires in about ${expiryMinutes} minute(s).`,
     ].filter(Boolean).join("\n")), "info");

@@ -9,7 +9,8 @@ export interface RelayDiagnosticItem {
 
 export function collectRelayDiagnostics(config: ResolvedRelayConfig): RelayDiagnosticItem[] {
   const items: RelayDiagnosticItem[] = [];
-  items.push({ level: "ok", message: `Machine: ${config.relay.machineId}` });
+  items.push({ level: "ok", message: `Machine: ${config.relay.machineId}${config.relay.displayName ? ` (${config.relay.displayName})` : ""}` });
+  if (config.relay.aliases.length > 0) items.push({ level: "ok", message: `Machine aliases: ${config.relay.aliases.join(", ")}` });
   items.push({ level: "ok", message: `State: ${config.relay.stateDir}` });
 
   for (const warning of config.warnings) items.push({ level: "warning", message: warning });
@@ -18,7 +19,7 @@ export function collectRelayDiagnostics(config: ResolvedRelayConfig): RelayDiagn
   for (const duplicate of duplicates) {
     items.push({
       level: "error",
-      message: `Duplicate bot/account fingerprint ${duplicate.fingerprint} is configured for ${duplicate.refs.map(formatMessengerRef).join(", ")}; configure one ingress owner.`,
+      message: `Duplicate bot/account fingerprint ${duplicate.fingerprint} is configured for ${duplicate.refs.map(formatMessengerRef).join(", ")}; shared-room machine-bot mode requires distinct bot/app identities, or configure one ingress owner with federation.`,
     });
   }
 
@@ -40,6 +41,19 @@ export function collectRelayDiagnostics(config: ResolvedRelayConfig): RelayDiagn
       items.push({ level: "error", message: `${ref}: enabled but missing Slack bot token or signing secret.` });
       continue;
     }
+    if (messenger.sharedRoom.enabled) {
+      items.push({ level: "ok", message: `${ref}: shared-room machine bot identity ${config.relay.displayName ?? config.relay.machineId}.` });
+      if (messenger.ref.kind === "telegram") {
+        items.push({ level: "warning", message: `${ref}: Telegram shared-room plain text requires a group/supergroup where bot privacy mode or permissions allow ordinary messages; otherwise use mentions, replies, or addressed commands.` });
+      }
+      if (messenger.ref.kind === "discord") {
+        items.push({ level: "ok", message: `${ref}: Discord shared-room mode should use a dedicated bot application in a shared server channel with Message Content Intent and mention/text-prefix fallbacks.` });
+      }
+      if (messenger.ref.kind === "slack") {
+        items.push({ level: "ok", message: `${ref}: Slack shared-room mode requires a dedicated app/bot in the channel with event scopes for app mentions or channel messages.` });
+      }
+    }
+
     const ownership = resolveMessengerIngressOwnership({
       messenger: messenger.ref,
       localMachineId: config.relay.machineId,

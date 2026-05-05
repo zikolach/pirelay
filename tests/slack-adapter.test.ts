@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SlackChannelAdapter, buildSlackActionId, isSlackIdentityAllowed, parseSlackWebhookBody, slackCapabilities, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackPairingCommand, verifySlackSignature } from "../extensions/relay/adapters/slack/adapter.js";
+import { SlackChannelAdapter, buildSlackActionId, isSlackIdentityAllowed, parseSlackWebhookBody, slackCapabilities, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, slackMessageSharedRoomAddressing, slackPairingCommand, verifySlackSignature } from "../extensions/relay/adapters/slack/adapter.js";
 import { createHmac } from "node:crypto";
 
 const config = {
@@ -135,6 +135,13 @@ describe("SlackChannelAdapter", () => {
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U1", metadata: { teamId: "T2" } }, config)).toBe(false);
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U1" }, config)).toBe(false);
     expect(slackPairingCommand("abc")).toBe("/pirelay abc");
+  });
+
+  it("normalizes Slack shared-room mentions", () => {
+    expect(slackMentionedUserIds("hi <@U123> and <@U456>")).toEqual(["U123", "U456"]);
+    expect(slackMessageSharedRoomAddressing("hi <@U123>", "U123")).toEqual({ kind: "local" });
+    expect(slackMessageSharedRoomAddressing("hi <@U456>", "U123")).toEqual({ kind: "none" });
+    expect(slackMessageSharedRoomAddressing("hi", "U123")).toEqual({ kind: "none" });
   });
 
   it("declares conservative Slack DM capabilities", () => {

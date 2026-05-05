@@ -33,6 +33,7 @@ describe("relay config loader", () => {
     });
 
     expect(loaded.relay.machineId).toBe("laptop");
+    expect(loaded.relay.aliases).toEqual([]);
     expect(loaded.relay.brokerGroup).toBe("personal");
     expect(loaded.defaults.pairingExpiryMs).toBe(60000);
     expect(loaded.messengers.map((messenger) => `${messenger.ref.kind}:${messenger.ref.instanceId}`).sort()).toEqual([
@@ -61,6 +62,21 @@ describe("relay config loader", () => {
       "telegram:default",
     ]);
     expect(loaded.warnings.some((warning) => warning.includes("legacy"))).toBe(true);
+  });
+
+  it("loads shared-room machine identity and messenger settings", async () => {
+    const configPath = await writeConfig({
+      relay: { machineId: "laptop", displayName: "Laptop", aliases: ["lap", "devbox"] },
+      messengers: { telegram: { default: { tokenEnv: "TELEGRAM_TOKEN", sharedRoom: { enabled: true, plainText: "addressed-only", roomHint: "PiRelay" } } } },
+    });
+
+    const loaded = await loadRelayConfig({
+      configPath,
+      env: { TELEGRAM_TOKEN: "telegram-token", PI_RELAY_MACHINE_ALIASES: "macbook" },
+    });
+
+    expect(loaded.relay).toMatchObject({ machineId: "laptop", displayName: "Laptop", aliases: ["lap", "devbox", "macbook"] });
+    expect(loaded.messengers[0]?.sharedRoom).toMatchObject({ enabled: true, plainText: "addressed-only", roomHint: "PiRelay" });
   });
 
   it("resolves Discord Application ID from applicationId and legacy clientId aliases", async () => {

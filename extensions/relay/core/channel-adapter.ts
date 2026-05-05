@@ -153,6 +153,15 @@ export type ChannelOutboundPayload =
   | ChannelOutboundActivity
   | ChannelOutboundActionAnswer;
 
+export interface ChannelSharedRoomCapabilities {
+  ordinaryText: boolean;
+  mentions: boolean;
+  replies: boolean;
+  platformCommands: boolean;
+  mediaAttachments: boolean;
+  membershipEvents: boolean;
+}
+
 export interface ChannelCapabilities {
   inlineButtons: boolean;
   textMessages: boolean;
@@ -167,6 +176,7 @@ export interface ChannelCapabilities {
   maxImageBytes?: number;
   supportedImageMimeTypes: string[];
   supportsMarkdown?: boolean;
+  sharedRooms?: ChannelSharedRoomCapabilities;
 }
 
 export interface ChannelAdapterMetadata {

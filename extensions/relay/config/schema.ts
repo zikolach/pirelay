@@ -13,8 +13,17 @@ export interface RelayDefaultsConfig {
 export interface RelayMachineConfig {
   machineId: string;
   stateDir: string;
+  displayName?: string;
+  aliases: string[];
   brokerGroup?: string;
   brokerPeers: BrokerPeerConfig[];
+}
+
+export interface MessengerSharedRoomConfig {
+  enabled?: boolean;
+  roomHint?: string;
+  plainText?: "auto" | "enabled" | "addressed-only";
+  machineAliases?: string[];
 }
 
 export interface MessengerLimitsConfig {
@@ -39,6 +48,7 @@ export interface MessengerInstanceFileConfig {
   allowGuildChannels?: boolean;
   allowGuildIds?: string[];
   allowChannelMessages?: boolean;
+  sharedRoom?: MessengerSharedRoomConfig;
   ingressPolicy?: MessengerIngressPolicy;
   ownerMachineId?: string;
   brokerGroup?: string;
@@ -100,6 +110,7 @@ export interface ResolvedMessengerInstanceConfig {
   allowGuildChannels?: boolean;
   allowGuildIds: string[];
   allowChannelMessages?: boolean;
+  sharedRoom: MessengerSharedRoomConfig;
   ingressPolicy: MessengerIngressPolicy;
   ownerMachineId?: string;
   brokerGroup?: string;
