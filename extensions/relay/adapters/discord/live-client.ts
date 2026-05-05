@@ -232,8 +232,8 @@ function discordAttachmentValues(attachments: DiscordMessageLike["attachments"])
 
 function discordMentionValues(users: DiscordMentionUsersLike): DiscordUserLike[] {
   if (!users) return [];
-  if (Symbol.iterator in Object(users)) return [...users as Iterable<DiscordUserLike>];
-  return [...(users as { values(): Iterable<DiscordUserLike> }).values()];
+  if ("values" in Object(users)) return [...(users as { values(): Iterable<DiscordUserLike> }).values()];
+  return [...users as Iterable<DiscordUserLike>];
 }
 
 export function discordJsChatInputInteractionToMessagePayload(interaction: DiscordChatInputInteractionLike): DiscordMessagePayload {

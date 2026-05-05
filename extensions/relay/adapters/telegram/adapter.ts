@@ -211,7 +211,7 @@ export function telegramMessageSharedRoomAddressing(text: string, localBotUserna
   const mentions = telegramMentionedBotUsernames(text).map((username) => username.toLowerCase());
   if (mentions.length === 0) return { kind: "none" };
   if (localBotUsername && mentions.includes(localBotUsername.replace(/^@/, "").toLowerCase())) return { kind: "local" };
-  return { kind: "remote" };
+  return { kind: "none" };
 }
 
 export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineKeyboard {

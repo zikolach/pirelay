@@ -213,6 +213,9 @@ export class DiscordRuntime {
 
     if (command?.name === "sessions") {
       const parsed = parseSharedRoomSessionsArgs(command.args);
+      if (parsed.kind === "local" && command.args.trim() === "" && explicitAddressing?.kind !== "local") {
+        return { kind: "silent" };
+      }
       if (parsed.kind === "machine") {
         const target = resolveSharedRoomMachineTarget({ selector: parsed.machineSelector ?? "", localMachine });
         if (target.kind !== "local") return { kind: "silent" };

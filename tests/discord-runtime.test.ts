@@ -654,6 +654,7 @@ describe("DiscordRuntime", () => {
     const store = new TunnelStateStore(cfg.stateDir);
     await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, metadata: { alias: "docs" }, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
 
+    await ops.handler?.(discordMessage("relay sessions", { channelId: "room1", guildId: "g1" }));
     await ops.handler?.(discordMessage("relay sessions desktop", { channelId: "room1", guildId: "g1" }));
     await ops.handler?.(discordMessage("relay sessions lap", { channelId: "room1", guildId: "g1" }));
     await ops.handler?.(discordMessage("relay sessions all", { channelId: "room1", guildId: "g1" }));

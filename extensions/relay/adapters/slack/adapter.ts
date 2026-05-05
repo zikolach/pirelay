@@ -227,7 +227,7 @@ export function slackMessageSharedRoomAddressing(text: string, localBotUserId: s
   const mentions = slackMentionedUserIds(text);
   if (mentions.length === 0) return { kind: "none" };
   if (localBotUserId && mentions.includes(localBotUserId)) return { kind: "local" };
-  return { kind: "remote" };
+  return { kind: "none" };
 }
 
 export function verifySlackSignature(input: { body: string; timestamp: string; signature: string; signingSecret: string; nowSeconds?: number }): boolean {

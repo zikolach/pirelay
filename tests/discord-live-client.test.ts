@@ -51,6 +51,26 @@ describe("discord live client helpers", () => {
     expect(payload.guild_id).toBeUndefined();
   });
 
+  it("reads Discord.js mention collection values instead of iterator entries", () => {
+    const mentionUsers = new Map([
+      ["bot1", { id: "bot1", username: "relay", globalName: null, discriminator: "0", bot: true }],
+      ["u2", { id: "u2", username: "alex", globalName: "Alex", discriminator: "0", bot: false }],
+    ]);
+
+    const payload = discordJsMessageToPayload({
+      id: "m2",
+      channelId: "c1",
+      guildId: null,
+      content: "hello <@bot1> <@u2>",
+      webhookId: null,
+      author: { id: "u1", username: "nik", globalName: "Nikolay", discriminator: "0", bot: false },
+      mentions: { users: mentionUsers },
+      attachments: [],
+    });
+
+    expect(payload.mentions).toEqual([{ id: "bot1", bot: true }, { id: "u2", bot: false }]);
+  });
+
   it("maps Discord.js button interaction-like objects to adapter payloads", () => {
     const payload = discordJsInteractionToPayload({
       id: "i1",
