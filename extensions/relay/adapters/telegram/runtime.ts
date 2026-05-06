@@ -81,6 +81,12 @@ const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
 const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;
 
+interface TelegramGroupCommandTarget {
+  command: string;
+  args: string;
+  botUsername?: string;
+}
+
 interface PendingCustomAnswerState {
   sessionKey: string;
   chatId: number;
@@ -570,6 +576,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
+    if (isTelegramGroupConversation(message.chat.type) && await this.handleTelegramGroupSharedRoomCommand(message, parseTelegramGroupCommandTarget(message.text))) {
+      return;
+    }
+
     const persisted = await this.activeBindingForMessage(message.chat.id, message.user.id);
     if (!persisted) {
       const revoked = await this.chatUserHasRevokedBinding(message.chat.id, message.user.id);
@@ -849,6 +859,74 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(chatId, "Compaction requested.");
         return;
     }
+  }
+
+  private async handleTelegramGroupSharedRoomCommand(message: TelegramInboundMessage, target: TelegramGroupCommandTarget | undefined): Promise<boolean> {
+    if (!target || !["help", "sessions", "use", "to"].includes(target.command)) return false;
+    if (!target.botUsername) return true;
+
+    const setup = await this.ensureSetup();
+    if (normalizeTelegramBotUsername(target.botUsername) !== normalizeTelegramBotUsername(setup.botUsername)) return true;
+
+    if (target.command === "help") {
+      await this.api.sendPlainText(message.chat.id, HELP_TEXT);
+      return true;
+    }
+
+    const entries = await this.sessionEntriesForTelegramUser(message.user.id);
+    if (entries.length === 0) {
+      await this.api.sendPlainText(message.chat.id, "Pair with this bot in a private Telegram chat first, then use /sessions@bot from the group.");
+      return true;
+    }
+
+    const activeSelection = await this.store.getActiveChannelSelection("telegram", String(message.chat.id), String(message.user.id));
+    const activeSessionKey = activeSelection?.sessionKey && entries.some((entry) => entry.sessionKey === activeSelection.sessionKey)
+      ? activeSelection.sessionKey
+      : undefined;
+
+    switch (target.command) {
+      case "sessions": {
+        await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, activeSessionKey), buildSessionListDashboardKeyboard(entries));
+        return true;
+      }
+      case "use": {
+        const result = resolveSessionSelector(entries, target.args);
+        if (result.kind !== "matched") {
+          await this.api.sendPlainText(message.chat.id, formatSessionSelectorError(result, target.args));
+          return true;
+        }
+        await this.store.setActiveChannelSelection("telegram", String(message.chat.id), String(message.user.id), result.entry.sessionKey);
+        const selectedRoute = this.routes.get(result.entry.sessionKey);
+        await this.sendTextWithKeyboard(message.chat.id, selectedRoute ? this.statusTextForRoute(selectedRoute, true) : `Active session selected: ${result.entry.sessionLabel}`, selectedRoute ? this.dashboardKeyboardForRoute(selectedRoute) : buildSessionListDashboardKeyboard(entries));
+        return true;
+      }
+      case "to": {
+        const resolution = resolveSessionTargetArgs(entries, target.args);
+        if (resolution.result.kind !== "matched") {
+          await this.api.sendPlainText(message.chat.id, formatSessionSelectorError(resolution.result, resolution.selector || target.args));
+          return true;
+        }
+        if (!resolution.prompt) {
+          await this.api.sendPlainText(message.chat.id, `Usage: /to@${setup.botUsername} <session> <prompt>`);
+          return true;
+        }
+        const targetRoute = this.routes.get(resolution.result.entry.sessionKey);
+        if (!targetRoute) {
+          await this.api.sendPlainText(message.chat.id, `Pi session ${resolution.result.entry.alias || resolution.result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
+          return true;
+        }
+        if (targetRoute.binding?.paused) {
+          await this.api.sendPlainText(message.chat.id, "The tunnel is currently paused. Use /resume in the private chat or disconnect locally.");
+          return true;
+        }
+        const idle = isEffectivelyIdle(targetRoute);
+        targetRoute.actions.sendUserMessage(resolution.prompt, idle ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        targetRoute.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a shared-room one-shot prompt to ${targetRoute.sessionLabel}.`);
+        await this.api.sendPlainText(message.chat.id, idle ? "Prompt delivered to Pi." : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`);
+        return true;
+      }
+    }
+    return true;
   }
 
   private async handleStart(message: TelegramInboundMessage, nonce: string): Promise<void> {
@@ -1493,6 +1571,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
     const persisted = (await this.store.getBindingsByChatId(chatId))
       .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    return this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId);
+  }
+
+  private async sessionEntriesForTelegramUser(userId: number): Promise<SessionListEntry[]> {
+    const persisted = (await this.store.getTelegramBindingsByUserId(userId))
+      .filter((binding) => binding.status !== "revoked");
+    return this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId);
+  }
+
+  private sessionEntriesFromBindings(
+    persisted: Array<TelegramBindingMetadata & { status?: string }>,
+    includeUnpersistedRoute: (route: SessionRoute) => boolean,
+  ): SessionListEntry[] {
     const byKey = new Map<string, SessionListEntry>();
     for (const binding of persisted) {
       const route = this.routes.get(binding.sessionKey);
@@ -1525,16 +1616,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     for (const route of this.routes.values()) {
-      if (route.binding?.chatId !== chatId || route.binding.userId !== userId || byKey.has(route.sessionKey)) continue;
+      if (!includeUnpersistedRoute(route) || byKey.has(route.sessionKey)) continue;
       byKey.set(route.sessionKey, {
         sessionKey: route.sessionKey,
         sessionId: route.sessionId,
         sessionFile: route.sessionFile,
         sessionLabel: route.sessionLabel,
-        alias: route.binding.alias,
+        alias: route.binding?.alias,
         online: true,
         busy: !isEffectivelyIdle(route),
-        paused: Boolean(route.binding.paused),
+        paused: Boolean(route.binding?.paused),
         modelId: statusSnapshotForRoute(route, { online: true, busy: !isEffectivelyIdle(route) }).modelId,
         lastActivityAt: route.lastActivityAt,
       });
@@ -1630,6 +1721,23 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const failure = notification.lastFailure || "The Pi task ended without a final assistant response.";
     await this.api.sendPlainText(route.binding.chatId, `${sourcePrefix}❌ Pi task failed after ${durationLabel}\n\n${failure}`);
   }
+}
+
+function parseTelegramGroupCommandTarget(text: string): TelegramGroupCommandTarget | undefined {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^\/([A-Za-z0-9_-]+)(?:@([A-Za-z][A-Za-z0-9_]{4,31}))?(?:\s+([\s\S]*))?$/);
+  if (!match) return undefined;
+  const command = match[1]?.toLowerCase();
+  if (!command) return undefined;
+  return { command, botUsername: match[2], args: (match[3] ?? "").trim() };
+}
+
+function normalizeTelegramBotUsername(username: string): string {
+  return username.replace(/^@/, "").toLowerCase();
+}
+
+function isTelegramGroupConversation(type: string): boolean {
+  return type === "group" || type === "supergroup";
 }
 
 function normalizePairingApproval(value: PairingApprovalDecision | boolean): PairingApprovalDecision {
