@@ -873,6 +873,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return true;
     }
 
+    if (this.config.allowUserIds.length > 0 && !this.config.allowUserIds.includes(message.user.id)) {
+      await this.api.sendPlainText(message.chat.id, "Unauthorized Telegram identity for this Pi session.");
+      return true;
+    }
+
     const entries = await this.sessionEntriesForTelegramUser(message.user.id);
     if (entries.length === 0) {
       await this.api.sendPlainText(message.chat.id, "Pair with this bot in a private Telegram chat first, then use /sessions@bot from the group.");
@@ -886,7 +891,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
     switch (target.command) {
       case "sessions": {
-        await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, activeSessionKey), buildSessionListDashboardKeyboard(entries));
+        await this.api.sendPlainText(message.chat.id, formatSessionList(entries, activeSessionKey));
         return true;
       }
       case "use": {
@@ -897,7 +902,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         }
         await this.store.setActiveChannelSelection("telegram", String(message.chat.id), String(message.user.id), result.entry.sessionKey);
         const selectedRoute = this.routes.get(result.entry.sessionKey);
-        await this.sendTextWithKeyboard(message.chat.id, selectedRoute ? this.statusTextForRoute(selectedRoute, true) : `Active session selected: ${result.entry.sessionLabel}`, selectedRoute ? this.dashboardKeyboardForRoute(selectedRoute) : buildSessionListDashboardKeyboard(entries));
+        await this.api.sendPlainText(message.chat.id, selectedRoute ? this.statusTextForRoute(selectedRoute, true) : `Active session selected: ${result.entry.sessionLabel}`);
         return true;
       }
       case "to": {

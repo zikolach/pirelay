@@ -1448,7 +1448,7 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("offline");
   });
 
-  it("lists private-paired sessions for addressed Telegram group commands", async () => {
+  it("lists private-paired sessions for addressed Telegram group commands without stale keyboards", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
     const runtime = new InProcessTunnelRuntime(config, store);
@@ -1468,14 +1468,16 @@ describe("InProcessTunnelRuntime", () => {
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: Array<{ chatId: number; text: string }> = [];
+    const keyboardSends: Array<{ chatId: number; text: string }> = [];
     (runtime as any).api = {
-      sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => keyboardSends.push({ chatId, text }),
       sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
     };
 
     await (runtime as any).processInbound({ updateId: 50, messageId: 50, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
 
     expect(sent).toHaveLength(1);
+    expect(keyboardSends).toHaveLength(0);
     expect(sent[0]).toMatchObject({ chatId: -1001 });
     expect(sent[0]?.text).toContain("group-list.jsonl");
   });
@@ -1511,6 +1513,38 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("Pair with this bot in a private Telegram chat");
+  });
+
+  it("enforces the Telegram allow-list for group shared-room commands", async () => {
+    const config = await createRuntimeConfig();
+    config.allowUserIds = [7];
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-allow-list:/tmp/session-group-allow-list.jsonl",
+      sessionId: "session-group-allow-list",
+      sessionFile: "/tmp/session-group-allow-list.jsonl",
+      sessionLabel: "group-allow-list.jsonl",
+      chatId: 2022,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, deliveries } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({ updateId: 57, messageId: 57, text: "/to@mini_builder_bot group-allow-list.jsonl ship it", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
+
+    expect(sent).toEqual(["Unauthorized Telegram identity for this Pi session."]);
+    expect(deliveries).toHaveLength(0);
   });
 
   it("keeps Telegram group active selection separate from the private chat binding", async () => {
