@@ -55,6 +55,14 @@ describe("remote command parity metadata", () => {
     expect(help).not.toContain("/status - session and relay dashboard");
   });
 
+  it("uses Telegram bot username placeholders in shared-room help", () => {
+    const help = buildHelpText();
+    expect(help).toContain("/sessions@<bot_username>");
+    expect(help).toContain("/use@<bot_username> <session>");
+    expect(help).toContain("/to@<bot_username> <session> <prompt>");
+    expect(help).not.toContain("/sessions@bot");
+  });
+
   it("keeps Discord native command metadata namespaced around /relay subcommands", () => {
     expect(DISCORD_NATIVE_COMMAND_NAME).toBe("relay");
     for (const command of requiredCanonicalCommands) {

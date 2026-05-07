@@ -87,7 +87,7 @@ function usageForDefinition(definition: RemoteCommandDefinition, commandPrefix: 
 export function buildHelpText(options: { includeBrokerOnly?: boolean; title?: string; commandPrefix?: string; footerLines?: string[]; includeSharedRoomHints?: boolean } = {}): string {
   const sharedRoomLines = options.includeSharedRoomHints === false ? [] : [
     "",
-    "Shared-room machine bots: use /use <machine> <session> to select a machine session, /to <machine> <session> <prompt> for one-shot prompts, or mention/reply to a machine bot when plain room text is unavailable. In Telegram privacy-mode groups, address the bot explicitly: /sessions@bot, /use@bot <session>, /to@bot <session> <prompt>.",
+    "Shared-room machine bots: use /use <machine> <session> to select a machine session, /to <machine> <session> <prompt> for one-shot prompts, or mention/reply to a machine bot when plain room text is unavailable. In Telegram privacy-mode groups, address the bot explicitly with its username: /sessions@<bot_username>, /use@<bot_username> <session>, /to@<bot_username> <session> <prompt>.",
   ];
   return [
     options.title ?? "PiRelay commands:",

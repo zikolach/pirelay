@@ -1596,8 +1596,10 @@ describe("InProcessTunnelRuntime", () => {
     expect(second.deliveries).toHaveLength(0);
   });
 
-  it("routes Telegram group /to@bot prompts through private-pairing authorization", async () => {
+  it("routes Telegram group /to@bot prompts and outputs through private-pairing authorization", async () => {
+    vi.useFakeTimers();
     const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1;
     const store = new TunnelStateStore(config.stateDir);
     const runtime = new InProcessTunnelRuntime(config, store);
     (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
@@ -1616,16 +1618,35 @@ describe("InProcessTunnelRuntime", () => {
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: Array<{ chatId: number; text: string }> = [];
+    const actions: Array<{ chatId: number; action: string }> = [];
     (runtime as any).api = {
       sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
       sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
-      sendChatAction: async () => undefined,
+      sendChatAction: async (chatId: number, action: string) => actions.push({ chatId, action }),
     };
 
     await (runtime as any).processInbound({ updateId: 56, messageId: 56, text: "/to@mini_builder_bot target-group.jsonl ship it", chat: { id: -1003, type: "supergroup" }, user: { id: 42, username: "owner" } });
 
     expect(deliveries).toEqual([{ text: "ship it", deliverAs: undefined }]);
+    expect(actions).toContainEqual({ chatId: -1003, action: "typing" });
     expect(sent).toContainEqual({ chatId: -1003, text: "Prompt delivered to Pi." });
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
+
+    sent.length = 0;
+    route.notification.lastStatus = "running";
+    route.notification.progressEvent = createProgressActivity({ id: "shared-progress", kind: "tool", text: "Running shared prompt", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Running shared prompt") });
+
+    sent.length = 0;
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = "Shared prompt finished successfully.";
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Shared prompt finished successfully") });
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
   });
 
   it("coalesces rate-limited progress updates and respects quiet mode", async () => {
