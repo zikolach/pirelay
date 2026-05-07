@@ -1649,6 +1649,35 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
   });
 
+  it("uses Telegram shared-room output destinations for direct bound-chat sends", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-fallback:/tmp/session-group-fallback.jsonl",
+      sessionId: "session-group-fallback",
+      sessionFile: "/tmp/session-group-fallback.jsonl",
+      sessionLabel: "group-fallback.jsonl",
+      chatId: 2050,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    (runtime as any).routes.set(route.sessionKey, route);
+    (runtime as any).setSharedRoomOutputDestination(route, { chatId: -1004, userId: 42 });
+    const sent: Array<{ chatId: number; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
+    };
+
+    await runtime.sendToBoundChat(route.sessionKey, "Fallback output");
+
+    expect(sent).toEqual([{ chatId: -1004, text: expect.stringContaining("Fallback output") }]);
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2050 }));
+  });
+
   it("coalesces rate-limited progress updates and respects quiet mode", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();

@@ -240,11 +240,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
+    const binding = this.outputBindingForRoute(route);
+    if (!binding || binding.paused) return;
     const sourcePrefix = this.sourcePrefixForRoute(route);
-    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
+    await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
-        route.binding.chatId,
+        binding.chatId,
         `${sourcePrefix}${summarizeTailForTelegram(route.notification.structuredAnswer, {
           includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
         })}`,
