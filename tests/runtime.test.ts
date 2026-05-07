@@ -1448,6 +1448,236 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("offline");
   });
 
+  it("lists private-paired sessions for addressed Telegram group commands without stale keyboards", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-list:/tmp/session-group-list.jsonl",
+      sessionId: "session-group-list",
+      sessionFile: "/tmp/session-group-list.jsonl",
+      sessionLabel: "group-list.jsonl",
+      chatId: 2020,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: Array<{ chatId: number; text: string }> = [];
+    const keyboardSends: Array<{ chatId: number; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => keyboardSends.push({ chatId, text }),
+      sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
+    };
+
+    await (runtime as any).processInbound({ updateId: 50, messageId: 50, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
+
+    expect(sent).toHaveLength(1);
+    expect(keyboardSends).toHaveLength(0);
+    expect(sent[0]).toMatchObject({ chatId: -1001 });
+    expect(sent[0]?.text).toContain("group-list.jsonl");
+  });
+
+  it("keeps unpaired and non-target Telegram group shared-room commands conservative", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-silent:/tmp/session-group-silent.jsonl",
+      sessionId: "session-group-silent",
+      sessionFile: "/tmp/session-group-silent.jsonl",
+      sessionLabel: "group-silent.jsonl",
+      chatId: 2021,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({ updateId: 51, messageId: 51, text: "/sessions@other_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 52, messageId: 52, text: "/sessions", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 53, messageId: 53, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 99, username: "stranger" } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("Pair with this bot in a private Telegram chat");
+  });
+
+  it("enforces the Telegram allow-list for group shared-room commands", async () => {
+    const config = await createRuntimeConfig();
+    config.allowUserIds = [7];
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-allow-list:/tmp/session-group-allow-list.jsonl",
+      sessionId: "session-group-allow-list",
+      sessionFile: "/tmp/session-group-allow-list.jsonl",
+      sessionLabel: "group-allow-list.jsonl",
+      chatId: 2022,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, deliveries } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({ updateId: 57, messageId: 57, text: "/to@mini_builder_bot group-allow-list.jsonl ship it", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
+
+    expect(sent).toEqual(["Unauthorized Telegram identity for this Pi session."]);
+    expect(deliveries).toHaveLength(0);
+  });
+
+  it("keeps Telegram group active selection separate from the private chat binding", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const firstBinding: TelegramBindingMetadata = {
+      sessionKey: "session-group-use-1:/tmp/session-group-use-1.jsonl",
+      sessionId: "session-group-use-1",
+      sessionFile: "/tmp/session-group-use-1.jsonl",
+      sessionLabel: "first-group.jsonl",
+      chatId: 2030,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const secondBinding: TelegramBindingMetadata = {
+      sessionKey: "session-group-use-2:/tmp/session-group-use-2.jsonl",
+      sessionId: "session-group-use-2",
+      sessionFile: "/tmp/session-group-use-2.jsonl",
+      sessionLabel: "second-group.jsonl",
+      alias: "phone",
+      chatId: 2030,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const first = createRoute(firstBinding, true);
+    const second = createRoute(secondBinding, true);
+    await store.upsertBinding(firstBinding);
+    await store.upsertBinding(secondBinding);
+    (runtime as any).routes.set(first.route.sessionKey, first.route);
+    (runtime as any).routes.set(second.route.sessionKey, second.route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({ updateId: 54, messageId: 54, text: "/use@mini_builder_bot phone", chat: { id: -1002, type: "supergroup" }, user: { id: 42, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 55, messageId: 55, text: "private prompt", chat: { id: 2030, type: "private" }, user: { id: 42, username: "owner" } });
+
+    expect(await store.getActiveChannelSelection("telegram", "-1002", "42")).toMatchObject({ sessionKey: second.route.sessionKey });
+    expect((await store.getBindingBySessionKey(second.route.sessionKey))?.chatId).toBe(2030);
+    expect(first.deliveries).toContainEqual({ text: "private prompt", deliverAs: undefined });
+    expect(second.deliveries).toHaveLength(0);
+  });
+
+  it("routes Telegram group /to@bot prompts and outputs through private-pairing authorization", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-to:/tmp/session-group-to.jsonl",
+      sessionId: "session-group-to",
+      sessionFile: "/tmp/session-group-to.jsonl",
+      sessionLabel: "target-group.jsonl",
+      chatId: 2040,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, deliveries } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: Array<{ chatId: number; text: string }> = [];
+    const actions: Array<{ chatId: number; action: string }> = [];
+    (runtime as any).api = {
+      sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendChatAction: async (chatId: number, action: string) => actions.push({ chatId, action }),
+    };
+
+    await (runtime as any).processInbound({ updateId: 56, messageId: 56, text: "/to@mini_builder_bot target-group.jsonl ship it", chat: { id: -1003, type: "supergroup" }, user: { id: 42, username: "owner" } });
+
+    expect(deliveries).toEqual([{ text: "ship it", deliverAs: undefined }]);
+    expect(actions).toContainEqual({ chatId: -1003, action: "typing" });
+    expect(sent).toContainEqual({ chatId: -1003, text: "Prompt delivered to Pi." });
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
+
+    sent.length = 0;
+    route.notification.lastStatus = "running";
+    route.notification.progressEvent = createProgressActivity({ id: "shared-progress", kind: "tool", text: "Running shared prompt", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Running shared prompt") });
+
+    sent.length = 0;
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = "Shared prompt finished successfully.";
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Shared prompt finished successfully") });
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
+  });
+
+  it("uses Telegram shared-room output destinations for direct bound-chat sends", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-fallback:/tmp/session-group-fallback.jsonl",
+      sessionId: "session-group-fallback",
+      sessionFile: "/tmp/session-group-fallback.jsonl",
+      sessionLabel: "group-fallback.jsonl",
+      chatId: 2050,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    (runtime as any).routes.set(route.sessionKey, route);
+    (runtime as any).setSharedRoomOutputDestination(route, { chatId: -1004, userId: 42 });
+    const sent: Array<{ chatId: number; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
+    };
+
+    await runtime.sendToBoundChat(route.sessionKey, "Fallback output");
+
+    expect(sent).toEqual([{ chatId: -1004, text: expect.stringContaining("Fallback output") }]);
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2050 }));
+  });
+
   it("coalesces rate-limited progress updates and respects quiet mode", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();

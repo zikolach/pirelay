@@ -81,6 +81,12 @@ const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
 const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;
 
+interface TelegramGroupCommandTarget {
+  command: string;
+  args: string;
+  botUsername?: string;
+}
+
 interface PendingCustomAnswerState {
   sessionKey: string;
   chatId: number;
@@ -96,6 +102,11 @@ interface PendingAnswerAmbiguityState {
   turnId: string;
   text: string;
   expiresAt: number;
+}
+
+interface SharedRoomOutputDestination {
+  chatId: number;
+  userId: number;
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -128,6 +139,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
   private readonly activeSessionByChatUser = new Map<string, string>();
+  private readonly sharedRoomOutputDestinations = new Map<string, SharedRoomOutputDestination>();
   private started = false;
   private pollingTask?: Promise<void>;
   private releaseLock?: () => Promise<void>;
@@ -212,6 +224,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       this.clearActivityIndicator(route);
       this.clearProgressState(route);
     }
+    this.sharedRoomOutputDestinations.delete(sessionKey);
     this.routes.delete(sessionKey);
     if (this.routes.size === 0) {
       await this.stop();
@@ -227,11 +240,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
+    const binding = this.outputBindingForRoute(route);
+    if (!binding || binding.paused) return;
     const sourcePrefix = this.sourcePrefixForRoute(route);
-    await this.api.sendPlainTextWithKeyboard(route.binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
+    await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
     if (route.notification.lastStatus === "completed" && route.notification.structuredAnswer) {
       await this.api.sendPlainTextWithKeyboard(
-        route.binding.chatId,
+        binding.chatId,
         `${sourcePrefix}${summarizeTailForTelegram(route.notification.structuredAnswer, {
           includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
         })}`,
@@ -250,6 +265,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private currentTurnId(route: SessionRoute): string | undefined {
     return route.notification.structuredAnswer?.turnId ?? route.notification.lastTurnId;
+  }
+
+  private setSharedRoomOutputDestination(route: SessionRoute, destination: SharedRoomOutputDestination): void {
+    if (!route.binding) return;
+    this.sharedRoomOutputDestinations.set(route.sessionKey, destination);
+  }
+
+  private outputBindingForRoute(route: SessionRoute): TelegramBindingMetadata | undefined {
+    if (!route.binding) return undefined;
+    const sharedRoomDestination = this.sharedRoomOutputDestinations.get(route.sessionKey);
+    return sharedRoomDestination
+      ? { ...route.binding, chatId: sharedRoomDestination.chatId, userId: sharedRoomDestination.userId }
+      : route.binding;
   }
 
   private ambiguityKey(sessionKey: string, chatId: number, userId: number, token: string): string {
@@ -385,7 +413,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private activityKeyForRoute(route: SessionRoute): string | undefined {
-    return route.binding ? this.activityKey(route.sessionKey, route.binding.chatId) : undefined;
+    const binding = this.outputBindingForRoute(route);
+    return binding ? this.activityKey(route.sessionKey, binding.chatId) : undefined;
   }
 
   private clearAllActivityIndicators(): void {
@@ -408,7 +437,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private shouldContinueActivityIndicator(route: SessionRoute): boolean {
-    if (!route.binding || route.binding.paused) return false;
+    const binding = this.outputBindingForRoute(route);
+    if (!binding || binding.paused) return false;
     if (isTerminalStatus(route.notification.lastStatus)) return false;
     return !route.actions.context.isIdle() || route.notification.lastStatus === "running";
   }
@@ -422,14 +452,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async startActivityIndicator(route: SessionRoute): Promise<boolean> {
-    if (!route.binding || route.binding.paused) return false;
+    const binding = this.outputBindingForRoute(route);
+    if (!binding || binding.paused) return false;
     const key = this.activityKeyForRoute(route);
     if (!key) return false;
     if (this.activityIndicators.has(key)) return true;
 
-    const sent = await this.trySendActivityIndicator(route.binding.chatId);
+    const sent = await this.trySendActivityIndicator(binding.chatId);
     if (!sent) return false;
-    this.scheduleActivityRefresh(route.sessionKey, route.binding.chatId, key, TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS);
+    this.scheduleActivityRefresh(route.sessionKey, binding.chatId, key, TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS);
     return true;
   }
 
@@ -443,7 +474,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async refreshActivityIndicator(sessionKey: string, chatId: number, key: string): Promise<void> {
     const route = this.routes.get(sessionKey);
-    if (!route || route.binding?.chatId !== chatId || !this.shouldContinueActivityIndicator(route)) {
+    if (!route || this.outputBindingForRoute(route)?.chatId !== chatId || !this.shouldContinueActivityIndicator(route)) {
       this.clearActivityIndicatorByKey(key);
       return;
     }
@@ -467,7 +498,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private progressKey(route: SessionRoute): string | undefined {
-    return route.binding ? `${route.sessionKey}:${route.binding.chatId}` : undefined;
+    const binding = this.outputBindingForRoute(route);
+    return binding ? `${route.sessionKey}:${binding.chatId}` : undefined;
   }
 
   private clearAllProgressStates(): void {
@@ -487,12 +519,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private syncProgressDelivery(route: SessionRoute): void {
     const event = route.notification.progressEvent;
+    const binding = this.outputBindingForRoute(route);
     const key = this.progressKey(route);
-    if (!key || !event || !route.binding || route.binding.paused || route.notification.lastStatus !== "running") {
+    if (!key || !event || !binding || binding.paused || route.notification.lastStatus !== "running") {
       if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
       return;
     }
-    const mode = progressModeFor(route.binding, this.config);
+    const mode = progressModeFor(binding, this.config);
     if (!shouldSendNonTerminalProgress(mode)) return;
     let state = this.progressStates.get(key);
     if (!state) {
@@ -508,7 +541,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
     const delay = Math.max(0, interval - elapsed);
     state.timer = setTimeout(() => {
-      void this.flushProgress(route.sessionKey, route.binding!.chatId, key);
+      void this.flushProgress(route.sessionKey, binding.chatId, key);
     }, delay);
     unrefTimer(state.timer);
   }
@@ -518,7 +551,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!state) return;
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
-    if (!route || !route.binding || route.binding.chatId !== chatId || route.binding.paused || route.notification.lastStatus !== "running") {
+    const binding = route ? this.outputBindingForRoute(route) : undefined;
+    if (!route || !binding || binding.chatId !== chatId || binding.paused || route.notification.lastStatus !== "running") {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);
       return;
@@ -567,6 +601,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const command = commandIntentFromPipeline(initialPipeline.result) ?? parseRemoteCommandInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseTelegramCommand(message.text);
     if (command?.command === "start") {
       await this.handleStart(message, command.args);
+      return;
+    }
+
+    if (isTelegramGroupConversation(message.chat.type) && await this.handleTelegramGroupSharedRoomCommand(message, parseTelegramGroupCommandTarget(message.text))) {
       return;
     }
 
@@ -849,6 +887,83 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(chatId, "Compaction requested.");
         return;
     }
+  }
+
+  private async handleTelegramGroupSharedRoomCommand(message: TelegramInboundMessage, target: TelegramGroupCommandTarget | undefined): Promise<boolean> {
+    if (!target || !["help", "sessions", "use", "to"].includes(target.command)) return false;
+    if (!target.botUsername) return true;
+
+    const setup = await this.ensureSetup();
+    if (normalizeTelegramBotUsername(target.botUsername) !== normalizeTelegramBotUsername(setup.botUsername)) return true;
+
+    if (target.command === "help") {
+      await this.api.sendPlainText(message.chat.id, HELP_TEXT);
+      return true;
+    }
+
+    if (this.config.allowUserIds.length > 0 && !this.config.allowUserIds.includes(message.user.id)) {
+      await this.api.sendPlainText(message.chat.id, "Unauthorized Telegram identity for this Pi session.");
+      return true;
+    }
+
+    const entries = await this.sessionEntriesForTelegramUser(message.user.id);
+    if (entries.length === 0) {
+      await this.api.sendPlainText(message.chat.id, `Pair with this bot in a private Telegram chat first, then use /sessions@${setup.botUsername} from the group.`);
+      return true;
+    }
+
+    const activeSelection = await this.store.getActiveChannelSelection("telegram", String(message.chat.id), String(message.user.id));
+    const activeSessionKey = activeSelection?.sessionKey && entries.some((entry) => entry.sessionKey === activeSelection.sessionKey)
+      ? activeSelection.sessionKey
+      : undefined;
+
+    switch (target.command) {
+      case "sessions": {
+        await this.api.sendPlainText(message.chat.id, formatSessionList(entries, activeSessionKey));
+        return true;
+      }
+      case "use": {
+        const result = resolveSessionSelector(entries, target.args);
+        if (result.kind !== "matched") {
+          await this.api.sendPlainText(message.chat.id, formatSessionSelectorError(result, target.args));
+          return true;
+        }
+        await this.store.setActiveChannelSelection("telegram", String(message.chat.id), String(message.user.id), result.entry.sessionKey);
+        const selectedRoute = this.routes.get(result.entry.sessionKey);
+        await this.api.sendPlainText(message.chat.id, selectedRoute ? this.statusTextForRoute(selectedRoute, true) : `Active session selected: ${result.entry.sessionLabel}`);
+        return true;
+      }
+      case "to": {
+        const resolution = resolveSessionTargetArgs(entries, target.args);
+        if (resolution.result.kind !== "matched") {
+          await this.api.sendPlainText(message.chat.id, formatSessionSelectorError(resolution.result, resolution.selector || target.args));
+          return true;
+        }
+        if (!resolution.prompt) {
+          await this.api.sendPlainText(message.chat.id, `Usage: /to@${setup.botUsername} <session> <prompt>`);
+          return true;
+        }
+        const targetRoute = this.routes.get(resolution.result.entry.sessionKey);
+        if (!targetRoute) {
+          await this.api.sendPlainText(message.chat.id, `Pi session ${resolution.result.entry.alias || resolution.result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
+          return true;
+        }
+        if (targetRoute.binding?.paused) {
+          await this.api.sendPlainText(message.chat.id, "The tunnel is currently paused. Use /resume in the private chat or disconnect locally.");
+          return true;
+        }
+        const idle = isEffectivelyIdle(targetRoute);
+        if (idle) {
+          this.setSharedRoomOutputDestination(targetRoute, { chatId: message.chat.id, userId: message.user.id });
+          await this.startActivityIndicator(targetRoute);
+        }
+        targetRoute.actions.sendUserMessage(resolution.prompt, idle ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        targetRoute.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a shared-room one-shot prompt to ${targetRoute.sessionLabel}.`);
+        await this.api.sendPlainText(message.chat.id, idle ? "Prompt delivered to Pi." : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`);
+        return true;
+      }
+    }
+    return true;
   }
 
   private async handleStart(message: TelegramInboundMessage, nonce: string): Promise<void> {
@@ -1493,6 +1608,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
     const persisted = (await this.store.getBindingsByChatId(chatId))
       .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    return this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId);
+  }
+
+  private async sessionEntriesForTelegramUser(userId: number): Promise<SessionListEntry[]> {
+    const persisted = (await this.store.getTelegramBindingsByUserId(userId))
+      .filter((binding) => binding.status !== "revoked");
+    return this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId);
+  }
+
+  private sessionEntriesFromBindings(
+    persisted: Array<TelegramBindingMetadata & { status?: string }>,
+    includeUnpersistedRoute: (route: SessionRoute) => boolean,
+  ): SessionListEntry[] {
     const byKey = new Map<string, SessionListEntry>();
     for (const binding of persisted) {
       const route = this.routes.get(binding.sessionKey);
@@ -1525,16 +1653,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     for (const route of this.routes.values()) {
-      if (route.binding?.chatId !== chatId || route.binding.userId !== userId || byKey.has(route.sessionKey)) continue;
+      if (!includeUnpersistedRoute(route) || byKey.has(route.sessionKey)) continue;
       byKey.set(route.sessionKey, {
         sessionKey: route.sessionKey,
         sessionId: route.sessionId,
         sessionFile: route.sessionFile,
         sessionLabel: route.sessionLabel,
-        alias: route.binding.alias,
+        alias: route.binding?.alias,
         online: true,
         busy: !isEffectivelyIdle(route),
-        paused: Boolean(route.binding.paused),
+        paused: Boolean(route.binding?.paused),
         modelId: statusSnapshotForRoute(route, { online: true, busy: !isEffectivelyIdle(route) }).modelId,
         lastActivityAt: route.lastActivityAt,
       });
@@ -1587,49 +1715,71 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     this.clearActivityIndicator(route);
     this.clearProgressState(route);
     this.clearAnswerStateForRoute(route);
-    if (!route.binding || route.binding.paused) return;
-    const notification = route.notification;
-    const durationMs = notification.startedAt ? Date.now() - notification.startedAt : undefined;
-    const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : "unknown time";
+    const binding = this.outputBindingForRoute(route);
+    try {
+      if (!binding || binding.paused) return;
+      const notification = route.notification;
+      const durationMs = notification.startedAt ? Date.now() - notification.startedAt : undefined;
+      const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : "unknown time";
 
-    const sourcePrefix = this.sourcePrefixForRoute(route);
+      const sourcePrefix = this.sourcePrefixForRoute(route);
 
-    if (status === "completed" && notification.lastAssistantText) {
-      const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
-      notification.lastSummary = summary;
-      const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
-      const actionKeyboard = route.notification.structuredAnswer
-        ? undefined
-        : this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
-      const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
-      const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
-        ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
-        : "";
-      await this.api.sendPlainTextWithKeyboard(
-        route.binding.chatId,
-        `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
-        actionKeyboard,
-      );
-      if (notification.structuredAnswer) {
+      if (status === "completed" && notification.lastAssistantText) {
+        const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
+        notification.lastSummary = summary;
+        const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
+        const actionKeyboard = route.notification.structuredAnswer
+          ? undefined
+          : this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
+        const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
+        const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
+          ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
+          : "";
         await this.api.sendPlainTextWithKeyboard(
-          route.binding.chatId,
-          `${sourcePrefix}${summarizeTailForTelegram(notification.structuredAnswer, {
-            includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
-          })}`,
-          this.answerActionKeyboardForRoute(route),
+          binding.chatId,
+          `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
+          actionKeyboard,
         );
+        if (notification.structuredAnswer) {
+          await this.api.sendPlainTextWithKeyboard(
+            binding.chatId,
+            `${sourcePrefix}${summarizeTailForTelegram(notification.structuredAnswer, {
+              includeFullOutputActions: this.shouldOfferFullOutputActionsForRoute(route),
+            })}`,
+            this.answerActionKeyboardForRoute(route),
+          );
+        }
+        return;
       }
-      return;
-    }
 
-    if (status === "aborted") {
-      await this.api.sendPlainText(route.binding.chatId, `${sourcePrefix}⏹️ Pi task aborted after ${durationLabel}.`);
-      return;
-    }
+      if (status === "aborted") {
+        await this.api.sendPlainText(binding.chatId, `${sourcePrefix}⏹️ Pi task aborted after ${durationLabel}.`);
+        return;
+      }
 
-    const failure = notification.lastFailure || "The Pi task ended without a final assistant response.";
-    await this.api.sendPlainText(route.binding.chatId, `${sourcePrefix}❌ Pi task failed after ${durationLabel}\n\n${failure}`);
+      const failure = notification.lastFailure || "The Pi task ended without a final assistant response.";
+      await this.api.sendPlainText(binding.chatId, `${sourcePrefix}❌ Pi task failed after ${durationLabel}\n\n${failure}`);
+    } finally {
+      this.sharedRoomOutputDestinations.delete(route.sessionKey);
+    }
   }
+}
+
+function parseTelegramGroupCommandTarget(text: string): TelegramGroupCommandTarget | undefined {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^\/([A-Za-z0-9_-]+)(?:@([A-Za-z][A-Za-z0-9_]{4,31}))?(?:\s+([\s\S]*))?$/);
+  if (!match) return undefined;
+  const command = match[1]?.toLowerCase();
+  if (!command) return undefined;
+  return { command, botUsername: match[2], args: (match[3] ?? "").trim() };
+}
+
+function normalizeTelegramBotUsername(username: string): string {
+  return username.replace(/^@/, "").toLowerCase();
+}
+
+function isTelegramGroupConversation(type: string): boolean {
+  return type === "group" || type === "supergroup";
 }
 
 function normalizePairingApproval(value: PairingApprovalDecision | boolean): PairingApprovalDecision {

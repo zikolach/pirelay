@@ -222,6 +222,11 @@ export class TunnelStateStore {
     return bindings.filter((binding) => binding.chatId === chatId);
   }
 
+  async getTelegramBindingsByUserId(userId: number): Promise<PersistedBindingRecord[]> {
+    const bindings = Object.values((await this.load()).bindings);
+    return bindings.filter((binding) => binding.userId === userId);
+  }
+
   async upsertChannelBinding(binding: ChannelBinding): Promise<ChannelPersistedBindingRecord> {
     const key = channelBindingStorageKey(binding.channel, binding.sessionKey, binding.instanceId);
     const record: ChannelPersistedBindingRecord = { ...binding, instanceId: binding.instanceId ?? "default", status: binding.revokedAt ? "revoked" : "active" };
