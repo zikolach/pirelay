@@ -205,7 +205,9 @@ export function telegramUpdateToChannelEvent(update: TelegramInboundMessage | Te
 }
 
 export function telegramMentionedBotUsernames(text: string): string[] {
-  return [...text.matchAll(/@([A-Za-z][A-Za-z0-9_]{4,31})/g)].map((match) => match[1]!).filter(Boolean);
+  return [...text.matchAll(/@([A-Za-z][A-Za-z0-9_]{4,31})/g)]
+    .map((match) => match[1]!)
+    .filter((username) => /bot$/i.test(username));
 }
 
 export function telegramMessageSharedRoomAddressing(text: string, localBotUsername: string | undefined): SharedRoomAddressing {

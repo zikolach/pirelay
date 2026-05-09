@@ -28,12 +28,14 @@ describe("shared-room platform parity declarations", () => {
   it("classifies Telegram and Slack local, remote, ambiguous, and no-target mentions", () => {
     expect(telegramMessageSharedRoomAddressing("/status@PiLaptopBot", "PiLaptopBot")).toEqual({ kind: "local" });
     expect(telegramMessageSharedRoomAddressing("/status@PiDesktopBot", "PiLaptopBot")).toEqual({ kind: "remote", selector: "PiDesktopBot" });
+    expect(telegramMessageSharedRoomAddressing("hi @alice", "PiLaptopBot")).toEqual({ kind: "none" });
     expect(telegramMessageSharedRoomAddressing("hi @PiLaptopBot @PiDesktopBot", "PiLaptopBot")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
     expect(telegramMessageSharedRoomAddressing("hi", "PiLaptopBot")).toEqual({ kind: "none" });
 
     expect(slackMessageSharedRoomAddressing("hi <@U123>", "U123")).toEqual({ kind: "local" });
-    expect(slackMessageSharedRoomAddressing("hi <@U456>", "U123")).toEqual({ kind: "remote", selector: "U456" });
-    expect(slackMessageSharedRoomAddressing("hi <@U123> <@U456>", "U123")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
+    expect(slackMessageSharedRoomAddressing("hi <@U456>", "U123")).toEqual({ kind: "none" });
+    expect(slackMessageSharedRoomAddressing("hi <@U456>", "U123", ["U456"])).toEqual({ kind: "remote", selector: "U456" });
+    expect(slackMessageSharedRoomAddressing("hi <@U123> <@U456>", "U123", ["U456"])).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
     expect(slackMessageSharedRoomAddressing("hi", "U123")).toEqual({ kind: "none" });
   });
 

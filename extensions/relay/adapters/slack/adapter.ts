@@ -223,8 +223,9 @@ export function slackMentionedUserIds(text: string): string[] {
   return [...text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!).filter(Boolean);
 }
 
-export function slackMessageSharedRoomAddressing(text: string, localBotUserId: string | undefined): SharedRoomAddressing {
-  const mentions = slackMentionedUserIds(text);
+export function slackMessageSharedRoomAddressing(text: string, localBotUserId: string | undefined, remoteBotUserIds: readonly string[] = []): SharedRoomAddressing {
+  const botUserIds = new Set([...(localBotUserId ? [localBotUserId] : []), ...remoteBotUserIds]);
+  const mentions = [...new Set(slackMentionedUserIds(text).filter((mention) => botUserIds.has(mention)))];
   if (mentions.length === 0) return { kind: "none" };
   if (mentions.length > 1) return { kind: "ambiguous", reason: "multiple bot mentions" };
   if (localBotUserId && mentions.includes(localBotUserId)) return { kind: "local" };
