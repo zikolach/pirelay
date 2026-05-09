@@ -140,7 +140,8 @@ describe("SlackChannelAdapter", () => {
   it("normalizes Slack shared-room mentions", () => {
     expect(slackMentionedUserIds("hi <@U123> and <@U456>")).toEqual(["U123", "U456"]);
     expect(slackMessageSharedRoomAddressing("hi <@U123>", "U123")).toEqual({ kind: "local" });
-    expect(slackMessageSharedRoomAddressing("hi <@U456>", "U123")).toEqual({ kind: "none" });
+    expect(slackMessageSharedRoomAddressing("hi <@U456>", "U123")).toEqual({ kind: "remote", selector: "U456" });
+    expect(slackMessageSharedRoomAddressing("hi <@U123> <@U456>", "U123")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
     expect(slackMessageSharedRoomAddressing("hi", "U123")).toEqual({ kind: "none" });
   });
 

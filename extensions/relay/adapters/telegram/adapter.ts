@@ -148,6 +148,7 @@ export function telegramUserToChannelIdentity(user: TelegramUserSummary): Channe
     displayName,
     firstName: user.firstName,
     lastName: user.lastName,
+    metadata: { isBot: user.isBot ?? false },
   };
 }
 
@@ -208,10 +209,13 @@ export function telegramMentionedBotUsernames(text: string): string[] {
 }
 
 export function telegramMessageSharedRoomAddressing(text: string, localBotUsername: string | undefined): SharedRoomAddressing {
-  const mentions = telegramMentionedBotUsernames(text).map((username) => username.toLowerCase());
+  const rawMentions = telegramMentionedBotUsernames(text);
+  const mentions = rawMentions.map((username) => username.toLowerCase());
   if (mentions.length === 0) return { kind: "none" };
-  if (localBotUsername && mentions.includes(localBotUsername.replace(/^@/, "").toLowerCase())) return { kind: "local" };
-  return { kind: "none" };
+  if (mentions.length > 1) return { kind: "ambiguous", reason: "multiple bot mentions" };
+  const normalizedLocal = localBotUsername?.replace(/^@/, "").toLowerCase();
+  if (normalizedLocal && mentions.includes(normalizedLocal)) return { kind: "local" };
+  return { kind: "remote", selector: rawMentions[0] };
 }
 
 export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineKeyboard {

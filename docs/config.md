@@ -90,6 +90,14 @@ Diagnostics never print token or signing-secret values.
 
 Run one PiRelay broker per machine. If the same bot/account is configured on multiple machines, configure one ingress owner for that messenger instance and broker peers/federation for the other machines. PiRelay blocks ambiguous duplicate polling instead of letting multiple brokers race on the same bot token.
 
+For no-federation shared rooms, use one dedicated bot/app identity per machine in the same messenger room:
+
+- Telegram: invite each machine bot to the group/supergroup. Enable BotFather Bot-to-Bot Communication Mode for both bots only when testing bot-authored workflows; `/command@bot` addressed commands remain the reliable privacy-mode fallback.
+- Discord: enable guild-channel shared rooms only with dedicated applications, allowed guild ids, Message Content Intent, and channel permissions. Prefer `relay <command>` and mentions over platform slash-command assumptions.
+- Slack: channel events and app mentions can be configured, but Slack shared-room ordinary text/channel command/media pre-routing is diagnostic/deferred until explicit runtime support exists. Keep channel control disabled unless you are testing that gap deliberately.
+
+See `docs/shared-room-parity.md` for the current parity matrix.
+
 ## Migration from legacy Telegram tunnel config/state
 
 Legacy files under `~/.pi/agent/telegram-tunnel` are read as migration input. Active non-secret Telegram bindings migrate to `messengers.telegram.default`; active pairing nonces are not copied, so create a fresh pairing with `/relay connect telegram` when needed.

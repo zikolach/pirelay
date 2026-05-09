@@ -130,10 +130,31 @@ These adapter foundations are DM-first and use channel-specific credentials/conf
 23. Simultaneous Telegram, Discord, and Slack adapters produce channel-qualified binding keys such as `telegram:<session>`, `discord:<session>`, and `slack:<session>`.
 24. Exported/shared session history contains only non-secret binding metadata, never bot tokens, Slack signing secrets, OAuth tokens, or active pairing secrets.
 
-## 7. Regression notes to capture
+## 7. Optional Telegram two-bot shared-room smoke checklist
+
+Run this only with disposable bots and a disposable test group. Do not paste production tokens, pairing codes, hidden prompts, or transcripts into logs.
+
+Preconditions:
+- Two Telegram bot tokens exist for dedicated machine bots.
+- BotFather Bot-to-Bot Communication Mode is enabled for both bots.
+- Both bots are members of the same group/supergroup.
+- Bot privacy mode may stay enabled; addressed-command fallback should still work.
+
+Checklist:
+1. Pair one PiRelay instance to bot A and one PiRelay instance to bot B.
+2. In the group, send `/sessions@bot_a` and verify only machine A responds.
+3. Send `/sessions@bot_b` and verify only machine B responds.
+4. Send `/use@bot_a <session>` and then ordinary or addressed text for bot A; verify machine B stays silent.
+5. Send a bot-authored message from bot B targeting bot A only if both bots have Bot-to-Bot Communication Mode enabled; verify machine A accepts it only when the sender identity is explicitly authorized/trusted.
+6. Send an untargeted bot-authored message and verify both PiRelay instances ignore it.
+7. Send a self-authored/local-bot message and verify PiRelay ignores it to prevent feedback loops.
+8. Disable Bot-to-Bot Communication Mode for one bot and verify `/command@bot` user fallback still works while bot-authored delivery is unavailable.
+
+## 8. Regression notes to capture
 
 When a test fails, record:
 - Telegram client and platform
+- whether Bot-to-Bot Communication Mode was enabled for both bots
 - whether the broker had been restarted after code changes
 - whether the failure affects only local Pi input, only Telegram behavior, or both
 - the exact final assistant output if answer parsing behaved incorrectly

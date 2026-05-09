@@ -81,7 +81,8 @@ describe("telegram channel adapter", () => {
   it("normalizes Telegram shared-room mentions", () => {
     expect(telegramMentionedBotUsernames("hi @PiLaptopBot and @PiDesktopBot")).toEqual(["PiLaptopBot", "PiDesktopBot"]);
     expect(telegramMessageSharedRoomAddressing("hi @PiLaptopBot", "PiLaptopBot")).toEqual({ kind: "local" });
-    expect(telegramMessageSharedRoomAddressing("hi @PiDesktopBot", "PiLaptopBot")).toEqual({ kind: "none" });
+    expect(telegramMessageSharedRoomAddressing("hi @PiDesktopBot", "PiLaptopBot")).toEqual({ kind: "remote", selector: "PiDesktopBot" });
+    expect(telegramMessageSharedRoomAddressing("hi @PiLaptopBot @PiDesktopBot", "PiLaptopBot")).toEqual({ kind: "ambiguous", reason: "multiple bot mentions" });
     expect(telegramMessageSharedRoomAddressing("hi", "PiLaptopBot")).toEqual({ kind: "none" });
   });
 

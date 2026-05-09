@@ -597,6 +597,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
+    if (message.user.isBot && this.setupCache?.botId === message.user.id) {
+      return;
+    }
+
     const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config: this.config });
     const command = commandIntentFromPipeline(initialPipeline.result) ?? parseRemoteCommandInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseTelegramCommand(message.text);
     if (command?.command === "start") {
