@@ -8,9 +8,9 @@ The system SHALL either implement Slack shared-room runtime routing for explicit
 - **THEN** Slack app mentions or documented channel command forms route through shared-room pre-routing before prompt injection
 - **AND** local machine targets, active selections, and one-shot prompts use the same shared selector semantics as other messengers
 
-#### Scenario: Slack event targets another machine app
-- **WHEN** a Slack channel event mentions or otherwise targets another PiRelay machine app
-- **THEN** the local broker remains silent and does not acknowledge, inject prompts, mutate active selection, download media, send ephemeral responses, or post channel messages
+#### Scenario: Slack event targets another machine bot
+- **WHEN** a Slack channel event mentions or otherwise targets another PiRelay machine bot
+- **THEN** the local broker remains silent and does not send any user-visible acknowledgement/response, inject prompts, mutate active selection, download media, send ephemeral responses, or post channel messages
 
 #### Scenario: Slack channel support is disabled
 - **WHEN** Slack channel messages or shared-room mode are not explicitly enabled

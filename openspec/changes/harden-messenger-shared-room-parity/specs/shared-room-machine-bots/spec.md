@@ -6,7 +6,7 @@ The system SHALL document Telegram Bot-to-Bot Communication Mode as an optional 
 #### Scenario: Telegram shared-room setup describes bot-to-bot mode
 - **WHEN** setup guidance, docs, or diagnostics describe Telegram shared-room machine bots
 - **THEN** they explain that Telegram Bot-to-Bot Communication Mode is optional and must be enabled for each participating bot before bot-authored messages can reach other bots
-- **AND** they preserve `/sessions@<bot_username>`, `/use@<bot_username> <session>`, and `/to@<bot_username> <session> <prompt>` as reliable user-driven fallbacks when bot-to-bot mode, privacy settings, or group visibility do not permit ordinary bot-authored text
+- **AND** they preserve `/sessions@<local-bot-username>`, `/use@<local-bot-username> <session>`, and `/to@<local-bot-username> <session> <prompt>` as reliable user-driven fallbacks when bot-to-bot mode, privacy settings, or group visibility do not permit ordinary bot-authored text
 
 #### Scenario: Telegram bot-to-bot capability is unknown
 - **WHEN** PiRelay cannot verify whether Telegram Bot-to-Bot Communication Mode is enabled for a bot
