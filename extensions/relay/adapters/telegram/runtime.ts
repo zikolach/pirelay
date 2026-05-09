@@ -597,8 +597,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    if (message.user.isBot && this.setupCache?.botId === message.user.id) {
-      return;
+    if (message.user.isBot) {
+      const setup = await this.ensureSetup();
+      if (setup.botId === message.user.id) return;
     }
 
     const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config: this.config });

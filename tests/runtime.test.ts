@@ -117,6 +117,30 @@ function createRoute(binding: TelegramBindingMetadata, idle = true, promptLocalC
 }
 
 describe("InProcessTunnelRuntime", () => {
+  it("loads setup before filtering local bot-authored messages", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    const getMe = vi.fn(async () => ({ id: 123456, is_bot: true, first_name: "PiRelay", username: "pirelay_bot" }));
+    (runtime as any).api = {
+      getMe,
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 1,
+      messageId: 1,
+      text: "hello from myself",
+      chat: { id: 777, type: "group" },
+      user: { id: 123456, username: "pirelay_bot", isBot: true },
+    });
+
+    expect(getMe).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([]);
+    expect((await store.getSetup())?.botId).toBe(123456);
+  });
+
   it("can trust a Telegram pairing user for future confirmations", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
