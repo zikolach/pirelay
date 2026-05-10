@@ -213,10 +213,11 @@ export function telegramMentionedBotUsernames(text: string): string[] {
 export function telegramMessageSharedRoomAddressing(text: string, localBotUsername: string | undefined): SharedRoomAddressing {
   const rawMentions = telegramMentionedBotUsernames(text);
   const mentions = rawMentions.map((username) => username.toLowerCase());
-  if (mentions.length === 0) return { kind: "none" };
-  if (mentions.length > 1) return { kind: "ambiguous", reason: "multiple bot mentions" };
+  const uniqueMentions = [...new Set(mentions)];
+  if (uniqueMentions.length === 0) return { kind: "none" };
+  if (uniqueMentions.length > 1) return { kind: "ambiguous", reason: "multiple bot mentions" };
   const normalizedLocal = localBotUsername?.replace(/^@/, "").toLowerCase();
-  if (normalizedLocal && mentions.includes(normalizedLocal)) return { kind: "local" };
+  if (normalizedLocal && uniqueMentions.includes(normalizedLocal)) return { kind: "local" };
   return { kind: "remote", selector: rawMentions[0] };
 }
 
