@@ -7,10 +7,11 @@ Slack live testing now proves that PiRelay can connect to a real Slack workspace
 - Add a production Slack runtime client for Socket Mode that starts/stops with PiRelay, reconnects safely, acknowledges events quickly, deduplicates retries, and redacts Slack secrets in diagnostics.
 - Complete Slack DM and authorized channel pairing using existing channel-scoped, single-use, expiring pairing state.
 - Route authorized Slack DMs and configured channel/app-mention messages through canonical PiRelay command, selection, prompt, busy, pause/resume, abort, compact, output retrieval, and completion semantics.
-- Replace the live-test receive-confirmation stub with real Slack runtime behavior while retaining the live suite as an opt-in regression harness.
+- Replace the live-test receive-confirmation stub with real Slack runtime behavior while retaining the live suite as an opt-in regression harness, including real-agent mode that fails if stub output is observed.
 - Implement Slack shared-room machine-bot targeting so the local app responds only to local mentions, replies, or active selections and non-target Slack apps remain silent.
 - Support Slack platform limits for text chunking, Block Kit buttons/action responses, typing/working indications, file download, and explicit file-upload limitations or implementation.
 - Add setup/doctor diagnostics for Slack runtime readiness, app-level Socket Mode tokens, bot user identity, scopes, event subscriptions, channel membership, duplicate identity risks, and secret-safe failure reporting.
+- Add optional broker namespace isolation so two real LLM-backed Slack machine bots can run on the same host without sharing the same broker.
 
 ## Capabilities
 
@@ -22,10 +23,11 @@ Slack live testing now proves that PiRelay can connect to a real Slack workspace
 - `messenger-relay-sessions`: Extends canonical remote-command, prompt, busy, completion, and output parity requirements to Slack as a fully live adapter.
 - `shared-room-machine-bots`: Adds Slack-specific shared-room targeting, app-mention handling, active selection, self/remote bot loop prevention, and non-target silence requirements.
 - `relay-configuration`: Adds Slack Socket Mode/app-level-token, bot user identity discovery, runtime readiness, and shared-room diagnostics expectations.
+- `relay-broker-topology`: Adds optional same-host broker namespace isolation for real-agent Slack live tests and independent machine-bot processes.
 
 ## Impact
 
-- Affected code: `extensions/relay/adapters/slack/`, `extensions/relay/runtime/extension-runtime.ts`, shared relay command/session helpers, setup/doctor diagnostics, Slack live harness, and tests.
+- Affected code: `extensions/relay/adapters/slack/`, `extensions/relay/runtime/extension-runtime.ts`, shared relay command/session helpers, setup/doctor diagnostics, broker supervision/paths, Slack live harness, and tests.
 - No breaking changes are expected for existing Telegram or Discord users.
 - Slack live control remains opt-in and requires configured Slack app credentials; secrets must not be persisted, logged, or exported.
 - The existing live Slack suite should evolve from stub receipt verification to end-to-end command/prompt/completion/shared-room regression coverage.

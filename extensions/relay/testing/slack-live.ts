@@ -24,6 +24,7 @@ export interface SlackLiveSuiteConfig {
   authorizedUserId: string;
   driverToken: string;
   eventMode: SlackLiveEventMode;
+  realAgent: boolean;
   timeoutMs: number;
   apps: [SlackLiveAppConfig, SlackLiveAppConfig];
 }
@@ -127,6 +128,7 @@ export function readSlackLiveSuiteConfig(env: NodeJS.ProcessEnv = process.env): 
   }
 
   const eventMode = env.PI_RELAY_SLACK_LIVE_EVENT_MODE === "webhook" ? "webhook" : "socket";
+  const realAgent = truthy(env.PI_RELAY_SLACK_LIVE_REAL_AGENT);
   const required = [
     "PI_RELAY_SLACK_LIVE_WORKSPACE_ID",
     "PI_RELAY_SLACK_LIVE_CHANNEL_ID",
@@ -155,13 +157,22 @@ export function readSlackLiveSuiteConfig(env: NodeJS.ProcessEnv = process.env): 
       authorizedUserId: env.PI_RELAY_SLACK_LIVE_AUTHORIZED_USER_ID!,
       driverToken: env.PI_RELAY_SLACK_LIVE_DRIVER_TOKEN!,
       eventMode,
-      timeoutMs: parsePositiveInteger(env.PI_RELAY_SLACK_LIVE_TIMEOUT_MS, 120_000),
+      realAgent,
+      timeoutMs: parsePositiveInteger(env.PI_RELAY_SLACK_LIVE_TIMEOUT_MS, realAgent ? 300_000 : 120_000),
       apps: [
         readSlackLiveApp(env, "a", "A", "PI_RELAY_SLACK_LIVE_BOT_A"),
         readSlackLiveApp(env, "b", "B", "PI_RELAY_SLACK_LIVE_BOT_B"),
       ],
     },
   };
+}
+
+export function slackLiveTargetPrompt(input: { targetBotUserId: string; runId: string; realAgent?: boolean }): string {
+  const mention = `<@${input.targetBotUserId}>`;
+  if (input.realAgent) {
+    return `${mention} This is an automated PiRelay live test. Reply with exactly this marker and no extra text: ${input.runId}`;
+  }
+  return `${mention} Please reply exactly with ${input.runId}.`;
 }
 
 export function slackLiveSkipReason(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -677,6 +688,7 @@ export interface SlackTargetedFlowExpectation {
   targetBotUserId: string;
   nonTargetBotUserId: string;
   expectedReplyIncludes: string;
+  forbiddenReplyText?: readonly string[];
 }
 
 export interface SlackAssertionResult {
@@ -691,6 +703,10 @@ export function assertSlackTargetedMessageFlow(observations: readonly SlackLiveO
   const failures: string[] = [];
   const targetReply = messages.some((message) => message.user === expectation.targetBotUserId && includesAll(message.text, [expectation.runId, expectation.expectedReplyIncludes]));
   if (!targetReply) failures.push(`Expected target Slack bot ${expectation.targetBotUserId} to reply with ${expectation.expectedReplyIncludes} for ${expectation.runId}.`);
+  for (const forbidden of expectation.forbiddenReplyText ?? []) {
+    const forbiddenReply = messages.find((message) => message.user === expectation.targetBotUserId && (message.text ?? "").includes(forbidden));
+    if (forbiddenReply) failures.push(`Target Slack bot ${expectation.targetBotUserId} emitted forbidden text ${forbidden} at ${forbiddenReply.ts}.`);
+  }
   const nonTargetReply = messages.find((message) => message.user === expectation.nonTargetBotUserId && includesAll(message.text, [expectation.runId]));
   if (nonTargetReply) failures.push(`Non-target Slack bot ${expectation.nonTargetBotUserId} emitted an unexpected reply at ${nonTargetReply.ts}.`);
   return { ok: failures.length === 0, failures };
@@ -698,6 +714,7 @@ export function assertSlackTargetedMessageFlow(observations: readonly SlackLiveO
 
 export interface SlackFinalStateExpectation {
   requiredText: readonly string[];
+  forbiddenText?: readonly string[];
   forbiddenBotUserIds: readonly string[];
   runId: string;
 }
@@ -710,6 +727,9 @@ export function assertSlackFinalChannelState(observations: readonly SlackLiveObs
   const failures = expectation.requiredText
     .filter((required) => !text.includes(required))
     .map((required) => `Expected final Slack channel state to contain ${required}.`);
+  for (const forbidden of expectation.forbiddenText ?? []) {
+    if (text.includes(forbidden)) failures.push(`Expected final Slack channel state not to contain ${forbidden}.`);
+  }
   for (const userId of expectation.forbiddenBotUserIds) {
     const unexpected = messages.find((message) => message.user === userId && (message.text ?? "").includes(expectation.runId));
     if (unexpected) failures.push(`Forbidden Slack bot ${userId} posted for ${expectation.runId} at ${unexpected.ts}.`);

@@ -11,6 +11,7 @@ import {
   redactSlackLiveValue,
   runSlackLivePreflight,
   slackLivePiConfig,
+  slackLiveTargetPrompt,
   type SlackLiveApiClient,
   type SlackLiveSuiteConfig,
 } from "../extensions/relay/testing/slack-live.js";
@@ -21,6 +22,7 @@ const config: SlackLiveSuiteConfig = {
   authorizedUserId: "U_DRIVER",
   driverToken: "xoxp-driver-secret",
   eventMode: "socket",
+  realAgent: false,
   timeoutMs: 5_000,
   apps: [
     {
@@ -96,7 +98,34 @@ describe("Slack live suite configuration", () => {
     expect(parsed.ready).toBe(true);
     if (parsed.ready) {
       expect(parsed.config.apps.map((app) => app.instanceId)).toEqual(["slack-live-a", "slack-live-b"]);
+      expect(parsed.config.realAgent).toBe(false);
       expect(parsed.config.timeoutMs).toBe(42);
+    }
+  });
+
+  it("enables real-agent mode with a longer default timeout and deterministic prompt", () => {
+    const parsed = readSlackLiveSuiteConfig({
+      PI_RELAY_SLACK_LIVE_ENABLED: "true",
+      PI_RELAY_SLACK_LIVE_REAL_AGENT: "true",
+      PI_RELAY_SLACK_LIVE_WORKSPACE_ID: "T1",
+      PI_RELAY_SLACK_LIVE_CHANNEL_ID: "C1",
+      PI_RELAY_SLACK_LIVE_AUTHORIZED_USER_ID: "U_DRIVER",
+      PI_RELAY_SLACK_LIVE_DRIVER_TOKEN: "xoxp-driver-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_TOKEN: "xoxb-a-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_SIGNING_SECRET: "signing-a-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_APP_TOKEN: "xapp-a-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_PI_COMMAND: "pi --model real a",
+      PI_RELAY_SLACK_LIVE_BOT_B_TOKEN: "xoxb-b-secret",
+      PI_RELAY_SLACK_LIVE_BOT_B_SIGNING_SECRET: "signing-b-secret",
+      PI_RELAY_SLACK_LIVE_BOT_B_APP_TOKEN: "xapp-b-secret",
+      PI_RELAY_SLACK_LIVE_BOT_B_PI_COMMAND: "pi --model real b",
+    });
+
+    expect(parsed.ready).toBe(true);
+    if (parsed.ready) {
+      expect(parsed.config.realAgent).toBe(true);
+      expect(parsed.config.timeoutMs).toBe(300_000);
+      expect(slackLiveTargetPrompt({ targetBotUserId: "U_A", runId: "run-1", realAgent: parsed.config.realAgent })).toContain("Reply with exactly this marker");
     }
   });
 });
@@ -218,6 +247,31 @@ describe("Slack live observer and assertions", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures[0]).toContain("Non-target Slack bot");
+  });
+
+  it("fails real-agent assertions when the target emits stub text", () => {
+    const observer = new SlackLiveObserver();
+    observer.recordPostedMessages([
+      { ts: "1", user: "U_A", text: "PiRelay Slack stub received for pirelay: run-100" },
+    ]);
+
+    const flow = assertSlackTargetedMessageFlow(observer.snapshot(), {
+      runId: "run-100",
+      targetBotUserId: "U_A",
+      nonTargetBotUserId: "U_B",
+      expectedReplyIncludes: "run-100",
+      forbiddenReplyText: ["PiRelay Slack stub received"],
+    });
+    const finalState = assertSlackFinalChannelState(observer.snapshot(), {
+      runId: "run-100",
+      requiredText: ["run-100"],
+      forbiddenText: ["PiRelay Slack stub received"],
+      forbiddenBotUserIds: ["U_B"],
+    });
+
+    expect(flow.ok).toBe(false);
+    expect(finalState.ok).toBe(false);
+    expect([...flow.failures, ...finalState.failures].join("\n")).toContain("stub received");
   });
 });
 

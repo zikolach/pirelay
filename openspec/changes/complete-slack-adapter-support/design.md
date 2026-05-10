@@ -20,7 +20,7 @@ Slack differs from Telegram and Discord in ways that shape the runtime:
 - Implement Slack shared-room targeting so local mentions/replies/active selections are handled and non-target machine apps remain silent.
 - Discover or configure the local Slack bot user id for self-message filtering, mention routing, diagnostics, and live test assertions.
 - Keep Slack tokens, signing secrets, app-level tokens, Socket Mode URLs, pairing secrets, and hidden prompt content out of logs, state, diagnostics, and exports.
-- Upgrade the live suite from stub receipt verification to end-to-end Slack runtime regression coverage.
+- Upgrade the live suite from stub receipt verification to end-to-end Slack runtime regression coverage, including real-agent mode that can run two LLM-backed Pi machine bots on one host without sharing a broker.
 
 **Non-Goals:**
 
@@ -28,6 +28,7 @@ Slack differs from Telegram and Discord in ways that shape the runtime:
 - Requiring Slack live credentials for the default unit-test suite.
 - Replacing Telegram or Discord runtime behavior.
 - Implementing a hosted relay service or broker federation as part of Slack completion.
+- Redesigning the full broker topology beyond an opt-in same-host namespace needed for real-agent live isolation.
 - Supporting every Slack Enterprise/Grid topology beyond validating workspace/team boundaries exposed by the configured app credentials.
 
 ## Decisions
@@ -80,6 +81,12 @@ Slack replies should prefer the originating thread when Slack supplies `thread_t
 
 Alternative considered: immediately add `threadId` to `ChannelRouteAddress`. That may be cleaner eventually, but it is a cross-adapter contract change that should be justified by more than Slack alone.
 
+### 9. Add opt-in broker namespace isolation for same-host real-agent live tests
+
+The real-agent Slack live suite can launch two Pi commands on the same development host, each with distinct Slack app credentials and machine identity. If both commands attach to the same machine-local broker, the test no longer proves independent machine-bot behavior and can mask stale/stub runtimes. Add a non-secret broker namespace override that scopes broker socket, pid/lock, and supervision paths while preserving the default singleton behavior when no namespace is configured.
+
+Alternative considered: require separate machines, containers, or OS users for the real-agent live suite. That would avoid broker changes but makes the regression suite much harder to run locally and still leaves no explicit safety mechanism for same-host multi-machine testing.
+
 ## Risks / Trade-offs
 
 - Slack retries cause duplicate prompt injection → Acknowledge immediately and dedupe by envelope id/event id/message ts/action id before route handling.
@@ -89,4 +96,5 @@ Alternative considered: immediately add `threadId` to `ChannelRouteAddress`. Tha
 - Slack scopes differ for public vs private channels → Preflight and doctor should distinguish `channels:*` and `groups:*` requirements and name missing categories safely.
 - File upload complexity delays command parity → Return explicit capability limitation for upload-dependent commands until Slack files upload v2 is implemented, then tighten tests.
 - Thread context leaks into generic abstractions → Start with Slack metadata and revisit core address changes only if needed.
-- Existing live-test stub may mask production gaps → Convert stub assertions into real runtime tests and remove or clearly isolate stub-only behavior during implementation.
+- Existing live-test stub may mask production gaps → Convert stub assertions into real runtime tests, fail real-agent live mode on stub text, and remove or clearly isolate stub-only behavior during implementation.
+- Same-host real-agent bots may attach to one broker → Add an opt-in broker namespace that scopes broker coordination files and runtime ownership without changing default single-broker behavior.

@@ -9,6 +9,7 @@ import {
   runSlackLivePreflight,
   slackLiveSecrets,
   slackLiveSkipReason,
+  slackLiveTargetPrompt,
 } from "../extensions/relay/testing/slack-live.js";
 
 const parsed = readSlackLiveSuiteConfig();
@@ -47,7 +48,7 @@ describeLive("Slack live integration suite", () => {
     const nonTarget = preflight.appIdentities[1];
     const runId = `pirelay-slack-live-${Date.now()}`;
     const oldest = slackTimestampFromMillis(Date.now() - 1_000);
-    const prompt = `<@${target.userId}> Please reply exactly with ${runId}.`;
+    const prompt = slackLiveTargetPrompt({ targetBotUserId: target.userId, runId, realAgent: config.realAgent });
 
     const ack = await client.postMessage(config.driverToken, { channel: config.channelId, text: prompt });
     observer.recordApiAcknowledgement("driver", "chat.postMessage", ack);
@@ -63,10 +64,12 @@ describeLive("Slack live integration suite", () => {
       targetBotUserId: target.userId,
       nonTargetBotUserId: nonTarget.userId,
       expectedReplyIncludes: runId,
+      forbiddenReplyText: config.realAgent ? ["PiRelay Slack stub received"] : undefined,
     });
     const finalState = assertSlackFinalChannelState(snapshot, {
       runId,
       requiredText: [runId],
+      forbiddenText: config.realAgent ? ["PiRelay Slack stub received"] : undefined,
       forbiddenBotUserIds: [nonTarget.userId],
     });
 
