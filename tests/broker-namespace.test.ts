@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +18,7 @@ afterEach(async () => {
 
 describe("broker namespace isolation", () => {
   it("keeps default socket naming unchanged and scopes namespaced clients", async () => {
-    const stateDir = await mkdtemp("/tmp/pirelay-broker-namespace-");
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-namespace-"));
     tempDirs.push(stateDir);
     const base = config(stateDir);
 
@@ -31,7 +32,7 @@ describe("broker namespace isolation", () => {
   });
 
   it("does not share route registration or delivery across namespace sockets", async () => {
-    const stateDir = await mkdtemp("/tmp/pirelay-broker-namespace-");
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-namespace-"));
     tempDirs.push(stateDir);
     const alphaRuntime = new BrokerTunnelRuntime({ ...config(stateDir), brokerNamespace: "alpha" });
     const betaRuntime = new BrokerTunnelRuntime({ ...config(stateDir), brokerNamespace: "beta" });
@@ -130,4 +131,12 @@ function route(sessionKey: string): SessionRoute {
       compact: vi.fn(async () => undefined),
     },
   };
+}
+
+function shortSocketTmpdir(): string {
+  const candidate = tmpdir();
+  // macOS often returns a long /var/folders path that exceeds Unix socket path
+  // limits once the broker socket basename is appended. Prefer the platform
+  // temp dir when it is short enough; otherwise use the standard short symlink.
+  return candidate.length <= 40 ? candidate : "/tmp";
 }

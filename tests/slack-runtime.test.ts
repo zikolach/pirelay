@@ -148,6 +148,7 @@ describe("SlackLiveOperations", () => {
     });
 
     const socket = FakeWebSocket.sockets.at(-1)!;
+    socket.emit("message", { data: "not-json" } as never);
     socket.emit("message", { data: JSON.stringify({ envelope_id: "env-1", payload: { type: "event_callback", event_id: "ev-1", team_id: "T1", event: { type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "hi", ts: "1" } } }) } as never);
     await new Promise((resolve) => setTimeout(resolve, 0));
 

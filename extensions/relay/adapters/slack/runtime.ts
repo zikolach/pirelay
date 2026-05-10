@@ -217,7 +217,7 @@ export class SlackRuntime {
     } catch (error) {
       this.lastError = safeSlackRuntimeError(error);
       if (event.kind === "message") {
-        await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: event.conversation.id, userId: event.sender.userId }, `PiRelay Slack stub error: ${this.lastError}`).catch(() => undefined);
+        await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: event.conversation.id, userId: event.sender.userId }, `PiRelay Slack error: ${this.lastError}`).catch(() => undefined);
       }
     }
   }
@@ -615,14 +615,6 @@ function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent |
   };
 }
 
-function awaitlessSlackEnvelopeToEvent(envelope: SlackEnvelope, config: NonNullable<TelegramTunnelConfig["slack"]>): ChannelInboundEvent | undefined {
-  // Avoid importing private adapter internals; use the public adapter path by
-  // constructing a tiny no-op adapter operations object and invoking webhook-free
-  // event normalization through the exported message helper where possible.
-  if (envelope.type === "event_callback" && envelope.event) return slackEventToChannelEvent(envelope.event, config);
-  return undefined;
-}
-
 function parseSlackPairingCode(text: string): string | undefined {
   const match = text.trim().match(/^\/pirelay\s+(\S+)$/i);
   return match?.[1];
@@ -645,7 +637,7 @@ function stripLeadingSlackMentions(text: string): string {
 
 function isLocalSlackMachineSelector(selector: string, config: TelegramTunnelConfig, slackConfig: NonNullable<TelegramTunnelConfig["slack"]>): boolean {
   const normalized = selector.trim().toLowerCase();
-  const aliases = [config.machineId, config.machineDisplayName, ...(config.machineAliases ?? []), ...(slackConfig.sharedRoom?.machineAliases ?? [])]
+  const aliases = [config.machineId ?? "local", config.machineDisplayName, ...(config.machineAliases ?? []), ...(slackConfig.sharedRoom?.machineAliases ?? [])]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);

@@ -128,7 +128,9 @@ export class SlackLiveOperations implements SlackApiOperations {
     const socket = new this.WebSocketCtor!(url);
     this.socket = socket;
     socket.addEventListener("message", (event) => {
-      void this.handleSocketMessage(event.data);
+      void this.handleSocketMessage(event.data).catch((error: unknown) => {
+        this.debug(`Slack Socket Mode message handling failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      });
     });
     socket.addEventListener("error", (event) => {
       const message = event instanceof Error ? event.message : inspectWebSocketError(event);
@@ -168,7 +170,13 @@ export class SlackLiveOperations implements SlackApiOperations {
   private async handleSocketMessage(data: unknown): Promise<void> {
     const text = typeof data === "string" ? data : data instanceof Buffer ? data.toString("utf8") : String(data);
     this.debug(text);
-    const envelope = JSON.parse(text) as SlackSocketModeEnvelope;
+    let envelope: SlackSocketModeEnvelope;
+    try {
+      envelope = JSON.parse(text) as SlackSocketModeEnvelope;
+    } catch (error) {
+      this.debug(`Slack Socket Mode ignored non-JSON frame: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      return;
+    }
     if (envelope.envelope_id) this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
     const normalized = socketPayloadToSlackEnvelope(envelope.payload);
     if (normalized && envelope.envelope_id) normalized.envelopeId = envelope.envelope_id;
