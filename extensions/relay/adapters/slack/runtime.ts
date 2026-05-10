@@ -59,7 +59,11 @@ export class SlackRuntime {
   }
 
   async start(): Promise<void> {
-    if (!this.adapter || !this.operations?.startSocketMode || this.started) return;
+    if (this.started) return;
+    if (!this.adapter || !this.operations?.startSocketMode) {
+      this.lastError = slackRuntimeStartError(this.configForInstance());
+      throw new Error(this.lastError);
+    }
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.initializeRuntime()
       .then(() => this.operations!.startSocketMode!(async (envelope) => this.handleEnvelope(envelope)))
@@ -217,7 +221,7 @@ export class SlackRuntime {
     } catch (error) {
       this.lastError = safeSlackRuntimeError(error);
       if (event.kind === "message") {
-        await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: event.conversation.id, userId: event.sender.userId }, `PiRelay Slack error: ${this.lastError}`).catch(() => undefined);
+        await this.sendText(event, `PiRelay Slack error: ${this.lastError}`).catch(() => undefined);
       }
     }
   }
@@ -677,6 +681,16 @@ function slackTurnNotificationText(route: SessionRoute, status: "completed" | "f
   if (status === "completed") return route.notification.lastSummary || route.notification.lastAssistantText || `Pi session ${route.sessionLabel} completed.`;
   if (status === "failed") return route.notification.lastFailure || `Pi session ${route.sessionLabel} failed.`;
   return `Pi session ${route.sessionLabel} was aborted.`;
+}
+
+function slackRuntimeStartError(config: TelegramTunnelConfig["slack"] | undefined): string {
+  if (!config?.enabled) return "Slack runtime is not enabled.";
+  if (!config.botToken) return "Slack runtime is missing a bot token.";
+  if ((config.eventMode ?? "socket") === "socket" && !config.appToken && !process.env.PI_RELAY_SLACK_APP_TOKEN) {
+    return "Slack Socket Mode requires an app-level token.";
+  }
+  if (config.eventMode === "webhook") return "Slack webhook runtime ingress is not available in this process.";
+  return "Slack runtime operations are unavailable.";
 }
 
 function safeSlackRuntimeError(error: unknown): string {

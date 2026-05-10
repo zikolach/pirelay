@@ -233,6 +233,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     try {
       await slack.start();
+      const status = slack.getStatus();
+      if (!status.started) {
+        const safeMessage = redactSecrets(status.error || "Slack runtime did not start.");
+        ctx.ui.setStatus("slack-relay", `slack error: ${safeMessage}`);
+        if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
+        return false;
+      }
       ctx.ui.setStatus("slack-relay", "slack: ready");
       return true;
     } catch (error) {

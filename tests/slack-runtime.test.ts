@@ -225,6 +225,45 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", text: expect.stringContaining("Sent to Docs") });
   });
 
+  it("reports missing Socket Mode operations instead of silently succeeding", async () => {
+    vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "");
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { ...runtimeConfig.slack!, appToken: undefined, eventMode: "socket" };
+    const runtime = new SlackRuntime(runtimeConfig);
+
+    await expect(runtime.start()).rejects.toThrow("app-level token");
+    expect(runtime.getStatus()).toMatchObject({ enabled: true, started: false, error: expect.stringContaining("app-level token") });
+  });
+
+  it("preserves Slack thread context for runtime error responses", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    const testRoute = route();
+    testRoute.actions.sendUserMessage = vi.fn(() => {
+      throw new Error("boom");
+    });
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    await store.setActiveChannelSelection("slack", "D1", "U_DRIVER", testRoute.sessionKey);
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "error-env", eventId: "error-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "explode", ts: "35", thread_ts: "parent-35", team: "T1" } });
+
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-35", text: expect.stringContaining("PiRelay Slack error") });
+  });
+
   it("routes Slack DM commands through session helpers", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
