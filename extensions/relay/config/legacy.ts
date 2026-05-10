@@ -26,8 +26,10 @@ const legacyTopLevelKeys = new Set([
   "PI_RELAY_SLACK_ENABLED",
   "PI_RELAY_SLACK_BOT_TOKEN",
   "PI_RELAY_SLACK_SIGNING_SECRET",
+  "PI_RELAY_SLACK_APP_TOKEN",
   "PI_RELAY_SLACK_EVENT_MODE",
   "PI_RELAY_SLACK_WORKSPACE_ID",
+  "PI_RELAY_SLACK_BOT_USER_ID",
   "PI_RELAY_SLACK_ALLOW_USER_IDS",
   "PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES",
   "PI_RELAY_SLACK_MAX_TEXT_CHARS",
@@ -164,8 +166,10 @@ export function canonicalizeRelayConfigFile(input: RelayConfigFile): RelayConfig
     || input.PI_RELAY_SLACK_ENABLED
     || input.PI_RELAY_SLACK_BOT_TOKEN
     || input.PI_RELAY_SLACK_SIGNING_SECRET
+    || input.PI_RELAY_SLACK_APP_TOKEN
     || input.PI_RELAY_SLACK_EVENT_MODE
     || input.PI_RELAY_SLACK_WORKSPACE_ID
+    || input.PI_RELAY_SLACK_BOT_USER_ID
     || input.PI_RELAY_SLACK_ALLOW_USER_IDS
     || input.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES
   ) {
@@ -177,8 +181,10 @@ export function canonicalizeRelayConfigFile(input: RelayConfigFile): RelayConfig
       enabled: messengers.slack?.default?.enabled ?? parseBoolean(input.PI_RELAY_SLACK_ENABLED) ?? legacy?.enabled,
       botToken: messengers.slack?.default?.botToken ?? legacy?.botToken ?? input.PI_RELAY_SLACK_BOT_TOKEN,
       signingSecret: messengers.slack?.default?.signingSecret ?? legacy?.signingSecret ?? input.PI_RELAY_SLACK_SIGNING_SECRET,
+      appToken: messengers.slack?.default?.appToken ?? legacy?.appToken ?? input.PI_RELAY_SLACK_APP_TOKEN,
       eventMode: messengers.slack?.default?.eventMode ?? legacy?.eventMode ?? eventMode,
       workspaceId: messengers.slack?.default?.workspaceId ?? legacy?.workspaceId ?? input.PI_RELAY_SLACK_WORKSPACE_ID,
+      botUserId: messengers.slack?.default?.botUserId ?? legacy?.botUserId ?? input.PI_RELAY_SLACK_BOT_USER_ID,
       allowUserIds: messengers.slack?.default?.allowUserIds ?? parseStringList(input.PI_RELAY_SLACK_ALLOW_USER_IDS) ?? legacy?.allowUserIds,
       allowChannelMessages: messengers.slack?.default?.allowChannelMessages ?? parseBoolean(input.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES) ?? legacy?.allowChannelMessages,
     };

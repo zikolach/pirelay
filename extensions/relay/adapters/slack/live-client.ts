@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import type { SlackApiOperations, SlackEnvelope, SlackPostMessagePayload, SlackUploadFilePayload } from "./adapter.js";
+import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostMessagePayload, SlackUploadFilePayload } from "./adapter.js";
 import { redactSecrets } from "../../config/setup.js";
 import type { SlackRelayConfig } from "../../core/types.js";
 
@@ -34,46 +34,61 @@ export interface SlackLiveOperationsOptions {
   botToken: string;
   appToken?: string;
   WebSocketCtor?: new (url: string) => MinimalWebSocket;
+  reconnectBaseMs?: number;
+  reconnectMaxMs?: number;
+  disableReconnect?: boolean;
 }
 
 export class SlackLiveOperations implements SlackApiOperations {
   private readonly botToken: string;
   private readonly appToken?: string;
   private readonly WebSocketCtor?: new (url: string) => MinimalWebSocket;
+  private readonly reconnectBaseMs: number;
+  private readonly reconnectMaxMs: number;
+  private readonly disableReconnect: boolean;
   private socket?: MinimalWebSocket;
+  private socketHandler?: (event: SlackEnvelope) => Promise<void>;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconnectAttempt = 0;
+  private stopping = false;
 
   constructor(options: SlackLiveOperationsOptions) {
     this.botToken = options.botToken;
     this.appToken = options.appToken;
     this.WebSocketCtor = options.WebSocketCtor ?? webSocketCtorFromGlobal();
+    this.reconnectBaseMs = options.reconnectBaseMs ?? 1_000;
+    this.reconnectMaxMs = options.reconnectMaxMs ?? 30_000;
+    this.disableReconnect = Boolean(options.disableReconnect);
   }
 
   async startSocketMode(handler: (event: SlackEnvelope) => Promise<void>): Promise<void> {
     if (!this.appToken) throw new Error("Slack Socket Mode app-level token is not configured.");
-    const url = await this.openSocketModeConnection();
-    this.debug("Slack Socket Mode connection URL obtained.");
     if (!this.WebSocketCtor) throw new Error("Slack Socket Mode requires a WebSocket implementation in this Node runtime.");
-    const socket = new this.WebSocketCtor(url);
-    this.socket = socket;
-    socket.addEventListener("message", (event) => {
-      void this.handleSocketMessage(event.data, handler);
-    });
-    socket.addEventListener("error", (event) => {
-      const message = event instanceof Error ? event.message : inspectWebSocketError(event);
-      this.debug(`Slack Socket Mode error: ${redactSecrets(message)}`);
-    });
-    socket.addEventListener("close", () => {
-      if (this.socket === socket) this.socket = undefined;
-    });
+    this.stopping = false;
+    this.socketHandler = handler;
+    await this.connectSocketMode();
   }
 
   async stopSocketMode(): Promise<void> {
+    this.stopping = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     this.socket?.close();
     this.socket = undefined;
   }
 
+  async authTest(): Promise<SlackAuthTestResult> {
+    const response = await this.callSlackApi("auth.test", this.botToken, {});
+    return {
+      teamId: stringField(response, "team_id") ?? "",
+      userId: stringField(response, "user_id") ?? "",
+      botId: stringField(response, "bot_id"),
+      appId: stringField(response, "app_id"),
+    };
+  }
+
   async postMessage(payload: SlackPostMessagePayload): Promise<void> {
-    await this.callSlackApi("chat.postMessage", this.botToken, { channel: payload.channel, text: payload.text, blocks: payload.blocks ? slackBlocks(payload.blocks) : undefined });
+    await this.callSlackApi("chat.postMessage", this.botToken, { channel: payload.channel, text: payload.text, thread_ts: payload.threadTs, blocks: payload.blocks ? slackBlocks(payload.blocks) : undefined });
   }
 
   async uploadFile(payload: SlackUploadFilePayload): Promise<void> {
@@ -107,6 +122,42 @@ export class SlackLiveOperations implements SlackApiOperations {
     return messages.map((message) => slackHistoryMessageToEvent(message, channel)).filter((message): message is SlackMessageEventFromHistory => Boolean(message));
   }
 
+  private async connectSocketMode(): Promise<void> {
+    const url = await this.openSocketModeConnection();
+    this.debug("Slack Socket Mode connection URL obtained.");
+    const socket = new this.WebSocketCtor!(url);
+    this.socket = socket;
+    socket.addEventListener("message", (event) => {
+      void this.handleSocketMessage(event.data);
+    });
+    socket.addEventListener("error", (event) => {
+      const message = event instanceof Error ? event.message : inspectWebSocketError(event);
+      this.debug(`Slack Socket Mode error: ${redactSecrets(message)}`);
+    });
+    socket.addEventListener("close", () => {
+      if (this.socket === socket) this.socket = undefined;
+      if (!this.stopping) this.scheduleReconnect();
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.disableReconnect || !this.socketHandler || this.reconnectTimer) return;
+    const delay = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * 2 ** this.reconnectAttempt);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      void this.connectSocketMode()
+        .then(() => {
+          this.reconnectAttempt = 0;
+        })
+        .catch((error: unknown) => {
+          this.debug(`Slack Socket Mode reconnect failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+          this.scheduleReconnect();
+        });
+    }, delay);
+    this.reconnectTimer.unref?.();
+  }
+
   private async openSocketModeConnection(): Promise<string> {
     const response = await this.callSlackApi("apps.connections.open", this.appToken!, {});
     const url = response.url;
@@ -114,13 +165,20 @@ export class SlackLiveOperations implements SlackApiOperations {
     return url;
   }
 
-  private async handleSocketMessage(data: unknown, handler: (event: SlackEnvelope) => Promise<void>): Promise<void> {
+  private async handleSocketMessage(data: unknown): Promise<void> {
     const text = typeof data === "string" ? data : data instanceof Buffer ? data.toString("utf8") : String(data);
     this.debug(text);
     const envelope = JSON.parse(text) as SlackSocketModeEnvelope;
     if (envelope.envelope_id) this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
     const normalized = socketPayloadToSlackEnvelope(envelope.payload);
-    if (normalized) await handler(normalized);
+    if (normalized && envelope.envelope_id) normalized.envelopeId = envelope.envelope_id;
+    if (normalized && this.socketHandler) {
+      try {
+        await this.socketHandler(normalized);
+      } catch (error) {
+        this.debug(`Slack Socket Mode handler failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
   }
 
   private debug(message: string): void {
@@ -149,9 +207,9 @@ export class SlackLiveOperations implements SlackApiOperations {
   }
 }
 
-export function createSlackLiveOperations(config: Pick<SlackRelayConfig, "botToken" | "eventMode">): SlackApiOperations | undefined {
+export function createSlackLiveOperations(config: Pick<SlackRelayConfig, "botToken" | "eventMode" | "appToken">): SlackApiOperations | undefined {
   if (!config.botToken || config.eventMode === "webhook") return undefined;
-  const appToken = process.env.PI_RELAY_SLACK_APP_TOKEN;
+  const appToken = config.appToken ?? process.env.PI_RELAY_SLACK_APP_TOKEN;
   if (!appToken) return undefined;
   return new SlackLiveOperations({ botToken: config.botToken, appToken });
 }
@@ -177,6 +235,9 @@ function socketPayloadToSlackEnvelope(payload: unknown): SlackEnvelope | undefin
   if (payload.type === "event_callback") {
     return {
       type: "event_callback",
+      eventId: stringField(payload, "event_id"),
+      retryAttempt: numberField(payload, "retry_attempt"),
+      retryReason: stringField(payload, "retry_reason"),
       event: isRecord(payload.event) ? { ...payload.event, team: typeof payload.team_id === "string" ? payload.team_id : payload.event.team } as unknown as SlackEnvelope["event"] : undefined,
       team: typeof payload.team_id === "string" ? { id: payload.team_id } : undefined,
     };
@@ -211,6 +272,16 @@ function formEncode(input: Record<string, unknown>): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" ? value : undefined;
 }
 
 function webSocketCtorFromGlobal(): (new (url: string) => MinimalWebSocket) | undefined {

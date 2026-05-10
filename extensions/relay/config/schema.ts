@@ -40,6 +40,9 @@ export interface MessengerInstanceFileConfig {
   tokenEnv?: string;
   signingSecret?: string;
   signingSecretEnv?: string;
+  appToken?: string;
+  appTokenEnv?: string;
+  botUserId?: string;
   applicationId?: string;
   clientId?: string;
   eventMode?: "socket" | "webhook";
@@ -85,8 +88,10 @@ export interface RelayConfigFile {
   PI_RELAY_SLACK_ENABLED?: string;
   PI_RELAY_SLACK_BOT_TOKEN?: string;
   PI_RELAY_SLACK_SIGNING_SECRET?: string;
+  PI_RELAY_SLACK_APP_TOKEN?: string;
   PI_RELAY_SLACK_EVENT_MODE?: string;
   PI_RELAY_SLACK_WORKSPACE_ID?: string;
+  PI_RELAY_SLACK_BOT_USER_ID?: string;
   PI_RELAY_SLACK_ALLOW_USER_IDS?: string;
   PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES?: string;
   PI_RELAY_SLACK_MAX_TEXT_CHARS?: string;
@@ -102,6 +107,9 @@ export interface ResolvedMessengerInstanceConfig {
   tokenEnv?: string;
   signingSecret?: string;
   signingSecretEnv?: string;
+  appToken?: string;
+  appTokenEnv?: string;
+  botUserId?: string;
   applicationId?: string;
   clientId?: string;
   eventMode?: "socket" | "webhook";

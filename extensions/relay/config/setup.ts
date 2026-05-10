@@ -317,9 +317,12 @@ function slackDiagnostics(config: SlackRelayConfig | undefined): RelaySetupFindi
   const findings: RelaySetupFinding[] = [];
   if (!config.botToken) findings.push({ channel: "slack", severity: "error", code: "slack-token-missing", message: "Slack is enabled but slack.botToken or PI_RELAY_SLACK_BOT_TOKEN is missing." });
   if (!config.signingSecret) findings.push({ channel: "slack", severity: "error", code: "slack-signing-secret-missing", message: "Slack is enabled but slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET is missing." });
+  if ((config.eventMode ?? "socket") === "socket" && !config.appToken) findings.push({ channel: "slack", severity: "error", code: "slack-app-token-missing", message: "Slack Socket Mode requires slack.appToken/appTokenEnv or PI_RELAY_SLACK_APP_TOKEN with connections:write." });
   if (config.eventMode === "webhook" && !config.signingSecret) findings.push({ channel: "slack", severity: "error", code: "slack-webhook-secret-missing", message: "Slack webhook mode requires a signing secret for request validation." });
   if ((config.allowUserIds ?? []).length === 0) findings.push({ channel: "slack", severity: "warning", code: "slack-allow-list-empty", message: "Slack allowUserIds is empty; restrict Slack users before enabling live control." });
   if (config.allowChannelMessages) findings.push({ channel: "slack", severity: "warning", code: "slack-channel-control-enabled", message: "Slack channel control is enabled. DM-first mode is safer; verify workspace and user authorization before use." });
+  if (config.allowChannelMessages && !config.botUserId) findings.push({ channel: "slack", severity: "warning", code: "slack-bot-user-id-unknown", message: "Slack channel/shared-room control needs a known local bot user id from auth discovery or slack.botUserId for safe mention targeting." });
+  if (config.sharedRoom?.enabled && !config.sharedRoom.roomHint) findings.push({ channel: "slack", severity: "warning", code: "slack-shared-room-hint-missing", message: "Slack shared-room mode is enabled without sharedRoom.roomHint; live tests and diagnostics cannot preflight channel membership." });
   if (!config.workspaceId) findings.push({ channel: "slack", severity: "warning", code: "slack-workspace-missing", message: "Slack workspaceId is not set; set it to enforce workspace boundaries." });
   return findings;
 }
@@ -379,9 +382,10 @@ function slackGuidance(config: SlackRelayConfig | undefined): string {
     "Create a Slack app: https://api.slack.com/apps",
     "Install it to your workspace, then set slack.botToken or PI_RELAY_SLACK_BOT_TOKEN from the Bot User OAuth Token.",
     "Set slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET from Basic Information > App Credentials, and preferably slack.workspaceId.",
+    "For Socket Mode, enable Socket Mode and set slack.appToken/appTokenEnv or PI_RELAY_SLACK_APP_TOKEN from an app-level token with connections:write.",
     `Event mode: ${mode}. ${mode === "socket" ? "Socket Mode is recommended for local Pi usage." : "Webhook mode must verify Slack signatures against the raw request body."}`,
     "Keep Slack DM-first; set allowUserIds before enabling live control.",
-    "Shared-room mode uses one dedicated Slack app/bot per machine in a shared channel with app mention or channel-message scopes.",
+    "Shared-room mode uses one dedicated Slack app/bot per machine in a shared channel with app mention or channel-message scopes; PiRelay discovers the local bot user id at startup or can use slack.botUserId as a non-secret fallback.",
     "Run /relay connect slack [name], then send the displayed /pirelay code to the app in a DM.",
   ].join("\n");
 }

@@ -115,6 +115,10 @@ const SLACK_SECRET_PATTERNS = [
   /xox[baprs]-[A-Za-z0-9-]+/g,
   /xapp-[A-Za-z0-9-]+/g,
   /slack-signing-secret-[A-Za-z0-9_-]+/gi,
+  /Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi,
+  /wss:\/\/wss-[^\s"'<>]+/gi,
+  /https:\/\/hooks\.slack(?:-gov)?\.com\/[^\s"'<>]+/gi,
+  /\b(?:pairing\s+code|pin|code)\s*[:=]?\s*\d{3}-\d{3}\b/gi,
 ];
 
 export function readSlackLiveSuiteConfig(env: NodeJS.ProcessEnv = process.env): SlackLiveConfigReadResult {
@@ -486,7 +490,7 @@ function slackMessageFromUnknown(value: unknown): SlackHistoryMessage | undefine
 }
 
 function secretishKey(key: string): boolean {
-  return /token|secret|authorization|cookie|payload/i.test(key);
+  return /token|secret|authorization|cookie|payload|response_url|socket_url/i.test(key);
 }
 
 export interface SlackLivePiProcess {
@@ -541,6 +545,8 @@ export class SlackLivePiHarness {
         PI_RELAY_SLACK_SIGNING_SECRET: app.signingSecret,
         PI_RELAY_SLACK_APP_TOKEN: app.appLevelToken ?? "",
         PI_RELAY_SLACK_BOT_USER_ID: app.expectedBotUserId ?? "",
+        PI_RELAY_SLACK_HISTORY_FALLBACK: "true",
+        PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING: "true",
         PI_RELAY_SLACK_EVENT_MODE: this.config.eventMode,
         PI_RELAY_SLACK_WORKSPACE_ID: this.config.workspaceId,
         PI_RELAY_SLACK_ALLOW_USER_IDS: this.config.authorizedUserId,
@@ -566,6 +572,8 @@ export function slackLivePiConfig(config: SlackLiveSuiteConfig, app: SlackLiveAp
           enabled: true,
           tokenEnv: "PI_RELAY_SLACK_BOT_TOKEN",
           signingSecretEnv: "PI_RELAY_SLACK_SIGNING_SECRET",
+          appTokenEnv: "PI_RELAY_SLACK_APP_TOKEN",
+          botUserId: app.expectedBotUserId,
           eventMode: config.eventMode,
           workspaceId: config.workspaceId,
           allowUserIds: [config.authorizedUserId],

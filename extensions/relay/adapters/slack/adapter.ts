@@ -20,6 +20,7 @@ import type { SharedRoomAddressing } from "../../core/shared-room.js";
 export interface SlackApiOperations {
   startSocketMode?(handler: (event: SlackEnvelope) => Promise<void>): Promise<void>;
   stopSocketMode?(): Promise<void>;
+  authTest?(): Promise<SlackAuthTestResult>;
   postMessage(payload: SlackPostMessagePayload): Promise<void>;
   uploadFile(payload: SlackUploadFilePayload): Promise<void>;
   postEphemeral(payload: { channel: string; user: string; text: string }): Promise<void>;
@@ -27,13 +28,24 @@ export interface SlackApiOperations {
   downloadFile?(url: string): Promise<Uint8Array>;
 }
 
+export interface SlackAuthTestResult {
+  teamId: string;
+  userId: string;
+  botId?: string;
+  appId?: string;
+}
+
 export interface SlackEnvelope {
   type: "event_callback" | "block_actions";
+  envelopeId?: string;
+  eventId?: string;
+  retryAttempt?: number;
+  retryReason?: string;
   event?: SlackMessageEvent;
   actions?: Array<{ action_id?: string; value?: string }>;
   user?: { id: string; username?: string; name?: string; team_id?: string };
   channel?: { id: string };
-  message?: { ts?: string };
+  message?: { ts?: string; thread_ts?: string };
   trigger_id?: string;
   response_url?: string;
   team?: { id: string };
@@ -47,6 +59,7 @@ export interface SlackMessageEvent {
   username?: string;
   text?: string;
   ts: string;
+  thread_ts?: string;
   team?: string;
   bot_id?: string;
   subtype?: string;
@@ -64,6 +77,7 @@ export interface SlackFilePayload {
 export interface SlackPostMessagePayload {
   channel: string;
   text: string;
+  threadTs?: string;
   blocks?: SlackButtonElement[][];
 }
 
@@ -143,11 +157,12 @@ export class SlackChannelAdapter implements ChannelAdapter {
   }
 
   async sendText(address: ChannelRouteAddress, text: string, options?: { buttons?: ChannelButtonLayout }): Promise<void> {
+    const threadTs = slackThreadTs(address);
     for (const chunk of channelTextChunks(this, text || " ")) {
-      await this.api.postMessage({ channel: address.conversationId, text: chunk });
+      await this.api.postMessage({ channel: address.conversationId, text: chunk, threadTs });
     }
     if (options?.buttons && options.buttons.length > 0) {
-      await this.api.postMessage({ channel: address.conversationId, text: "Actions:", blocks: slackBlocksForButtons(options.buttons) });
+      await this.api.postMessage({ channel: address.conversationId, text: "Actions:", threadTs, blocks: slackBlocksForButtons(options.buttons) });
     }
   }
 
@@ -220,7 +235,7 @@ export function slackCapabilities(config: Pick<SlackRelayConfig, "allowChannelMe
 }
 
 export function slackMentionedUserIds(text: string): string[] {
-  return [...text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!).filter(Boolean);
+  return [...text.matchAll(/<@([A-Z0-9_]+)>/g)].map((match) => match[1]!).filter(Boolean);
 }
 
 export function slackMessageSharedRoomAddressing(text: string, localBotUserId: string | undefined, remoteBotUserIds: readonly string[] = []): SharedRoomAddressing {
@@ -257,7 +272,7 @@ export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: Sla
       actionData: action?.value ?? action?.action_id ?? "",
       conversation: slackConversationFromId(channelId),
       sender: slackIdentity(user.id, user.username ?? user.name, user.team_id ?? envelope.team?.id),
-      metadata: { teamId: envelope.team?.id },
+    metadata: { teamId: envelope.team?.id, threadTs: envelope.message?.thread_ts ?? envelope.message?.ts },
     };
   }
   if (!envelope.event) throw new Error("Slack envelope does not contain a supported event.");
@@ -287,8 +302,13 @@ export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<
     attachments: (event.files ?? []).map((file) => slackFileToInboundFile(file, config)),
     conversation: slackConversation(event.channel, event.channel_type),
     sender: slackIdentity(event.user, event.username, teamId),
-    metadata: { teamId },
+    metadata: { teamId, threadTs: event.thread_ts ?? event.ts },
   };
+}
+
+function slackThreadTs(address: ChannelRouteAddress): string | undefined {
+  const value = (address as ChannelRouteAddress & { threadTs?: unknown }).threadTs;
+  return typeof value === "string" && value ? value : undefined;
 }
 
 function slackConversation(channel: string, channelType: SlackMessageEvent["channel_type"]): ChannelConversation {

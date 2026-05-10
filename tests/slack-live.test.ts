@@ -8,6 +8,7 @@ import {
   assertSlackTargetedMessageFlow,
   readSlackLiveSuiteConfig,
   redactSlackLiveText,
+  redactSlackLiveValue,
   runSlackLivePreflight,
   slackLivePiConfig,
   type SlackLiveApiClient,
@@ -224,5 +225,21 @@ describe("Slack live redaction", () => {
   it("redacts configured secrets and Slack token patterns", () => {
     expect(redactSlackLiveText("token xoxb-123-abc and xapp-456-def", ["custom-secret"])).not.toContain("xoxb-123-abc");
     expect(redactSlackLiveText("value custom-secret", ["custom-secret"])).toBe("value [redacted]");
+  });
+
+  it("redacts Slack app tokens, URLs, response URLs, pairing codes, and authorization headers", () => {
+    const input = "Authorization: Bearer xoxb-123-abc socket wss://wss-primary.slack.com/link/?ticket=secret response https://hooks.slack.com/actions/T/B/secret code 123-456 signing slack-signing-secret-value";
+    const redacted = redactSlackLiveText(input, ["xapp-local-secret"]);
+
+    expect(redacted).not.toContain("xoxb-123-abc");
+    expect(redacted).not.toContain("wss-primary.slack.com");
+    expect(redacted).not.toContain("hooks.slack.com/actions");
+    expect(redacted).not.toContain("123-456");
+    expect(redacted).not.toContain("slack-signing-secret-value");
+    expect(redactSlackLiveText("app xapp-local-secret", ["xapp-local-secret"])).toBe("app [redacted]");
+  });
+
+  it("redacts secret-shaped object keys", () => {
+    expect(redactSlackLiveValue({ response_url: "https://hooks.slack.com/actions/T/B/secret", authorization: "Bearer abc", safe: "ok" })).toEqual({ response_url: "[redacted]", authorization: "[redacted]", safe: "ok" });
   });
 });
