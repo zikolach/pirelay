@@ -300,6 +300,7 @@ function webSocketCtorFromGlobal(): (new (url: string) => MinimalWebSocket) | un
 function redactSlackDebugMessage(message: string): string {
   return redactSecrets(message)
     .replace(/"token":"[^"]+"/g, '"token":"[redacted]"')
+    .replace(/"response_url":"[^"]+"/g, '"response_url":"[redacted]"')
     .replace(/"url":"wss:\/\/[^"]+"/g, '"url":"[redacted]"');
 }
 

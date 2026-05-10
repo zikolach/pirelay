@@ -32,6 +32,7 @@ export class SlackRuntime {
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
   private historyPollTimer?: ReturnType<typeof setInterval>;
+  private historyPollInFlight = false;
   private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
   private readonly seenEventKeys = new Map<string, number>();
   private botIdentity?: SlackAuthTestResult;
@@ -87,6 +88,7 @@ export class SlackRuntime {
     this.started = false;
     if (this.historyPollTimer) clearInterval(this.historyPollTimer);
     this.historyPollTimer = undefined;
+    this.historyPollInFlight = false;
     await this.adapter?.stopPolling?.();
   }
 
@@ -143,11 +145,21 @@ export class SlackRuntime {
     if (!channelId || !hasHistoryReader(this.operations) || process.env.PI_RELAY_SLACK_HISTORY_FALLBACK !== "true") return;
     debugSlackRuntime(`Starting Slack history polling fallback for ${channelId} (local bot ${this.localBotUserId() ?? "unset"}).`);
     this.historyPollTimer = setInterval(() => {
-      void this.pollHistory(channelId).catch((error: unknown) => {
-        this.lastError = safeSlackRuntimeError(error);
-      });
+      this.runHistoryPoll(channelId);
     }, 2_000);
     this.historyPollTimer.unref?.();
+  }
+
+  private runHistoryPoll(channelId: string): void {
+    if (this.historyPollInFlight) return;
+    this.historyPollInFlight = true;
+    void this.pollHistory(channelId)
+      .catch((error: unknown) => {
+        this.lastError = safeSlackRuntimeError(error);
+      })
+      .finally(() => {
+        this.historyPollInFlight = false;
+      });
   }
 
   private async pollHistory(channelId: string): Promise<void> {

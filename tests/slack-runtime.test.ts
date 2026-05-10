@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -140,6 +140,10 @@ describe("SlackLiveOperations", () => {
       json: async () => url.endsWith("apps.connections.open") ? { ok: true, url: "wss://socket.test/secret" } : { ok: true },
     }));
     vi.stubGlobal("fetch", fetchMock);
+    const logDir = await mkdtemp(join(tmpdir(), "pirelay-slack-debug-"));
+    tempDirs.push(logDir);
+    const logPath = join(logDir, "debug.log");
+    vi.stubEnv("PI_RELAY_SLACK_DEBUG_LOG", logPath);
     const events: SlackEnvelope[] = [];
     const operations = new SlackLiveOperations({ botToken: "xoxb-secret", appToken: "xapp-secret", WebSocketCtor: FakeWebSocket, disableReconnect: true });
 
@@ -150,10 +154,16 @@ describe("SlackLiveOperations", () => {
     const socket = FakeWebSocket.sockets.at(-1)!;
     socket.emit("message", { data: "not-json" } as never);
     socket.emit("message", { data: JSON.stringify({ envelope_id: "env-1", payload: { type: "event_callback", event_id: "ev-1", team_id: "T1", event: { type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "hi", ts: "1" } } }) } as never);
+    socket.emit("message", { data: JSON.stringify({ envelope_id: "env-2", payload: { type: "block_actions", response_url: "https://hooks.slack.com/actions/T/B/secret", state: { values: "xapp-secret-token" }, token: "xoxb-secret-token", user: { id: "U1" }, channel: { id: "C1" }, actions: [{ value: "summary" }] } }) } as never);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(socket.sent).toEqual([JSON.stringify({ envelope_id: "env-1" })]);
+    expect(socket.sent).toEqual([JSON.stringify({ envelope_id: "env-1" }), JSON.stringify({ envelope_id: "env-2" })]);
     expect(events[0]).toMatchObject({ type: "event_callback", envelopeId: "env-1", eventId: "ev-1", event: { text: "hi", team: "T1" } });
+    const debugLog = await readFile(logPath, "utf8");
+    expect(debugLog).not.toContain("hooks.slack.com");
+    expect(debugLog).not.toContain("xapp-secret-token");
+    expect(debugLog).not.toContain("xoxb-secret-token");
+    expect(debugLog).not.toContain("wss://socket.test/secret");
   });
 
   it("discovers Slack bot identity with auth.test", async () => {
@@ -186,6 +196,34 @@ describe("SlackRuntime foundations", () => {
 
     expect(operations.posts).toHaveLength(1);
     expect(operations.posts[0]).toMatchObject({ channel: "C1", text: expect.stringContaining("not paired") });
+  });
+
+  it("prevents overlapping Slack history fallback polls", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("PI_RELAY_SLACK_HISTORY_FALLBACK", "true");
+    const operations = new FakeSlackOperations() as FakeSlackOperations & { listChannelMessages: ReturnType<typeof vi.fn> };
+    let finishFirstPoll: (() => void) | undefined;
+    operations.listChannelMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        finishFirstPoll = resolve;
+      });
+      return [];
+    });
+    const runtime = new SlackRuntime(await config(), { operations });
+    await runtime.registerRoute(route());
+    await runtime.start();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(operations.listChannelMessages).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(operations.listChannelMessages).toHaveBeenCalledTimes(1);
+
+    finishFirstPoll?.();
+    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(operations.listChannelMessages).toHaveBeenCalledTimes(2);
+    await runtime.stop();
+    vi.useRealTimers();
   });
 
   it("pairs Slack DMs, persists the binding, and restores it for prompt receipt", async () => {

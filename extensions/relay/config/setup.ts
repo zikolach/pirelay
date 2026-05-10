@@ -29,6 +29,8 @@ const SUPPORTED_CHANNELS: RelaySetupChannel[] = ["telegram", "discord", "slack"]
 const SECRET_PATTERNS = [
   /\b\d+:[A-Za-z0-9_-]{20,}\b/g,
   /xox[baprs]-[A-Za-z0-9-]+/g,
+  /xapp-[A-Za-z0-9-]+/g,
+  /https:\/\/hooks\.slack(?:-gov)?\.com\/[^\s"'\\]+/g,
   /slack-signing-secret-[A-Za-z0-9_-]+/gi,
   /discord-token-[A-Za-z0-9_-]+/gi,
   /[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/g,
