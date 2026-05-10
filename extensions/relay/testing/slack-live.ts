@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -529,7 +529,9 @@ export class SlackLivePiHarness {
   }
 
   async stop(): Promise<void> {
-    await Promise.all(this.processes.splice(0).map((processInfo) => stopChild(processInfo.child)));
+    const processes = this.processes.splice(0);
+    await Promise.all(processes.map((processInfo) => stopChild(processInfo.child)));
+    await Promise.all(processes.map((processInfo) => stopNamespaceBrokerProcesses(processInfo)));
     if (this.rootDir) {
       await rm(this.rootDir, { recursive: true, force: true });
       this.rootDir = undefined;
@@ -633,6 +635,53 @@ async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
     });
     killChildProcessGroup(child, "SIGTERM");
   });
+}
+
+async function stopNamespaceBrokerProcesses(processInfo: Pick<SlackLivePiProcess, "stateDir" | "brokerNamespace">): Promise<void> {
+  if (!processInfo.brokerNamespace) return;
+  let entries: string[];
+  try {
+    entries = await readdir(processInfo.stateDir);
+  } catch {
+    return;
+  }
+  const prefix = `broker-${processInfo.brokerNamespace}-`;
+  const pidFiles = entries.filter((entry) => entry.startsWith(prefix) && entry.endsWith(".pid"));
+  await Promise.all(pidFiles.map(async (entry) => {
+    const pidPath = join(processInfo.stateDir, entry);
+    const raw = await readFile(pidPath, "utf8").catch(() => "");
+    const pid = Number(raw.trim());
+    if (!Number.isInteger(pid) || pid <= 0) return;
+    await terminateProcessGroup(pid);
+    await rm(pidPath, { force: true }).catch(() => undefined);
+  }));
+}
+
+async function terminateProcessGroup(pid: number): Promise<void> {
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try { process.kill(pid, "SIGTERM"); } catch { return; }
+  }
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try { process.kill(pid, "SIGKILL"); } catch {}
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function killChildProcessGroup(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {

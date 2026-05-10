@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
   SlackApiError,
@@ -198,6 +199,35 @@ describe("Slack live Pi harness planning", () => {
       await harness.stop();
     }
   });
+
+  it("terminates namespace-scoped broker pid files during teardown", async () => {
+    const processConfig: SlackLiveSuiteConfig = {
+      ...config,
+      realAgent: true,
+      apps: [
+        { ...config.apps[0], piCommand: `"${process.execPath}" -e "setTimeout(() => {}, 10000)"` },
+        { ...config.apps[1], piCommand: `"${process.execPath}" -e "setTimeout(() => {}, 10000)"` },
+      ],
+    };
+    const harness = new SlackLivePiHarness(processConfig);
+    let brokerPid: number | undefined;
+    try {
+      const [first] = await harness.start();
+      const broker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+      broker.unref();
+      brokerPid = broker.pid;
+      if (!brokerPid) throw new Error("test broker pid unavailable");
+      await writeFile(`${first.stateDir}/broker-${first.brokerNamespace}-fake.pid`, `${brokerPid}\n`, { mode: 0o600 });
+      await harness.stop();
+      await waitForProcessExit(brokerPid);
+      brokerPid = undefined;
+    } finally {
+      await harness.stop();
+      if (brokerPid) {
+        try { process.kill(-brokerPid, "SIGKILL"); } catch {}
+      }
+    }
+  });
 });
 
 describe("Slack live observer and assertions", () => {
@@ -304,3 +334,16 @@ describe("Slack live redaction", () => {
     expect(redactSlackLiveValue({ response_url: "https://hooks.slack.com/actions/T/B/secret", authorization: "Bearer abc", safe: "ok" })).toEqual({ response_url: "[redacted]", authorization: "[redacted]", safe: "ok" });
   });
 });
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Process ${pid} did not exit.`);
+}

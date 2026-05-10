@@ -19,6 +19,11 @@ The system SHALL support an optional non-secret broker namespace that scopes loc
 - **THEN** PiRelay removes or replaces only the stale files for that namespace
 - **AND** it does not disturb brokers or state for other namespaces
 
+#### Scenario: Ephemeral namespace owner stops
+- **WHEN** a test or live harness owns an ephemeral namespace-scoped broker process
+- **THEN** harness teardown terminates the broker process group recorded for that namespace before deleting temporary state
+- **AND** default non-namespaced brokers keep their long-lived behavior unless explicitly cleaned up
+
 #### Scenario: Namespace is reported safely
 - **WHEN** setup, doctor, tests, or debug logs report broker isolation status
 - **THEN** they may include the non-secret namespace label and scoped path category

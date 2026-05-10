@@ -62,6 +62,7 @@
 - [x] 8.3 Update Slack live real-agent harness to assign unique broker namespaces per bot process and keep state/config/credentials isolated.
 - [x] 8.4 Add tests proving two same-host namespaces do not share broker route registration, Slack runtime ownership, active selection, or completion delivery.
 - [x] 8.5 Rerun `PI_RELAY_SLACK_LIVE_REAL_AGENT=true ./run-slack-live-test.sh` and confirm stub output is rejected and real agent output is observed.
+- [x] 8.6 Terminate namespace-scoped live/test broker process groups during harness teardown without changing default long-lived broker behavior.
 
 ## 9. Validation
 
