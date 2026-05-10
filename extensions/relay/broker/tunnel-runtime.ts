@@ -8,6 +8,7 @@ import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
+import { normalizeBrokerNamespace } from "./supervisor.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const BROKER_CHANNEL = "telegram" as const;
@@ -48,6 +49,7 @@ function relayPipelineProtocolError(pipeline: unknown): string | undefined {
 export class BrokerTunnelRuntime implements TunnelRuntime {
   private readonly clientId = randomUUID();
   private readonly socketPath: string;
+  private readonly brokerNamespace?: string;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private socket?: Socket;
@@ -57,7 +59,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private setupCache?: SetupCache;
 
   constructor(private readonly config: TelegramTunnelConfig) {
-    this.socketPath = resolve(config.stateDir, `broker-${sha256(config.botToken).slice(0, 16)}.sock`);
+    this.brokerNamespace = normalizeBrokerNamespace(config.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE);
+    const tokenHash = sha256(config.botToken).slice(0, 16);
+    const socketName = this.brokerNamespace ? `broker-${this.brokerNamespace}-${tokenHash}.sock` : `broker-${tokenHash}.sock`;
+    this.socketPath = resolve(config.stateDir, socketName);
   }
 
   get setup(): SetupCache | undefined {
@@ -352,6 +357,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
         ...process.env,
         TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify(this.config),
         TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: this.socketPath,
+        PI_RELAY_BROKER_NAMESPACE: this.brokerNamespace ?? "",
       },
     }).unref();
   }

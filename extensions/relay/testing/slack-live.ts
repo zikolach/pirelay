@@ -508,6 +508,7 @@ export interface SlackLivePiProcess {
   instanceId: string;
   stateDir: string;
   configPath: string;
+  brokerNamespace?: string;
   child: ChildProcessWithoutNullStreams;
 }
 
@@ -539,6 +540,7 @@ export class SlackLivePiHarness {
     const instanceDir = join(rootDir, app.instanceId);
     const stateDir = join(instanceDir, "state");
     const configPath = join(instanceDir, "config.json");
+    const brokerNamespace = this.config.realAgent ? slackLiveBrokerNamespace(app) : undefined;
     await mkdir(stateDir, { recursive: true });
     await writeFile(configPath, JSON.stringify(slackLivePiConfig(this.config, app, stateDir), null, 2), { mode: 0o600 });
     const child = spawn(app.piCommand, {
@@ -548,6 +550,7 @@ export class SlackLivePiHarness {
         ...process.env,
         PI_RELAY_CONFIG: configPath,
         PI_RELAY_STATE_DIR: stateDir,
+        PI_RELAY_BROKER_NAMESPACE: brokerNamespace ?? "",
         TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
         PI_RELAY_MACHINE_ID: app.instanceId,
         PI_RELAY_MACHINE_DISPLAY_NAME: app.displayName,
@@ -565,17 +568,23 @@ export class SlackLivePiHarness {
       },
     });
     attachDebugPipe(child, app.instanceId, slackLiveSecrets(this.config));
-    return { instanceId: app.instanceId, stateDir, configPath, child };
+    return { instanceId: app.instanceId, stateDir, configPath, brokerNamespace, child };
   }
 }
 
+export function slackLiveBrokerNamespace(app: Pick<SlackLiveAppConfig, "instanceId">): string {
+  return `slack-live-${app.instanceId}`.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 80);
+}
+
 export function slackLivePiConfig(config: SlackLiveSuiteConfig, app: SlackLiveAppConfig, stateDir: string): Record<string, unknown> {
+  const brokerNamespace = config.realAgent ? slackLiveBrokerNamespace(app) : undefined;
   return {
     relay: {
       machineId: app.instanceId,
       displayName: app.displayName,
       aliases: [app.role, app.displayName],
       stateDir,
+      brokerNamespace,
     },
     messengers: {
       slack: {

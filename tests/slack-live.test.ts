@@ -10,6 +10,7 @@ import {
   redactSlackLiveText,
   redactSlackLiveValue,
   runSlackLivePreflight,
+  slackLiveBrokerNamespace,
   slackLivePiConfig,
   slackLiveTargetPrompt,
   type SlackLiveApiClient,
@@ -161,12 +162,14 @@ describe("Slack live preflight", () => {
 
 describe("Slack live Pi harness planning", () => {
   it("writes distinct per-instance PiRelay configuration without embedding Slack secrets", () => {
-    const first = slackLivePiConfig(config, config.apps[0], "/tmp/a");
-    const second = slackLivePiConfig(config, config.apps[1], "/tmp/b");
+    const realConfig = { ...config, realAgent: true };
+    const first = slackLivePiConfig(realConfig, config.apps[0], "/tmp/a");
+    const second = slackLivePiConfig(realConfig, config.apps[1], "/tmp/b");
     const serialized = JSON.stringify([first, second]);
 
-    expect(first).toMatchObject({ relay: { machineId: "slack-live-a", stateDir: "/tmp/a" } });
-    expect(second).toMatchObject({ relay: { machineId: "slack-live-b", stateDir: "/tmp/b" } });
+    expect(first).toMatchObject({ relay: { machineId: "slack-live-a", stateDir: "/tmp/a", brokerNamespace: slackLiveBrokerNamespace(config.apps[0]) } });
+    expect(second).toMatchObject({ relay: { machineId: "slack-live-b", stateDir: "/tmp/b", brokerNamespace: slackLiveBrokerNamespace(config.apps[1]) } });
+    expect((first.relay as { brokerNamespace?: string }).brokerNamespace).not.toBe((second.relay as { brokerNamespace?: string }).brokerNamespace);
     expect(serialized).toContain("PI_RELAY_SLACK_BOT_TOKEN");
     expect(serialized).not.toContain("xoxb-a-secret");
     expect(serialized).not.toContain("signing-a-secret");
@@ -175,6 +178,7 @@ describe("Slack live Pi harness planning", () => {
   it("launches two isolated child processes and tears down temporary state", async () => {
     const processConfig: SlackLiveSuiteConfig = {
       ...config,
+      realAgent: true,
       apps: [
         { ...config.apps[0], piCommand: `"${process.execPath}" -e "setTimeout(() => {}, 10000)"` },
         { ...config.apps[1], piCommand: `"${process.execPath}" -e "setTimeout(() => {}, 10000)"` },
@@ -185,6 +189,9 @@ describe("Slack live Pi harness planning", () => {
       const processes = await harness.start();
       expect(processes.map((entry) => entry.instanceId)).toEqual(["slack-live-a", "slack-live-b"]);
       expect(processes[0].stateDir).not.toBe(processes[1].stateDir);
+      expect(processes[0].brokerNamespace).toBe(slackLiveBrokerNamespace(config.apps[0]));
+      expect(processes[1].brokerNamespace).toBe(slackLiveBrokerNamespace(config.apps[1]));
+      expect(processes[0].brokerNamespace).not.toBe(processes[1].brokerNamespace);
       await expect(readFile(processes[0].configPath, "utf8")).resolves.toContain("slack-live-a");
       await expect(readFile(processes[1].configPath, "utf8")).resolves.toContain("slack-live-b");
     } finally {

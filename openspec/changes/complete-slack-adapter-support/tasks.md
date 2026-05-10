@@ -57,15 +57,15 @@
 
 ## 8. Same-host real-agent live isolation
 
-- [ ] 8.1 Add an optional non-secret broker namespace override for local broker clients and supervisors.
-- [ ] 8.2 Scope broker socket, pid, lock, and supervision paths by namespace while preserving the current default singleton behavior.
-- [ ] 8.3 Update Slack live real-agent harness to assign unique broker namespaces per bot process and keep state/config/credentials isolated.
-- [ ] 8.4 Add tests proving two same-host namespaces do not share broker route registration, Slack runtime ownership, active selection, or completion delivery.
-- [ ] 8.5 Rerun `PI_RELAY_SLACK_LIVE_REAL_AGENT=true ./run-slack-live-test.sh` and confirm stub output is rejected and real agent output is observed.
+- [x] 8.1 Add an optional non-secret broker namespace override for local broker clients and supervisors.
+- [x] 8.2 Scope broker socket, pid, lock, and supervision paths by namespace while preserving the current default singleton behavior.
+- [x] 8.3 Update Slack live real-agent harness to assign unique broker namespaces per bot process and keep state/config/credentials isolated.
+- [x] 8.4 Add tests proving two same-host namespaces do not share broker route registration, Slack runtime ownership, active selection, or completion delivery.
+- [x] 8.5 Rerun `PI_RELAY_SLACK_LIVE_REAL_AGENT=true ./run-slack-live-test.sh` and confirm stub output is rejected and real agent output is observed.
 
 ## 9. Validation
 
-- [ ] 9.1 Run focused Slack runtime, adapter, setup/doctor, shared-room, broker namespace, and messenger parity tests.
-- [ ] 9.2 Run `npm run typecheck`.
-- [ ] 9.3 Run `npm test`.
-- [ ] 9.4 Validate with `openspec validate complete-slack-adapter-support --strict`.
+- [x] 9.1 Run focused Slack runtime, adapter, setup/doctor, shared-room, broker namespace, and messenger parity tests.
+- [x] 9.2 Run `npm run typecheck`.
+- [x] 9.3 Run `npm test`.
+- [x] 9.4 Validate with `openspec validate complete-slack-adapter-support --strict`.

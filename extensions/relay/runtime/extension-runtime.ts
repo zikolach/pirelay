@@ -917,7 +917,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
   pi.on("agent_end", async (event, ctx) => {
     latestContext = ctx;
-    if (!currentRoute || !runtime) return;
+    if (!currentRoute) return;
     currentRoute.actions.context = ctx;
     currentRoute.lastActivityAt = Date.now();
 
@@ -983,9 +983,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     publishRouteStateSoon();
-    await sendSessionNotification(runtime, currentRoute, status);
+    if (runtime) await sendSessionNotification(runtime, currentRoute, status);
     for (const discord of await ensureAllDiscordRuntimes()) {
       await discord.notifyTurnCompleted(currentRoute, status);
+    }
+    for (const slack of await ensureAllSlackRuntimes()) {
+      await slack.notifyTurnCompleted(currentRoute, status);
     }
   });
 }

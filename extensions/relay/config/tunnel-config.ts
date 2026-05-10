@@ -277,6 +277,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   const stateDir = expandHome(process.env.PI_RELAY_STATE_DIR || process.env.PI_TELEGRAM_TUNNEL_STATE_DIR || fileConfig?.relay?.stateDir || fileConfig?.stateDir || DEFAULT_STATE_DIR);
   const machineId = fileConfig?.relay?.machineId ?? fileConfig?.relay?.machine?.id ?? process.env.PI_RELAY_MACHINE_ID;
   const machineDisplayName = fileConfig?.relay?.displayName ?? process.env.PI_RELAY_MACHINE_DISPLAY_NAME;
+  const brokerNamespace = fileConfig?.relay?.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE;
   const machineAliases = [...new Set([...(fileConfig?.relay?.aliases ?? []), ...(parseStringList(process.env.PI_RELAY_MACHINE_ALIASES) ?? [])].map((alias) => alias.trim()).filter(Boolean))];
   const busyDeliveryMode = (process.env.PI_TELEGRAM_TUNNEL_BUSY_MODE || fileConfig?.defaults?.busyDeliveryMode || fileConfig?.busyDeliveryMode || "followUp") as
     | "followUp"
@@ -386,6 +387,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     machineId,
     machineDisplayName,
     machineAliases,
+    brokerNamespace,
     pairingExpiryMs,
     busyDeliveryMode,
     allowUserIds,

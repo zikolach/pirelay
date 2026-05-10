@@ -15,6 +15,7 @@ export interface RelayMachineConfig {
   stateDir: string;
   displayName?: string;
   aliases: string[];
+  brokerNamespace?: string;
   brokerGroup?: string;
   brokerPeers: BrokerPeerConfig[];
 }

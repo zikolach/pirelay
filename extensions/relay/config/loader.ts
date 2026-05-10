@@ -210,6 +210,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
     stateDir: expandHome(fileConfig.relay?.stateDir ?? env.PI_RELAY_STATE_DIR ?? env.PI_TELEGRAM_TUNNEL_STATE_DIR ?? fileConfig.stateDir ?? DEFAULT_PIRELAY_STATE_DIR),
     displayName: fileConfig.relay?.displayName ?? env.PI_RELAY_MACHINE_DISPLAY_NAME,
     aliases: relayMachineAliases(fileConfig, env),
+    brokerNamespace: fileConfig.relay?.brokerNamespace ?? env.PI_RELAY_BROKER_NAMESPACE,
     brokerGroup: fileConfig.relay?.brokerGroup ?? env.PI_RELAY_BROKER_GROUP,
     brokerPeers: fileConfig.relay?.brokerPeers ?? [],
   };

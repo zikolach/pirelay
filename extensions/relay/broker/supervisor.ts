@@ -4,8 +4,10 @@ import { join } from "node:path";
 
 export interface LocalBrokerControlPaths {
   stateDir: string;
+  namespace?: string;
   socketPath: string;
   pidPath: string;
+  lockPath: string;
 }
 
 export interface LocalBrokerStartResult {
@@ -14,6 +16,7 @@ export interface LocalBrokerStartResult {
 
 export interface EnsureLocalBrokerOptions {
   stateDir: string;
+  namespace?: string;
   startBroker: () => Promise<LocalBrokerStartResult>;
   isAlive?: (pid: number) => boolean;
 }
@@ -22,11 +25,22 @@ export type EnsureLocalBrokerResult =
   | { status: "existing"; paths: LocalBrokerControlPaths; pid: number }
   | { status: "started"; paths: LocalBrokerControlPaths; pid: number };
 
-export function brokerControlPaths(stateDir: string): LocalBrokerControlPaths {
+export function normalizeBrokerNamespace(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const normalized = trimmed.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return normalized || undefined;
+}
+
+export function brokerControlPaths(stateDir: string, namespace?: string): LocalBrokerControlPaths {
+  const normalizedNamespace = normalizeBrokerNamespace(namespace);
+  const basename = normalizedNamespace ? `relay-broker-${normalizedNamespace}` : "relay-broker";
   return {
     stateDir,
-    socketPath: join(stateDir, "relay-broker.sock"),
-    pidPath: join(stateDir, "relay-broker.pid"),
+    namespace: normalizedNamespace,
+    socketPath: join(stateDir, `${basename}.sock`),
+    pidPath: join(stateDir, `${basename}.pid`),
+    lockPath: join(stateDir, `${basename}.lock`),
   };
 }
 
@@ -57,12 +71,13 @@ export async function cleanupStaleBrokerControlFiles(paths: LocalBrokerControlPa
   await Promise.all([
     rm(paths.pidPath, { force: true }),
     rm(paths.socketPath, { force: true }),
+    rm(paths.lockPath, { force: true }),
   ]);
   return true;
 }
 
 export async function ensureLocalBroker(options: EnsureLocalBrokerOptions): Promise<EnsureLocalBrokerResult> {
-  const paths = brokerControlPaths(options.stateDir);
+  const paths = brokerControlPaths(options.stateDir, options.namespace);
   const isAlive = options.isAlive ?? isProcessAlive;
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
   const existingPid = await readBrokerPid(paths.pidPath);

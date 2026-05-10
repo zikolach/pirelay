@@ -59,6 +59,7 @@ export interface TelegramTunnelConfig {
   machineId?: string;
   machineDisplayName?: string;
   machineAliases?: string[];
+  brokerNamespace?: string;
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;
   allowUserIds: number[];
