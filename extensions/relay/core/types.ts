@@ -91,6 +91,7 @@ export interface TelegramUserSummary {
   username?: string;
   firstName?: string;
   lastName?: string;
+  isBot?: boolean;
 }
 
 export interface TelegramChatSummary {

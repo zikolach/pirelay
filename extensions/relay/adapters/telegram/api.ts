@@ -81,6 +81,7 @@ export class TelegramApiClient {
               username: message.from.username,
               firstName: message.from.first_name,
               lastName: message.from.last_name,
+              isBot: message.from.is_bot,
             },
           } satisfies TelegramInboundMessage, typeof message.media_group_id === "string" ? message.media_group_id : undefined);
           continue;
@@ -107,6 +108,7 @@ export class TelegramApiClient {
             username: callback.from.username,
             firstName: callback.from.first_name,
             lastName: callback.from.last_name,
+            isBot: callback.from.is_bot,
           },
         } satisfies TelegramInboundCallback);
       }

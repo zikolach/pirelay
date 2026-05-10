@@ -117,6 +117,49 @@ function createRoute(binding: TelegramBindingMetadata, idle = true, promptLocalC
 }
 
 describe("InProcessTunnelRuntime", () => {
+  it("loads setup before starting the polling loop", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const getMe = vi.fn(async () => ({ id: 123456, is_bot: true, first_name: "PiRelay", username: "pirelay_bot" }));
+    (runtime as any).api = {
+      getMe,
+      getUpdates: vi.fn(async () => []),
+      sendPlainText: async () => undefined,
+    };
+    (runtime as any).pollLoop = vi.fn(async () => undefined);
+
+    await runtime.start();
+    await runtime.stop();
+
+    expect(getMe).toHaveBeenCalledTimes(1);
+    expect((await store.getSetup())?.botId).toBe(123456);
+  });
+
+  it("loads setup before filtering local bot-authored messages", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    const getMe = vi.fn(async () => ({ id: 123456, is_bot: true, first_name: "PiRelay", username: "pirelay_bot" }));
+    (runtime as any).api = {
+      getMe,
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 1,
+      messageId: 1,
+      text: "hello from myself",
+      chat: { id: 777, type: "group" },
+      user: { id: 123456, username: "pirelay_bot", isBot: true },
+    });
+
+    expect(getMe).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([]);
+    expect((await store.getSetup())?.botId).toBe(123456);
+  });
+
   it("can trust a Telegram pairing user for future confirmations", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -1448,7 +1491,7 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("offline");
   });
 
-  it("lists private-paired sessions for addressed Telegram group commands without stale keyboards", async () => {
+  it("lists private-paired sessions for bot-authored addressed Telegram group commands without stale keyboards", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
     const runtime = new InProcessTunnelRuntime(config, store);
@@ -1474,7 +1517,7 @@ describe("InProcessTunnelRuntime", () => {
       sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
     };
 
-    await (runtime as any).processInbound({ updateId: 50, messageId: 50, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
+    await (runtime as any).processInbound({ updateId: 50, messageId: 50, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "peer_machine_bot", isBot: true } });
 
     expect(sent).toHaveLength(1);
     expect(keyboardSends).toHaveLength(0);
@@ -1510,6 +1553,7 @@ describe("InProcessTunnelRuntime", () => {
     await (runtime as any).processInbound({ updateId: 51, messageId: 51, text: "/sessions@other_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
     await (runtime as any).processInbound({ updateId: 52, messageId: 52, text: "/sessions", chat: { id: -1001, type: "supergroup" }, user: { id: 42, username: "owner" } });
     await (runtime as any).processInbound({ updateId: 53, messageId: 53, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 99, username: "stranger" } });
+    await (runtime as any).processInbound({ updateId: 54, messageId: 54, text: "/sessions@mini_builder_bot", chat: { id: -1001, type: "supergroup" }, user: { id: 123456, username: "mini_builder_bot", isBot: true } });
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("Pair with this bot in a private Telegram chat");

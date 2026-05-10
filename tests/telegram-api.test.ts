@@ -112,7 +112,7 @@ describe("TelegramApiClient button and document payloads", () => {
           message_id: 10,
           caption: "inspect this screenshot",
           chat: { id: 123, type: "private" },
-          from: { id: 7, username: "owner" },
+          from: { id: 7, username: "owner", is_bot: true },
           photo: [
             { file_id: "small", file_unique_id: "u-small", width: 100, height: 100, file_size: 100 },
             { file_id: "too-large", file_unique_id: "u-large", width: 1000, height: 1000, file_size: 1000 },
@@ -160,7 +160,7 @@ describe("TelegramApiClient button and document payloads", () => {
 
     const updates = await client.getUpdates(undefined);
 
-    expect(updates[0]).toMatchObject({ text: "inspect this screenshot", images: [{ kind: "photo", fileId: "best", mimeType: "image/jpeg", supported: true }] });
+    expect(updates[0]).toMatchObject({ text: "inspect this screenshot", user: { isBot: true }, images: [{ kind: "photo", fileId: "best", mimeType: "image/jpeg", supported: true }] });
     expect(updates[1]).toMatchObject({ text: "original image", images: [{ kind: "document", fileId: "doc-image", fileName: "screen.png", mimeType: "image/png", supported: true }] });
     expect(updates[2]).toMatchObject({ text: "", images: [{ kind: "document", fileId: "pdf", mimeType: "application/pdf", supported: false }] });
     expect(updates[3]).toMatchObject({

@@ -148,6 +148,7 @@ export function telegramUserToChannelIdentity(user: TelegramUserSummary): Channe
     displayName,
     firstName: user.firstName,
     lastName: user.lastName,
+    metadata: { isBot: user.isBot ?? false },
   };
 }
 
@@ -204,14 +205,20 @@ export function telegramUpdateToChannelEvent(update: TelegramInboundMessage | Te
 }
 
 export function telegramMentionedBotUsernames(text: string): string[] {
-  return [...text.matchAll(/@([A-Za-z][A-Za-z0-9_]{4,31})/g)].map((match) => match[1]!).filter(Boolean);
+  return [...text.matchAll(/@([A-Za-z][A-Za-z0-9_]{4,31})/g)]
+    .map((match) => match[1]!)
+    .filter((username) => /bot$/i.test(username));
 }
 
 export function telegramMessageSharedRoomAddressing(text: string, localBotUsername: string | undefined): SharedRoomAddressing {
-  const mentions = telegramMentionedBotUsernames(text).map((username) => username.toLowerCase());
-  if (mentions.length === 0) return { kind: "none" };
-  if (localBotUsername && mentions.includes(localBotUsername.replace(/^@/, "").toLowerCase())) return { kind: "local" };
-  return { kind: "none" };
+  const rawMentions = telegramMentionedBotUsernames(text);
+  const mentions = rawMentions.map((username) => username.toLowerCase());
+  const uniqueMentions = [...new Set(mentions)];
+  if (uniqueMentions.length === 0) return { kind: "none" };
+  if (uniqueMentions.length > 1) return { kind: "ambiguous", reason: "multiple bot mentions" };
+  const normalizedLocal = localBotUsername?.replace(/^@/, "").toLowerCase();
+  if (normalizedLocal && uniqueMentions.includes(normalizedLocal)) return { kind: "local" };
+  return { kind: "remote", selector: rawMentions[0] };
 }
 
 export function toTelegramKeyboard(layout: ChannelButtonLayout): TelegramInlineKeyboard {

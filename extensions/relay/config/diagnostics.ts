@@ -44,13 +44,14 @@ export function collectRelayDiagnostics(config: ResolvedRelayConfig): RelayDiagn
     if (messenger.sharedRoom.enabled) {
       items.push({ level: "ok", message: `${ref}: shared-room machine bot identity ${config.relay.displayName ?? config.relay.machineId}.` });
       if (messenger.ref.kind === "telegram") {
+        items.push({ level: "warning", message: `${ref}: Telegram Bot-to-Bot Communication Mode must be enabled for both BotFather bots before bot-authored group updates can reach each other; privacy-mode groups can still use /command@bot addressed-command fallback.` });
         items.push({ level: "warning", message: `${ref}: Telegram shared-room plain text requires a group/supergroup where bot privacy mode or permissions allow ordinary messages; otherwise use mentions, replies, or addressed commands.` });
       }
       if (messenger.ref.kind === "discord") {
-        items.push({ level: "ok", message: `${ref}: Discord shared-room mode should use a dedicated bot application in a shared server channel with Message Content Intent and mention/text-prefix fallbacks.` });
+        items.push({ level: "ok", message: `${ref}: Discord shared-room mode should use a dedicated bot application in a shared server channel with Message Content Intent, allowed guild ids, channel permissions, and relay <command>/mention fallbacks.` });
       }
       if (messenger.ref.kind === "slack") {
-        items.push({ level: "ok", message: `${ref}: Slack shared-room mode requires a dedicated app/bot in the channel with event scopes for app mentions or channel messages.` });
+        items.push({ level: "warning", message: `${ref}: Slack channel shared-room pre-routing is not yet runtime-parity with Discord; app mentions can be detected, but ordinary channel text, channel commands, and media attachments are diagnostic/deferred unless explicit runtime support is added.` });
       }
     }
 

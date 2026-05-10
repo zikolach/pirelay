@@ -161,6 +161,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (this.started) return;
     await ensureStateDir(this.config.stateDir);
     await this.acquireLock();
+    await this.ensureSetup();
     this.started = true;
     this.pollingTask = this.pollLoop();
   }
@@ -595,6 +596,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (message.kind === "callback") {
       await this.processCallback(message);
       return;
+    }
+
+    if (message.user.isBot) {
+      const setup = await this.ensureSetup();
+      if (setup.botId === message.user.id) return;
     }
 
     const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config: this.config });
