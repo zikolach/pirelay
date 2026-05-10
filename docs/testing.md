@@ -103,7 +103,7 @@ Check:
 
 ## 6. Relay setup wizard, Discord, and Slack smoke checklist
 
-These adapter foundations are DM-first and use channel-specific credentials/config namespaces. For a live integration or mocked platform client, verify:
+These adapter foundations are DM-first and use channel-specific credentials/config namespaces. For a live integration or mocked platform client, verify the checklist below. For the opt-in automated Slack suite, see [Slack live integration suite](./slack-live-integration.md).
 
 1. Run `/relay doctor` with no optional channel config and verify it explains Telegram setup plus Discord/Slack opt-in without printing secrets.
 2. Run `/relay setup telegram` and `/relay setup telegram`; both should validate the same Telegram token path.

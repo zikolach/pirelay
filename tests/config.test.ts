@@ -70,6 +70,7 @@ describe("telegram tunnel config", () => {
       slack: { botToken: "slack-file", signingSecret: "secret-file", workspaceId: "T-file", eventMode: "webhook" },
     }));
     vi.stubEnv("PI_TELEGRAM_TUNNEL_CONFIG", configPath);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
     vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-env");
     vi.stubEnv("PI_RELAY_DISCORD_CLIENT_ID", "client-env");
     vi.stubEnv("PI_RELAY_DISCORD_ALLOW_USER_IDS", "u1,u2");
