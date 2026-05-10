@@ -27,7 +27,7 @@
 
 - [x] 5.1 Inventory Slack runtime gaps for channel/app-mention shared-room support versus adapter declarations.
 - [x] 5.2 Implement Slack shared-room pre-routing for enabled channel contexts, or explicitly mark unsupported cases in capabilities/diagnostics.
-- [ ] 5.3 Add Slack tests for app mentions, channel-message gating, active selection, non-target silence, unauthorized rejection, and safe action responses.
+- [x] 5.3 Add Slack tests for app mentions, channel-message gating, active selection, non-target silence, unauthorized rejection, and safe action responses.
 - [x] 5.4 Update Slack setup/doctor guidance with required scopes/event subscriptions, channel membership, Socket Mode/webhook caveats, and safe defaults.
 
 ## 6. Validation

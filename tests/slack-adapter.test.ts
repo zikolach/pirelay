@@ -95,6 +95,21 @@ describe("SlackChannelAdapter", () => {
     await expect(adapter.handleWebhook({ ...envelope }, { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature }, async () => undefined)).rejects.toThrow("Raw Slack request body");
   });
 
+  it("treats Slack app_mention updates as deferred runtime-parity gaps", () => {
+    const event = slackEventToChannelEvent({ type: "message", subtype: "app_mention", channel_type: "channel", channel: "C1", user: "U1", text: "<@U1> hi", ts: "171.3", team: "T1" }, config);
+
+    expect(event).toBeUndefined();
+  });
+
+  it("falls back to an ephemeral Slack action response when no response URL is present", async () => {
+    const postEphemeral = vi.fn(async (_payload: unknown) => undefined);
+    const adapter = new SlackChannelAdapter(config, { postMessage: async () => undefined, uploadFile: async () => undefined, postEphemeral });
+
+    await adapter.answerAction(buildSlackActionId({ channelId: "C1", userId: "U1" }), { text: "Done" });
+
+    expect(postEphemeral).toHaveBeenCalledWith({ channel: "C1", user: "U1", text: "Done" });
+  });
+
   it("parses real Slack form webhook bodies", () => {
     const envelope = { type: "block_actions", channel: { id: "C1" }, user: { id: "U1", team_id: "T1" }, actions: [{ value: "full:t:chat" }], response_url: "https://hooks.slack.test/response" };
     const raw = `payload=${encodeURIComponent(JSON.stringify(envelope))}`;
