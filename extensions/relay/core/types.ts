@@ -40,8 +40,10 @@ export interface SlackRelayConfig {
   enabled?: boolean;
   botToken?: string;
   signingSecret?: string;
+  appToken?: string;
   eventMode?: "socket" | "webhook";
   workspaceId?: string;
+  botUserId?: string;
   allowUserIds?: string[];
   allowChannelMessages?: boolean;
   sharedRoom?: SharedRoomRelayConfig;
@@ -57,6 +59,7 @@ export interface TelegramTunnelConfig {
   machineId?: string;
   machineDisplayName?: string;
   machineAliases?: string[];
+  brokerNamespace?: string;
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;
   allowUserIds: number[];

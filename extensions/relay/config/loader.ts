@@ -59,6 +59,16 @@ function envSigningSecret(env: NodeJS.ProcessEnv, kind: string): string | undefi
   return undefined;
 }
 
+function envAppToken(env: NodeJS.ProcessEnv, kind: string): string | undefined {
+  if (kind === "slack") return env.PI_RELAY_SLACK_APP_TOKEN;
+  return undefined;
+}
+
+function envBotUserId(env: NodeJS.ProcessEnv, kind: string): string | undefined {
+  if (kind === "slack") return env.PI_RELAY_SLACK_BOT_USER_ID;
+  return undefined;
+}
+
 function envApplicationId(env: NodeJS.ProcessEnv, kind: string): string | undefined {
   if (kind === "discord") return env.PI_RELAY_DISCORD_APPLICATION_ID ?? env.PI_RELAY_DISCORD_CLIENT_ID;
   return undefined;
@@ -109,6 +119,7 @@ function resolveMessengerInstance(input: {
   const { ref, config, defaults, relay, env, supportedMessengers, warnings } = input;
   const token = resolveSecret(env, config.botToken ?? config.token, config.tokenEnv) ?? envToken(env, ref.kind);
   const signingSecret = resolveSecret(env, config.signingSecret, config.signingSecretEnv) ?? envSigningSecret(env, ref.kind);
+  const appToken = resolveSecret(env, config.appToken, config.appTokenEnv) ?? envAppToken(env, ref.kind);
   const usedLegacyTokenEnv = !config.botToken && !config.token && !config.tokenEnv && Boolean(envToken(env, ref.kind));
   if (usedLegacyTokenEnv) warnings.push(`Using legacy environment token fallback for ${ref.kind}:${ref.instanceId}; prefer a namespaced PiRelay messenger config with tokenEnv.`);
 
@@ -132,6 +143,9 @@ function resolveMessengerInstance(input: {
     tokenEnv: config.tokenEnv,
     signingSecret,
     signingSecretEnv: config.signingSecretEnv,
+    appToken,
+    appTokenEnv: config.appTokenEnv,
+    botUserId: config.botUserId ?? envBotUserId(env, ref.kind),
     applicationId: config.applicationId ?? config.clientId ?? envApplicationId(env, ref.kind),
     clientId: config.clientId ?? config.applicationId ?? envApplicationId(env, ref.kind),
     eventMode: config.eventMode,
@@ -161,10 +175,12 @@ function addDefaultEnvMessengers(fileConfig: RelayConfigFile, env: NodeJS.Proces
 
   if (!messengers.telegram?.default && env.TELEGRAM_BOT_TOKEN) ensure("telegram").tokenEnv = "TELEGRAM_BOT_TOKEN";
   if (!messengers.discord?.default && env.PI_RELAY_DISCORD_BOT_TOKEN) ensure("discord").tokenEnv = "PI_RELAY_DISCORD_BOT_TOKEN";
-  if (!messengers.slack?.default && (env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET)) {
+  if (!messengers.slack?.default && (env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET || env.PI_RELAY_SLACK_APP_TOKEN || env.PI_RELAY_SLACK_BOT_USER_ID)) {
     const slack = ensure("slack");
     if (env.PI_RELAY_SLACK_BOT_TOKEN) slack.tokenEnv = "PI_RELAY_SLACK_BOT_TOKEN";
     if (env.PI_RELAY_SLACK_SIGNING_SECRET) slack.signingSecretEnv = "PI_RELAY_SLACK_SIGNING_SECRET";
+    if (env.PI_RELAY_SLACK_APP_TOKEN) slack.appTokenEnv = "PI_RELAY_SLACK_APP_TOKEN";
+    if (env.PI_RELAY_SLACK_BOT_USER_ID) slack.botUserId = env.PI_RELAY_SLACK_BOT_USER_ID;
   }
 
   return canonical;
@@ -185,7 +201,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
   if (env.TELEGRAM_BOT_TOKEN || env.PI_TELEGRAM_TUNNEL_STATE_DIR || env.PI_TELEGRAM_TUNNEL_CONFIG) {
     warnings.push("Using legacy Telegram tunnel environment fallback; prefer namespaced PiRelay config and tokenEnv settings.");
   }
-  if (env.PI_RELAY_DISCORD_BOT_TOKEN || env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET) {
+  if (env.PI_RELAY_DISCORD_BOT_TOKEN || env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET || env.PI_RELAY_SLACK_APP_TOKEN) {
     warnings.push("Using legacy top-level messenger environment fallback; prefer namespaced PiRelay messenger config with tokenEnv/signingSecretEnv.");
   }
 
@@ -194,6 +210,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
     stateDir: expandHome(fileConfig.relay?.stateDir ?? env.PI_RELAY_STATE_DIR ?? env.PI_TELEGRAM_TUNNEL_STATE_DIR ?? fileConfig.stateDir ?? DEFAULT_PIRELAY_STATE_DIR),
     displayName: fileConfig.relay?.displayName ?? env.PI_RELAY_MACHINE_DISPLAY_NAME,
     aliases: relayMachineAliases(fileConfig, env),
+    brokerNamespace: fileConfig.relay?.brokerNamespace ?? env.PI_RELAY_BROKER_NAMESPACE,
     brokerGroup: fileConfig.relay?.brokerGroup ?? env.PI_RELAY_BROKER_GROUP,
     brokerPeers: fileConfig.relay?.brokerPeers ?? [],
   };

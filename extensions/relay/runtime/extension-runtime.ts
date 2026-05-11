@@ -10,6 +10,7 @@ import { TunnelStateStore } from "../state/tunnel-store.js";
 import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, RelayPairingIdentity, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
 import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
+import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
 import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
 import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback } from "../config/setup-wizard.js";
@@ -120,6 +121,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let configCache: TelegramTunnelConfig | undefined;
   let runtime: TunnelRuntime | undefined;
   const discordRuntimes = new Map<string, DiscordRuntime>();
+  const slackRuntimes = new Map<string, SlackRuntime>();
   let currentRoute: SessionRoute | undefined;
   let latestContext: ExtensionContext | undefined;
   let closeConnectQrScreen: (() => void) | undefined;
@@ -176,6 +178,36 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtimes;
   }
 
+  function slackInstanceIds(config: TelegramTunnelConfig): string[] {
+    const ids = Object.entries(config.slackInstances ?? {})
+      .filter(([, slack]) => slack.enabled && slack.botToken)
+      .map(([instanceId]) => instanceId);
+    if (ids.length === 0 && config.slack?.enabled && config.slack.botToken) return ["default"];
+    return ids;
+  }
+
+  async function ensureSlackRuntime(ctx?: ExtensionContext, interactiveNotice = false, instanceId = "default"): Promise<SlackRuntime | undefined> {
+    const existing = slackRuntimes.get(instanceId);
+    if (existing) return existing;
+    const config = await ensureConfig(ctx, interactiveNotice);
+    const slackConfig = config.slackInstances?.[instanceId] ?? (instanceId === "default" ? config.slack : undefined);
+    if (!slackConfig?.enabled || !slackConfig.botToken) return undefined;
+    const { getOrCreateSlackRuntime } = await import("../adapters/slack/runtime.js");
+    const slack = getOrCreateSlackRuntime(config, undefined, instanceId);
+    if (slack) slackRuntimes.set(instanceId, slack);
+    return slack;
+  }
+
+  async function ensureAllSlackRuntimes(ctx?: ExtensionContext, interactiveNotice = false): Promise<SlackRuntime[]> {
+    const config = await ensureConfig(ctx, interactiveNotice);
+    const runtimes: SlackRuntime[] = [];
+    for (const instanceId of slackInstanceIds(config)) {
+      const runtime = await ensureSlackRuntime(ctx, interactiveNotice, instanceId);
+      if (runtime) runtimes.push(runtime);
+    }
+    return runtimes;
+  }
+
   async function startDiscordRuntime(ctx: ExtensionContext, discord: DiscordRuntime, failHard = false): Promise<boolean> {
     if (discord.getStatus().started) {
       ctx.ui.setStatus("discord-relay", "discord: ready");
@@ -190,6 +222,31 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const safeMessage = redactSecrets(message);
       ctx.ui.setStatus("discord-relay", `discord error: ${safeMessage}`);
       if (failHard) throw new Error(`Discord runtime failed to start: ${safeMessage}`);
+      return false;
+    }
+  }
+
+  async function startSlackRuntime(ctx: ExtensionContext, slack: SlackRuntime, failHard = false): Promise<boolean> {
+    if (slack.getStatus().started) {
+      ctx.ui.setStatus("slack-relay", "slack: ready");
+      return true;
+    }
+    try {
+      await slack.start();
+      const status = slack.getStatus();
+      if (!status.started) {
+        const safeMessage = redactSecrets(status.error || "Slack runtime did not start.");
+        ctx.ui.setStatus("slack-relay", `slack error: ${safeMessage}`);
+        if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
+        return false;
+      }
+      ctx.ui.setStatus("slack-relay", "slack: ready");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const safeMessage = redactSecrets(message);
+      ctx.ui.setStatus("slack-relay", `slack error: ${safeMessage}`);
+      if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
       return false;
     }
   }
@@ -356,18 +413,29 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     let config: TelegramTunnelConfig;
     try {
       config = await ensureConfig();
-    } catch {
+    } catch (error) {
       currentRoute = undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.setStatus("relay", `relay config error: ${redactSecrets(message)}`);
       return;
     }
 
     const restoredBinding = await restoreBinding(ctx, config);
     currentRoute = buildRoute(ctx, restoredBinding);
-    runtime = await ensureRuntime();
-    await runtime.registerRoute(currentRoute);
     for (const discord of await ensureAllDiscordRuntimes()) {
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, false);
+    }
+    for (const slack of await ensureAllSlackRuntimes()) {
+      await slack.registerRoute(currentRoute);
+      await startSlackRuntime(ctx, slack, false);
+    }
+    try {
+      runtime = await ensureRuntime();
+      await runtime.registerRoute(currentRoute);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.setStatus("relay-sync", `telegram sync error: ${redactSecrets(message)}`);
     }
     if (restoredBinding) {
       ctx.ui.setStatus("relay", `telegram: connected to ${restoredBinding.chatId}`);
@@ -485,6 +553,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, false);
     }
+    for (const slack of await ensureAllSlackRuntimes(ctx, true)) {
+      await slack.registerRoute(currentRoute);
+      await startSlackRuntime(ctx, slack, false);
+    }
     const store = new TunnelStateStore(config.stateDir);
     const { nonce, pairing } = await store.createPendingPairing({
       channel: "telegram",
@@ -550,6 +622,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       if (!discord) throw new Error("Discord runtime is not configured. Run /relay setup discord or /relay doctor for details.");
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, true);
+    }
+    if (channel === "slack") {
+      const slack = await ensureSlackRuntime(ctx, true, instanceId);
+      if (!slack) throw new Error("Slack runtime is not configured. Run /relay setup slack or /relay doctor for details.");
+      await slack.registerRoute(currentRoute);
+      await startSlackRuntime(ctx, slack, true);
     }
     const store = new TunnelStateStore(config.stateDir);
     const { nonce, pairing } = await store.createPendingPairing({
@@ -647,6 +725,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     for (const discordRuntime of discordRuntimes.values()) {
       await discordRuntime.unregisterRoute(disconnectedRoute.sessionKey);
+    }
+    for (const slackRuntime of slackRuntimes.values()) {
+      await slackRuntime.unregisterRoute(disconnectedRoute.sessionKey);
     }
     currentRoute = undefined;
     ctx.ui.setStatus("relay", "relay: disconnected");
@@ -751,6 +832,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (runtime && currentRoute) {
       await runtime.unregisterRoute(currentRoute.sessionKey);
     }
+    if (currentRoute) {
+      for (const slackRuntime of slackRuntimes.values()) await slackRuntime.unregisterRoute(currentRoute.sessionKey);
+    }
   });
 
   pi.on("session_tree", async (_event, ctx) => {
@@ -840,7 +924,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
   pi.on("agent_end", async (event, ctx) => {
     latestContext = ctx;
-    if (!currentRoute || !runtime) return;
+    if (!currentRoute) return;
     currentRoute.actions.context = ctx;
     currentRoute.lastActivityAt = Date.now();
 
@@ -906,9 +990,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     publishRouteStateSoon();
-    await sendSessionNotification(runtime, currentRoute, status);
+    if (runtime) await sendSessionNotification(runtime, currentRoute, status);
     for (const discord of await ensureAllDiscordRuntimes()) {
       await discord.notifyTurnCompleted(currentRoute, status);
+    }
+    for (const slack of await ensureAllSlackRuntimes()) {
+      await slack.notifyTurnCompleted(currentRoute, status);
     }
   });
 }

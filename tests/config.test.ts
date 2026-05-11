@@ -38,8 +38,10 @@ describe("telegram tunnel config", () => {
       PI_RELAY_DISCORD_ALLOW_USER_IDS: "u1,u2",
       PI_RELAY_SLACK_BOT_TOKEN: "slack-file-env-style",
       PI_RELAY_SLACK_SIGNING_SECRET: "slack-secret-file-env-style",
+      PI_RELAY_SLACK_APP_TOKEN: "xapp-file-env-style",
       PI_RELAY_SLACK_EVENT_MODE: "webhook",
       PI_RELAY_SLACK_WORKSPACE_ID: "T-file",
+      PI_RELAY_SLACK_BOT_USER_ID: "U-file",
     }));
     vi.stubEnv("PI_TELEGRAM_TUNNEL_CONFIG", configPath);
 
@@ -55,7 +57,9 @@ describe("telegram tunnel config", () => {
       enabled: true,
       botToken: "slack-file-env-style",
       signingSecret: "slack-secret-file-env-style",
+      appToken: "xapp-file-env-style",
       workspaceId: "T-file",
+      botUserId: "U-file",
       eventMode: "webhook",
     });
   });
@@ -70,18 +74,21 @@ describe("telegram tunnel config", () => {
       slack: { botToken: "slack-file", signingSecret: "secret-file", workspaceId: "T-file", eventMode: "webhook" },
     }));
     vi.stubEnv("PI_TELEGRAM_TUNNEL_CONFIG", configPath);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
     vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-env");
     vi.stubEnv("PI_RELAY_DISCORD_CLIENT_ID", "client-env");
     vi.stubEnv("PI_RELAY_DISCORD_ALLOW_USER_IDS", "u1,u2");
     vi.stubEnv("PI_RELAY_SLACK_BOT_TOKEN", "slack-env");
     vi.stubEnv("PI_RELAY_SLACK_SIGNING_SECRET", "secret-env");
+    vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "xapp-env");
     vi.stubEnv("PI_RELAY_SLACK_WORKSPACE_ID", "T-env");
+    vi.stubEnv("PI_RELAY_SLACK_BOT_USER_ID", "U-env");
     vi.stubEnv("PI_RELAY_SLACK_EVENT_MODE", "webhook");
 
     const { config } = await loadTelegramTunnelConfig();
 
     expect(config.discord).toMatchObject({ enabled: true, botToken: "discord-env", clientId: "client-env", allowUserIds: ["u1", "u2"] });
-    expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-env", signingSecret: "secret-env", workspaceId: "T-env", eventMode: "webhook" });
+    expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-env", signingSecret: "secret-env", appToken: "xapp-env", workspaceId: "T-env", botUserId: "U-env", eventMode: "webhook" });
     expect(config.botToken).toBe("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
   });
 
@@ -95,12 +102,13 @@ describe("telegram tunnel config", () => {
       messengers: {
         telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", allowUserIds: ["1001"] } },
         discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", clientId: "client-canonical", limits: { maxTextChars: 1500 } } },
-        slack: { default: { botToken: "slack-file", signingSecretEnv: "SLACK_SECRET", eventMode: "webhook", workspaceId: "T-canonical" } },
+        slack: { default: { botToken: "slack-file", signingSecretEnv: "SLACK_SECRET", appTokenEnv: "SLACK_APP_TOKEN", eventMode: "webhook", workspaceId: "T-canonical", botUserId: "U-canonical" } },
       },
     }));
     vi.stubEnv("PI_RELAY_CONFIG", configPath);
     vi.stubEnv("DISCORD_TOKEN", "discord-env-token");
     vi.stubEnv("SLACK_SECRET", "slack-env-secret");
+    vi.stubEnv("SLACK_APP_TOKEN", "xapp-canonical");
 
     const { config } = await loadTelegramTunnelConfig();
 
@@ -110,7 +118,7 @@ describe("telegram tunnel config", () => {
     expect(config.maxTelegramMessageChars).toBe(2000);
     expect(config.allowUserIds).toEqual([1001]);
     expect(config.discord).toMatchObject({ enabled: true, botToken: "discord-env-token", clientId: "client-canonical", maxTextChars: 1500 });
-    expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-file", signingSecret: "slack-env-secret", eventMode: "webhook", workspaceId: "T-canonical" });
+    expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-file", signingSecret: "slack-env-secret", appToken: "xapp-canonical", eventMode: "webhook", workspaceId: "T-canonical", botUserId: "U-canonical" });
   });
 
   it("accepts Discord applicationId as the preferred Application ID field", async () => {

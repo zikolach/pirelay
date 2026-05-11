@@ -30,8 +30,10 @@ interface ConfigFileShape extends RelayConfigFile {
   PI_RELAY_SLACK_ENABLED?: string;
   PI_RELAY_SLACK_BOT_TOKEN?: string;
   PI_RELAY_SLACK_SIGNING_SECRET?: string;
+  PI_RELAY_SLACK_APP_TOKEN?: string;
   PI_RELAY_SLACK_EVENT_MODE?: string;
   PI_RELAY_SLACK_WORKSPACE_ID?: string;
+  PI_RELAY_SLACK_BOT_USER_ID?: string;
   PI_RELAY_SLACK_ALLOW_USER_IDS?: string;
   PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES?: string;
   PI_RELAY_SLACK_MAX_TEXT_CHARS?: string;
@@ -188,6 +190,10 @@ function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, 
     ?? resolveConfigSecret(slackConfig?.signingSecret, slackConfig?.signingSecretEnv)
     ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_SIGNING_SECRET : undefined)
     ?? (useLegacyFallback ? legacyConfig?.signingSecret : undefined);
+  const appToken = (useLegacyFallback ? process.env.PI_RELAY_SLACK_APP_TOKEN : undefined)
+    ?? resolveConfigSecret(slackConfig?.appToken, slackConfig?.appTokenEnv)
+    ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_APP_TOKEN : undefined)
+    ?? (useLegacyFallback ? legacyConfig?.appToken : undefined);
   const enabled = parseBoolean(
     (useLegacyFallback ? process.env.PI_RELAY_SLACK_ENABLED : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ENABLED : undefined),
     slackConfig?.enabled ?? (useLegacyFallback ? legacyConfig?.enabled : undefined) ?? Boolean(botToken && signingSecret),
@@ -197,8 +203,10 @@ function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, 
     enabled,
     botToken,
     signingSecret,
+    appToken,
     eventMode: resolveSlackEventMode((useLegacyFallback ? process.env.PI_RELAY_SLACK_EVENT_MODE : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_EVENT_MODE : undefined) ?? slackConfig?.eventMode ?? (useLegacyFallback ? legacyConfig?.eventMode : undefined)),
     workspaceId: (useLegacyFallback ? process.env.PI_RELAY_SLACK_WORKSPACE_ID : undefined) ?? slackConfig?.workspaceId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_WORKSPACE_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.workspaceId : undefined),
+    botUserId: (useLegacyFallback ? process.env.PI_RELAY_SLACK_BOT_USER_ID : undefined) ?? slackConfig?.botUserId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_BOT_USER_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.botUserId : undefined),
     allowUserIds: parseStringList((useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOW_USER_IDS : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOW_USER_IDS : undefined)) ?? slackConfig?.allowUserIds ?? (useLegacyFallback ? legacyConfig?.allowUserIds : undefined) ?? [],
     allowChannelMessages: parseBoolean(
       (useLegacyFallback ? process.env.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES : undefined) ?? configString(useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES : undefined),
@@ -213,7 +221,7 @@ function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, 
 
 function resolveSlackConfigs(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): Record<string, SlackRelayConfig> {
   const instanceIds = new Set(Object.keys(fileConfig?.messengers?.slack ?? {}));
-  if (fileConfig?.slack || fileConfig?.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_SIGNING_SECRET || process.env.PI_RELAY_SLACK_ENABLED) instanceIds.add("default");
+  if (fileConfig?.slack || fileConfig?.PI_RELAY_SLACK_BOT_TOKEN || fileConfig?.PI_RELAY_SLACK_APP_TOKEN || process.env.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_SIGNING_SECRET || process.env.PI_RELAY_SLACK_APP_TOKEN || process.env.PI_RELAY_SLACK_ENABLED) instanceIds.add("default");
   const configs: Record<string, SlackRelayConfig> = {};
   for (const instanceId of instanceIds) {
     const config = resolveSlackConfigForInstance(fileConfig, defaultImageMimeTypes, instanceId);
@@ -269,6 +277,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   const stateDir = expandHome(process.env.PI_RELAY_STATE_DIR || process.env.PI_TELEGRAM_TUNNEL_STATE_DIR || fileConfig?.relay?.stateDir || fileConfig?.stateDir || DEFAULT_STATE_DIR);
   const machineId = fileConfig?.relay?.machineId ?? fileConfig?.relay?.machine?.id ?? process.env.PI_RELAY_MACHINE_ID;
   const machineDisplayName = fileConfig?.relay?.displayName ?? process.env.PI_RELAY_MACHINE_DISPLAY_NAME;
+  const brokerNamespace = fileConfig?.relay?.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE;
   const machineAliases = [...new Set([...(fileConfig?.relay?.aliases ?? []), ...(parseStringList(process.env.PI_RELAY_MACHINE_ALIASES) ?? [])].map((alias) => alias.trim()).filter(Boolean))];
   const busyDeliveryMode = (process.env.PI_TELEGRAM_TUNNEL_BUSY_MODE || fileConfig?.defaults?.busyDeliveryMode || fileConfig?.busyDeliveryMode || "followUp") as
     | "followUp"
@@ -378,6 +387,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     machineId,
     machineDisplayName,
     machineAliases,
+    brokerNamespace,
     pairingExpiryMs,
     busyDeliveryMode,
     allowUserIds,

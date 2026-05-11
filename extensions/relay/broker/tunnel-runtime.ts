@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
+import { normalizeBrokerNamespace } from "./supervisor.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const BROKER_CHANNEL = "telegram" as const;
@@ -48,6 +50,8 @@ function relayPipelineProtocolError(pipeline: unknown): string | undefined {
 export class BrokerTunnelRuntime implements TunnelRuntime {
   private readonly clientId = randomUUID();
   private readonly socketPath: string;
+  private readonly pidPath: string;
+  private readonly brokerNamespace?: string;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private socket?: Socket;
@@ -57,7 +61,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private setupCache?: SetupCache;
 
   constructor(private readonly config: TelegramTunnelConfig) {
-    this.socketPath = resolve(config.stateDir, `broker-${sha256(config.botToken).slice(0, 16)}.sock`);
+    this.brokerNamespace = normalizeBrokerNamespace(config.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE);
+    const tokenHash = sha256(config.botToken).slice(0, 16);
+    const brokerName = this.brokerNamespace ? `broker-${this.brokerNamespace}-${tokenHash}` : `broker-${tokenHash}`;
+    this.socketPath = resolve(config.stateDir, `${brokerName}.sock`);
+    this.pidPath = resolve(config.stateDir, `${brokerName}.pid`);
   }
 
   get setup(): SetupCache | undefined {
@@ -345,15 +353,19 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   private async spawnBroker(): Promise<void> {
     const brokerPath = fileURLToPath(new URL("./process.js", import.meta.url));
-    spawn(process.execPath, [brokerPath], {
+    const child = spawn(process.execPath, [brokerPath], {
       detached: true,
       stdio: "ignore",
       env: {
         ...process.env,
         TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify(this.config),
         TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: this.socketPath,
+        TELEGRAM_TUNNEL_BROKER_PID_PATH: this.pidPath,
+        PI_RELAY_BROKER_NAMESPACE: this.brokerNamespace ?? "",
       },
-    }).unref();
+    });
+    child.unref();
+    if (child.pid) await writeFile(this.pidPath, `${child.pid}\n`, { mode: 0o600 });
   }
 
   private async waitForSocketReady(): Promise<void> {

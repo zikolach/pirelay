@@ -98,6 +98,7 @@ const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts
 const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
+const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 if (!socketPath || !config?.botToken || !config?.stateDir) {
@@ -2035,6 +2036,7 @@ async function handleClientRequest(socket, message) {
 
 await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
 try { await unlink(socketPath); } catch {}
+if (pidPath) await writeFile(pidPath, `${process.pid}\n`, { mode: 0o600 }).catch(() => undefined);
 
 const server = net.createServer((socket) => {
   socket.setEncoding('utf8');
@@ -2076,6 +2078,7 @@ const shutdown = async () => {
   clearAllProgressStates();
   server.close();
   try { await unlink(socketPath); } catch {}
+  if (pidPath) { try { await unlink(pidPath); } catch {} }
   process.exit(0);
 };
 

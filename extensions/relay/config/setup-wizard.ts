@@ -82,8 +82,8 @@ export function setupMetadataForChannel(channel: RelaySetupChannel): RelayAdapte
       return {
         channel,
         title: "Slack setup",
-        requiredCredentials: ["PI_RELAY_SLACK_BOT_TOKEN or slack.tokenEnv", "PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv"],
-        optionalCredentials: ["slack.workspaceId"],
+        requiredCredentials: ["PI_RELAY_SLACK_BOT_TOKEN or slack.tokenEnv", "PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv", "PI_RELAY_SLACK_APP_TOKEN or slack.appTokenEnv for Socket Mode"],
+        optionalCredentials: ["slack.workspaceId", "slack.botUserId fallback"],
         platformLinks: [{ label: "Slack apps", url: "https://api.slack.com/apps" }],
         safetyNotes: ["Socket Mode is recommended for local Pi usage.", "Keep Slack DM-first unless channel messages are explicitly required.", "Use allowUserIds and workspaceId boundaries for safety."],
       };
@@ -112,7 +112,9 @@ function slackChecklist(config: SlackRelayConfig | undefined): RelaySetupWizardC
   return [
     checklistItem("Bot token", Boolean(config?.enabled && config.botToken), "Set PI_RELAY_SLACK_BOT_TOKEN or messengers.slack.default.tokenEnv."),
     checklistItem("Signing secret", Boolean(config?.signingSecret), "Set PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv."),
+    checklistItem("Socket Mode app token", config?.eventMode === "webhook" || Boolean(config?.appToken), "Set PI_RELAY_SLACK_APP_TOKEN or slack.appTokenEnv to an app-level token with connections:write."),
     checklistItem("Workspace boundary", Boolean(config?.workspaceId), "Set slack.workspaceId to restrict the app to the expected workspace.", { warningWhenFalse: true }),
+    checklistItem("Bot user id", Boolean(config?.botUserId), "Optional fallback; runtime normally discovers bot user id via auth.test.", { warningWhenFalse: true }),
     checklistItem("Event mode", true, `Current mode: ${config?.eventMode ?? "socket"}. Socket Mode is recommended for local Pi usage.`),
     checklistItem("DM-first safety", !config?.allowChannelMessages, "Keep channel messages disabled unless explicitly needed.", { warningWhenFalse: true }),
     checklistItem("Allow-list", Boolean(config?.allowUserIds?.length), "Set allowUserIds before enabling broad Slack control.", { warningWhenFalse: true }),
@@ -137,7 +139,7 @@ function envSnippetForChannel(channel: RelaySetupChannel): string[] {
     case "discord":
       return ["# Discord", "export PI_RELAY_DISCORD_ENABLED=true", "export PI_RELAY_DISCORD_BOT_TOKEN=<discord-bot-token>", "export PI_RELAY_DISCORD_APPLICATION_ID=<discord-application-id>"];
     case "slack":
-      return ["# Slack", "export PI_RELAY_SLACK_ENABLED=true", "export PI_RELAY_SLACK_BOT_TOKEN=<slack-bot-token>", "export PI_RELAY_SLACK_SIGNING_SECRET=<slack-signing-secret>"];
+      return ["# Slack", "export PI_RELAY_SLACK_ENABLED=true", "export PI_RELAY_SLACK_BOT_TOKEN=<slack-bot-token>", "export PI_RELAY_SLACK_SIGNING_SECRET=<slack-signing-secret>", "export PI_RELAY_SLACK_APP_TOKEN=<slack-app-level-token>"];
   }
 }
 
@@ -153,7 +155,7 @@ function jsonSnippetForChannel(channel: RelaySetupChannel): string[] {
       ];
     case "slack":
       return [
-        JSON.stringify({ messengers: { slack: { default: { enabled: true, tokenEnv: "PI_RELAY_SLACK_BOT_TOKEN", signingSecretEnv: "PI_RELAY_SLACK_SIGNING_SECRET", workspaceId: "<workspace-id>", allowUserIds: ["<slack-user-id>"] } } } }, null, 2),
+        JSON.stringify({ messengers: { slack: { default: { enabled: true, tokenEnv: "PI_RELAY_SLACK_BOT_TOKEN", signingSecretEnv: "PI_RELAY_SLACK_SIGNING_SECRET", appTokenEnv: "PI_RELAY_SLACK_APP_TOKEN", workspaceId: "<workspace-id>", allowUserIds: ["<slack-user-id>"] } } } }, null, 2),
       ];
   }
 }
