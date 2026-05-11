@@ -545,7 +545,7 @@ describe("SlackRuntime foundations", () => {
   it("routes Slack channel commands after channel pairing", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
-    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true };
+    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true, allowUserIds: ["U_DRIVER", "U_OTHER"] };
     const testRoute = route();
     const store = new TunnelStateStore(runtimeConfig.stateDir);
     const { nonce } = await store.createPendingPairing({
@@ -565,10 +565,14 @@ describe("SlackRuntime foundations", () => {
     await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
     const sendCount = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
     const postCount = operations.posts.length;
-    await operations.handler!({ type: "event_callback", envelopeId: "channel-plain-env", eventId: "channel-plain-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "ordinary channel chatter", ts: "70.5", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "channel-other-plain-env", eventId: "channel-other-plain-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_OTHER", text: "ordinary channel chatter", ts: "70.5", team: "T1" } });
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(sendCount);
     expect(operations.posts).toHaveLength(postCount);
 
+    await operations.handler!({ type: "event_callback", envelopeId: "channel-bound-plain-env", eventId: "channel-bound-plain-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "ordinary channel prompt", ts: "70.6", team: "T1" } });
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("ordinary channel prompt");
+
+    await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
     await operations.handler!({ type: "event_callback", envelopeId: "channel-status-env", eventId: "channel-status-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "pirelay status", ts: "71", team: "T1" } });
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", text: expect.stringContaining("Session: Docs") });
