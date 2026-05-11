@@ -7,7 +7,7 @@ import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { formatFullOutput, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
-import { formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
+import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 
@@ -461,7 +461,8 @@ export class SlackRuntime {
       case "notify": {
         const mode = normalizeProgressMode(command.args);
         if (!mode) {
-          await this.sendText(message, "Usage: pirelay progress <quiet|normal|verbose|completion-only>");
+          const currentMode = displayProgressMode(progressModeFor({ progressMode: channelProgressMode(binding) }, this.config));
+          await this.sendText(message, `Progress mode: ${currentMode}\nUsage: pirelay progress <quiet|normal|verbose|completion-only>`);
           return;
         }
         const next = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, progressMode: mode }, instanceId: this.instanceId, lastSeenAt: new Date().toISOString() });

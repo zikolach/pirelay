@@ -461,6 +461,13 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("do not prefix commands with `/`");
     await send("/status", "41");
     expect(operations.posts.at(-1)?.text).toContain("Session: Docs");
+    await send("/progress", "41.1");
+    expect(operations.posts.at(-1)?.text).toContain("Progress mode: normal");
+    expect(operations.posts.at(-1)?.text).toContain("Usage: pirelay progress <quiet|normal|verbose|completion-only>");
+    await send("/progress verbose", "41.2");
+    expect(operations.posts.at(-1)?.text).toContain("Progress notifications set to verbose");
+    await send("/progress", "41.3");
+    expect(operations.posts.at(-1)?.text).toContain("Progress mode: verbose");
     await send("/sessions", "42");
     expect(operations.posts.at(-1)?.text).toContain("Docs");
     await send("/use Docs", "42.5");
