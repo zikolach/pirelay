@@ -435,6 +435,12 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", text: expect.stringContaining("Slack paired") });
 
     await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
+    const sendCount = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
+    const postCount = operations.posts.length;
+    await operations.handler!({ type: "event_callback", envelopeId: "channel-plain-env", eventId: "channel-plain-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "ordinary channel chatter", ts: "70.5", team: "T1" } });
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(sendCount);
+    expect(operations.posts).toHaveLength(postCount);
+
     await operations.handler!({ type: "event_callback", envelopeId: "channel-status-env", eventId: "channel-status-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "pirelay status", ts: "71", team: "T1" } });
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", text: expect.stringContaining("Session: Docs") });

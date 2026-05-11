@@ -22,7 +22,7 @@ describe("clipboard helpers", () => {
     tempDirs.push(dir);
     const script = join(dir, "copy.sh");
     const output = join(dir, "clipboard.txt");
-    await writeFile(script, "#!/bin/sh\ncat > \"$PI_RELAY_TEST_CLIPBOARD_OUT\"\n", { mode: 0o700 });
+    await writeFile(script, "#!/bin/sh\n/bin/cat > \"$PI_RELAY_TEST_CLIPBOARD_OUT\"\n", { mode: 0o700 });
     await chmod(script, 0o700);
 
     const result = await copyTextToClipboard("hello clipboard", {
@@ -31,6 +31,23 @@ describe("clipboard helpers", () => {
 
     expect(result).toMatchObject({ ok: true, command: script });
     await expect(readFile(output, "utf8")).resolves.toBe("hello clipboard");
+  });
+
+  it("uses the platform override for PATH command lookup", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-clipboard-platform-"));
+    tempDirs.push(dir);
+    const script = join(dir, "clip.exe");
+    const output = join(dir, "clipboard.txt");
+    await writeFile(script, "#!/bin/sh\n/bin/cat > \"$PI_RELAY_TEST_CLIPBOARD_OUT\"\n", { mode: 0o700 });
+    await chmod(script, 0o700);
+
+    const result = await copyTextToClipboard("windows-ish clipboard", {
+      platform: "win32",
+      env: { PATH: `/missing;${dir}`, PI_RELAY_TEST_CLIPBOARD_OUT: output },
+    });
+
+    expect(result).toMatchObject({ ok: true, command: "clip.exe" });
+    await expect(readFile(output, "utf8")).resolves.toBe("windows-ish clipboard");
   });
 
   it("reports unavailable clipboard commands", async () => {

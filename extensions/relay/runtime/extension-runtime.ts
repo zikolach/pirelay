@@ -562,11 +562,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     const preview = computeRelaySetupConfigPatchFromEnv(channel);
-    if (preview.missingRequiredEnvVars.length > 0) {
+    if (preview.missingRequiredEnvVars.length > 0 || preview.invalidEnvVars.length > 0) {
       ctx.ui.notify([
-        `Cannot write ${channel} config yet: required env vars are missing.`,
-        `Missing: ${preview.missingRequiredEnvVars.join(", ")}`,
-        `Use the setup wizard's copy env snippet action to copy placeholder exports to the clipboard.`,
+        `Cannot write ${channel} config yet: environment variables need attention.`,
+        ...(preview.missingRequiredEnvVars.length > 0 ? [`Missing: ${preview.missingRequiredEnvVars.join(", ")}`] : []),
+        ...(preview.invalidEnvVars.length > 0 ? [`Invalid: ${preview.invalidEnvVars.join(", ")}`] : []),
+        `Use the setup wizard's copy env snippet action to copy placeholder exports to the clipboard, then fix your environment and retry.`,
       ].join("\n"), "warning");
       return;
     }

@@ -648,6 +648,34 @@ describe("PiRelay integration behavior", () => {
     expect(notifications.at(-1)?.message).toContain("Skipped PiRelay discord config update");
   });
 
+  it("does not write setup config when env vars are invalid", async () => {
+    const config = await createRuntimeConfig("pi-setup-write-invalid-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath!);
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-secret-token");
+    vi.stubEnv("PI_RELAY_DISCORD_APPLICATION_ID", "123456789012345678");
+    vi.stubEnv("PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS", "sometimes");
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("setup-write-invalid");
+    context.ui.custom = vi.fn(async (factory: (...args: any[]) => { handleInput?: (data: string) => void } | undefined) => {
+      let result: unknown;
+      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, (value: unknown) => {
+        result = value;
+      });
+      screen?.handleInput?.("w");
+      return result;
+    });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "setup discord", context);
+
+    expect(context.ui.confirm).not.toHaveBeenCalled();
+    await expect(readFile(config.configPath!, "utf8")).rejects.toThrow();
+    expect(notifications.at(-1)?.message).toContain("Invalid: PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS");
+  });
+
   it("does not write setup config when required env vars are missing", async () => {
     const config = await createRuntimeConfig("pi-setup-write-missing-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
