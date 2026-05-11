@@ -1364,6 +1364,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         this.clearProgressState(route);
         await this.store.upsertBinding(binding);
         route.actions.persistBinding(binding, false);
+        route.actions.refreshLocalStatus?.();
         await this.api.sendPlainText(message.chat.id, "Tunnel paused. Remote prompts and notifications are suspended until /resume.");
         return;
       }
@@ -1371,6 +1372,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         binding.paused = false;
         await this.store.upsertBinding(binding);
         route.actions.persistBinding(binding, false);
+        route.actions.refreshLocalStatus?.();
         await this.api.sendPlainText(message.chat.id, "Tunnel resumed.");
         return;
       }
@@ -1379,6 +1381,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         this.clearActivityIndicator(route);
         this.clearProgressState(route);
         await this.revokeBinding(route, `Telegram ${getTelegramUserLabel(message.user)} disconnected the tunnel.`);
+        route.actions.refreshLocalStatus?.();
         await this.api.sendPlainText(message.chat.id, "Disconnected. Future messages from this chat will be ignored until a new pairing is created.");
         return;
       }

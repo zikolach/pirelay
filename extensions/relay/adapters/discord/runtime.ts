@@ -485,6 +485,7 @@ export class DiscordRuntime {
         this.recentBindingBySessionKey.delete(binding.sessionKey);
         await this.clearActiveSelection(message, binding.sessionKey);
         route.actions.appendAudit("Discord relay disconnected remotely.");
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Discord relay disconnected for this Pi session.");
         return;
       default:
@@ -612,6 +613,7 @@ export class DiscordRuntime {
     const updated = await this.store.upsertChannelBinding({ ...binding, paused });
     this.recentBindingBySessionKey.set(updated.sessionKey, updated);
     route.actions.appendAudit(paused ? "Discord relay paused remotely." : "Discord relay resumed remotely.");
+    route.actions.refreshLocalStatus?.();
     await this.sendText(message, paused ? "Relay paused. Remote prompts and notifications are suspended until /resume." : "Relay resumed.");
   }
 

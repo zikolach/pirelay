@@ -262,6 +262,7 @@ export interface SessionRouteActions {
   getImageByPath(relativePath: string): Promise<ImageFileLoadResult>;
   appendAudit(message: string): void;
   notifyLocal?(message: string, level?: "info" | "warning" | "error"): void;
+  refreshLocalStatus?(): void;
   persistBinding(binding: TelegramBindingMetadata | null, revoked?: boolean): void;
   promptLocalConfirmation(identity: RelayPairingIdentity): Promise<PairingApprovalDecision | boolean>;
   abort(): void;

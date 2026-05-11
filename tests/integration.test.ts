@@ -780,12 +780,13 @@ describe("PiRelay integration behavior", () => {
 
     const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
-    const { context, branch, setIdle } = createMockContext("local-after-pairing");
+    const { context, branch, setIdle, statuses } = createMockContext("local-after-pairing");
     relayExtension(pi.api as any);
     const renderer = pi.api.registerMessageRenderer.mock.calls.find((call) => call[0] === "relay-audit")?.[1];
     expect(renderer({ content: "Slack paired with U5FUPDYM9." }, {}, { fg: (_name: string, text: string) => text }).render(120)[0]).toBe("Relay › Slack paired with U5FUPDYM9.");
 
     await pi.runCommand("relay", "connect telegram", context);
+    expect(statuses).toContainEqual({ key: "relay", value: "telegram: ready unpaired" });
     const route = [...registeredRoutes.values()][0];
     expect(route).toBeDefined();
 
@@ -796,6 +797,8 @@ describe("PiRelay integration behavior", () => {
     route!.binding = binding;
     route!.actions.persistBinding(binding, false);
     route!.actions.appendAudit("Telegram relay paired with @owner.");
+    route!.actions.notifyLocal?.("Telegram paired with @owner for docs.", "info");
+    await waitFor(() => statuses.some((entry) => entry.key === "relay" && entry.value === "telegram: paired dm"));
     branch.push(...pi.appendedEntries);
 
     blockFutureRouteSync = true;
@@ -848,13 +851,13 @@ describe("PiRelay integration behavior", () => {
     const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
     const { context } = createMockContext("explicit-label-session");
+    const store = new TunnelStateStore(config.stateDir);
     relayExtension(pi.api as any);
 
     await pi.runCommand("relay", "connect telegram docs team", context);
     const route = [...registeredRoutes.values()][0];
     expect(route?.sessionLabel).toBe("docs team");
 
-    const store = new TunnelStateStore(config.stateDir);
     const pending = Object.values((await store.load()).pendingPairings)[0];
     expect(pending?.sessionLabel).toBe("docs team");
   });
@@ -912,9 +915,15 @@ describe("PiRelay integration behavior", () => {
 
     expect(fakeDiscordRuntime.registerRoute).toHaveBeenCalled();
     expect(fakeDiscordRuntime.start).toHaveBeenCalledTimes(1);
-    expect(statuses).toContainEqual({ key: "discord-relay", value: "discord: ready" });
-    expect(notifications.at(-1)?.message).toContain("relay pair");
-    expect(notifications.at(-1)?.message).toContain("QR redirect unavailable");
+    expect(statuses).toContainEqual({ key: "discord-relay", value: "discord: ready unpaired" });
+    const discordRouteCall = fakeDiscordRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
+    const discordRoute = discordRouteCall?.[0] as SessionRoute;
+    const discordStore = new TunnelStateStore(config.stateDir);
+    await discordStore.upsertChannelBinding({ channel: "discord", instanceId: "default", conversationId: "D1", userId: "U1", sessionKey: discordRoute.sessionKey, sessionId: discordRoute.sessionId, sessionLabel: discordRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
+    discordRoute.actions.notifyLocal?.("Discord paired with U1 for docs.", "info");
+    await waitFor(() => statuses.some((entry) => entry.key === "discord-relay" && entry.value === "discord: paired dm"));
+    expect(notifications.some((entry) => entry.message.includes("relay pair"))).toBe(true);
+    expect(notifications.some((entry) => entry.message.includes("QR redirect unavailable"))).toBe(true);
     const store = new TunnelStateStore(config.stateDir);
     const pending = Object.values((await store.load()).pendingPairings)[0];
     expect(pending).toMatchObject({ channel: "discord", sessionLabel: "docs", codeKind: "pin" });
@@ -1045,7 +1054,7 @@ describe("PiRelay integration behavior", () => {
 
     const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
-    const { context, notifications } = createMockContext("slack-qr-session");
+    const { context, notifications, statuses } = createMockContext("slack-qr-session");
     const rendered: string[][] = [];
     let closeCount = 0;
     context.ui.custom = vi.fn((factory: (...args: any[]) => { render?: (width: number) => string[]; handleInput?: (data: string) => void } | undefined) => new Promise((resolve) => {
@@ -1076,20 +1085,23 @@ describe("PiRelay integration behavior", () => {
     expect(clipboardTexts.at(-1)).toMatch(/^pirelay pair \d{3}-\d{3}\n$/);
     expect(closeCount).toBe(0);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: ready unpaired" });
     expect(notifications.some((entry) => entry.message.includes("pairing command copied to clipboard"))).toBe(true);
     const registerCallsAfterConnect = fakeSlackRuntime.registerRoute.mock.calls.length;
     const routeForPairingCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
     const routeForPairing = routeForPairingCall?.[0] as SessionRoute;
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U5FUPDYM9", sessionKey: routeForPairing.sessionKey, sessionId: routeForPairing.sessionId, sessionLabel: routeForPairing.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
     routeForPairing.actions.notifyLocal?.("Slack paired with U5FUPDYM9 for docs.", "info");
     await connectPromise;
     expect(closeCount).toBe(1);
     expect(notifications.some((entry) => entry.message.includes("Slack pairing PIN ready"))).toBe(true);
     expect(notifications).toContainEqual({ message: "Slack paired with U5FUPDYM9 for docs.", level: "info" });
+    await waitFor(() => statuses.some((entry) => entry.key === "slack-relay" && entry.value === "slack: paired dm"));
     await pi.emit("agent_start", {}, context);
     expect(fakeSlackRuntime.registerRoute.mock.calls.length).toBeGreaterThan(registerCallsAfterConnect);
     const latestRegisterCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
     expect(latestRegisterCall?.[0]).toMatchObject({ notification: { lastStatus: "running", progressEvent: expect.objectContaining({ text: "Pi task started" }) } });
-    const store = new TunnelStateStore(config.stateDir);
     const pending = Object.values((await store.load()).pendingPairings)[0];
     expect(pending).toMatchObject({ channel: "slack", sessionLabel: "docs", codeKind: "pin" });
   });

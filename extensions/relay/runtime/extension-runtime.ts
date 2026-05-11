@@ -8,11 +8,12 @@ import { RelaySetupWizardScreen } from "../ui/setup-wizard.js";
 import { copyTextToClipboard } from "../ui/clipboard.js";
 import { getOrCreateTunnelRuntime, sendSessionNotification } from "../adapters/telegram/runtime.js";
 import { TunnelStateStore } from "../state/tunnel-store.js";
-import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, RelayPairingIdentity, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
+import type { BindingEntryData, ChannelPersistedBindingRecord, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, PersistedBindingRecord, RelayPairingIdentity, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
 import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
+import { formatRelayStatusLine, type RelayStatusLineBindingState, type RelayStatusLineChannel } from "./status-line.js";
 import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, slackAppRedirectUrl, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
 import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback, slackAppManifestText, type RelaySetupWizardActionId } from "../config/setup-wizard.js";
 import { computeRelaySetupConfigPatchFromEnv, envSnippetTextForSetupChannel, writeRelaySetupConfigFromEnv } from "../config/setup-env.js";
@@ -227,19 +228,76 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtimes;
   }
 
+  function statusKeyForChannel(channel: RelayStatusLineChannel): string {
+    return channel === "telegram" ? "relay" : `${channel}-relay`;
+  }
+
+  function telegramStatusBinding(binding: PersistedBindingRecord | TelegramBindingMetadata | undefined): RelayStatusLineBindingState | undefined {
+    if (!binding || "status" in binding && binding.status === "revoked") return undefined;
+    return { paused: binding.paused, conversationKind: "private" };
+  }
+
+  function channelStatusBinding(binding: ChannelPersistedBindingRecord | undefined): RelayStatusLineBindingState | undefined {
+    if (!binding || binding.status === "revoked") return undefined;
+    const conversationKind = typeof binding.metadata?.conversationKind === "string" ? binding.metadata.conversationKind : undefined;
+    return { paused: binding.paused, conversationKind };
+  }
+
+  async function currentStatusBinding(config: TelegramTunnelConfig, channel: RelayStatusLineChannel): Promise<RelayStatusLineBindingState | undefined> {
+    if (!currentRoute) return undefined;
+    const store = new TunnelStateStore(config.stateDir);
+    if (channel === "telegram") return telegramStatusBinding(currentRoute.binding ?? await store.getBindingBySessionKey(currentRoute.sessionKey));
+    return channelStatusBinding(await store.getChannelBindingBySessionKey(channel, currentRoute.sessionKey));
+  }
+
+  async function setMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, state: Omit<Parameters<typeof formatRelayStatusLine>[0], "channel" | "binding"> & { binding?: RelayStatusLineBindingState }): Promise<void> {
+    ctx.ui.setStatus(statusKeyForChannel(channel), formatRelayStatusLine({ channel, ...state }));
+  }
+
+  async function refreshMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, runtimeStatus?: { enabled: boolean; started: boolean; error?: string }): Promise<void> {
+    const config = await ensureConfig(ctx, false);
+    const configured = channel === "telegram"
+      ? Boolean(config.botToken)
+      : channel === "discord"
+        ? discordInstanceIds(config).length > 0
+        : slackInstanceIds(config).length > 0;
+    const binding = runtimeStatus?.error ? undefined : await currentStatusBinding(config, channel);
+    await setMessengerStatus(ctx, channel, {
+      configured,
+      runtimeStarted: channel === "telegram" ? Boolean(runtime) : runtimeStatus?.started,
+      error: runtimeStatus?.error ? redactSecrets(runtimeStatus.error) : undefined,
+      binding,
+    });
+  }
+
+  async function refreshRelayStatuses(ctx: ExtensionContext): Promise<void> {
+    await refreshMessengerStatus(ctx, "telegram");
+    for (const discord of discordRuntimes.values()) await refreshMessengerStatus(ctx, "discord", discord.getStatus());
+    for (const slack of slackRuntimes.values()) await refreshMessengerStatus(ctx, "slack", slack.getStatus());
+  }
+
+  function refreshRelayStatusesSoon(ctx?: ExtensionContext): void {
+    ctx ??= latestContext;
+    if (!ctx) return;
+    void refreshRelayStatuses(ctx).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.setStatus("relay-sync", `relay status error: ${redactSecrets(message)}`);
+    });
+  }
+
   async function startDiscordRuntime(ctx: ExtensionContext, discord: DiscordRuntime, failHard = false): Promise<boolean> {
     if (discord.getStatus().started) {
-      ctx.ui.setStatus("discord-relay", "discord: ready");
+      await refreshMessengerStatus(ctx, "discord", discord.getStatus());
       return true;
     }
     try {
       await discord.start();
-      ctx.ui.setStatus("discord-relay", "discord: ready");
+      await refreshMessengerStatus(ctx, "discord", discord.getStatus());
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const safeMessage = redactSecrets(message);
-      ctx.ui.setStatus("discord-relay", `discord error: ${safeMessage}`);
+      await setMessengerStatus(ctx, "discord", { configured: true, runtimeStarted: false, error: safeMessage });
       if (failHard) throw new Error(`Discord runtime failed to start: ${safeMessage}`);
       return false;
     }
@@ -247,7 +305,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
   async function startSlackRuntime(ctx: ExtensionContext, slack: SlackRuntime, failHard = false): Promise<boolean> {
     if (slack.getStatus().started) {
-      ctx.ui.setStatus("slack-relay", "slack: ready");
+      await refreshMessengerStatus(ctx, "slack", slack.getStatus());
       return true;
     }
     try {
@@ -255,16 +313,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const status = slack.getStatus();
       if (!status.started) {
         const safeMessage = redactSecrets(status.error || "Slack runtime did not start.");
-        ctx.ui.setStatus("slack-relay", `slack error: ${safeMessage}`);
+        await setMessengerStatus(ctx, "slack", { configured: true, runtimeStarted: false, error: safeMessage });
         if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
         return false;
       }
-      ctx.ui.setStatus("slack-relay", "slack: ready");
+      await refreshMessengerStatus(ctx, "slack", status);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const safeMessage = redactSecrets(message);
-      ctx.ui.setStatus("slack-relay", `slack error: ${safeMessage}`);
+      await setMessengerStatus(ctx, "slack", { configured: true, runtimeStarted: false, error: safeMessage });
       if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
       return false;
     }
@@ -396,8 +454,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         notifyLocal: (message, level = "info") => {
           closeConnectQrScreen?.();
           closeConnectQrScreen = undefined;
-          (latestContext ?? ctx).ui.notify(message, level);
+          const notifyContext = latestContext ?? ctx;
+          notifyContext.ui.notify(message, level);
+          refreshRelayStatusesSoon(notifyContext);
         },
+        refreshLocalStatus: () => refreshRelayStatusesSoon(latestContext ?? ctx),
         persistBinding,
         promptLocalConfirmation: async (identity) => promptPairingApproval(latestContext ?? ctx, identity, currentRoute?.sessionLabel ?? sessionLabel),
         abort: () => latestContext?.abort(),
@@ -422,6 +483,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (runtime) await runtime.registerRoute(route);
     await Promise.all([...discordRuntimes.values()].map((discord) => discord.registerRoute(route)));
     await Promise.all([...slackRuntimes.values()].map((slack) => slack.registerRoute(route)));
+    if (latestContext) await refreshRelayStatuses(latestContext);
   }
 
   function publishRouteStateSoon(): void {
@@ -477,11 +539,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.setStatus("relay-sync", `telegram sync error: ${redactSecrets(message)}`);
     }
-    if (restoredBinding) {
-      ctx.ui.setStatus("relay", `telegram: connected to ${restoredBinding.chatId}`);
-    } else {
-      ctx.ui.setStatus("relay", "telegram: ready");
-    }
+    await refreshRelayStatuses(ctx);
   }
 
   async function handleSetup(ctx: ExtensionContext): Promise<void> {
@@ -910,8 +968,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     for (const slackRuntime of slackRuntimes.values()) {
       await slackRuntime.unregisterRoute(disconnectedRoute.sessionKey);
     }
-    currentRoute = undefined;
-    ctx.ui.setStatus("relay", "relay: disconnected");
+    currentRoute = disconnectedRoute;
+    await refreshRelayStatuses(ctx);
     ctx.ui.setWidget(CONNECT_WIDGET_KEY, undefined);
     appendAudit("PiRelay disconnected locally.");
     ctx.ui.notify("PiRelay disconnected for this session.", "info");

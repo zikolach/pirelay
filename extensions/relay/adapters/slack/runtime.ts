@@ -484,16 +484,19 @@ export class SlackRuntime {
         return;
       case "pause":
         await this.updateBinding(binding, { paused: true });
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Slack remote delivery paused. Use `pirelay resume` to re-enable it.");
         return;
       case "resume":
         await this.updateBinding(binding, { paused: false });
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Slack remote delivery resumed.");
         return;
       case "disconnect":
         await this.store.revokeChannelBinding(SLACK_CHANNEL, route.sessionKey, undefined, this.instanceId);
         this.ownedBindingSessionKeys.delete(route.sessionKey);
         this.recentBindingBySessionKey.delete(route.sessionKey);
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Slack binding disconnected for this Pi session.");
         return;
       default:
