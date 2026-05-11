@@ -114,6 +114,10 @@ async function config(): Promise<TelegramTunnelConfig> {
   };
 }
 
+function waitForSlackRuntimeTimers(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
 function route(): SessionRoute {
   return {
     sessionKey: "session-id:memory",
@@ -490,6 +494,52 @@ describe("SlackRuntime foundations", () => {
     expect(operations.responses.at(-1)?.text).toBe("done in thread");
     await send("/disconnect", "54");
     expect(operations.posts.at(-1)?.text).toContain("disconnected");
+  });
+
+  it("delivers Slack progress updates when route state changes", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "verbose", threadTs: "parent-progress" },
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-1", kind: "tool", text: "Running tests", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeTimers();
+
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Pi progress") });
+    expect(operations.posts.at(-1)?.text).toContain("Running tests");
+  });
+
+  it("suppresses Slack progress updates for quiet bindings", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    testRoute.notification.progressEvent = { id: "progress-quiet", kind: "tool", text: "Running tests", at: Date.now() };
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "quiet" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeTimers();
+
+    expect(operations.posts).toHaveLength(0);
   });
 
   it("routes Slack channel commands after channel pairing", async () => {

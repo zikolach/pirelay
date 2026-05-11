@@ -413,8 +413,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   async function publishRouteState(): Promise<void> {
-    if (!runtime || !currentRoute) return;
-    await runtime.registerRoute(currentRoute);
+    const route = currentRoute;
+    if (!route) return;
+    if (runtime) await runtime.registerRoute(route);
+    await Promise.all([...discordRuntimes.values()].map((discord) => discord.registerRoute(route)));
+    await Promise.all([...slackRuntimes.values()].map((slack) => slack.registerRoute(route)));
   }
 
   function publishRouteStateSoon(): void {

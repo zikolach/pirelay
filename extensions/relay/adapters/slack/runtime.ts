@@ -1,13 +1,13 @@
 import { appendFileSync } from "node:fs";
 import type { ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelRouteAddress } from "../../core/channel-adapter.js";
-import type { ChannelPersistedBindingRecord, PairingApprovalDecision, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
+import type { ChannelPersistedBindingRecord, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { formatFullOutput, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
-import { normalizeProgressMode } from "../../notifications/progress.js";
+import { formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 
@@ -40,6 +40,7 @@ export class SlackRuntime {
   private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
   private readonly seenEventKeys = new Map<string, number>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
+  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
   private botIdentity?: SlackAuthTestResult;
   private started = false;
   private startPromise?: Promise<void>;
@@ -99,6 +100,7 @@ export class SlackRuntime {
   async stop(): Promise<void> {
     this.started = false;
     await this.clearThinkingReactions();
+    this.clearAllProgressStates();
     if (this.historyPollTimer) clearInterval(this.historyPollTimer);
     this.historyPollTimer = undefined;
     this.historyPollInFlight = false;
@@ -112,10 +114,12 @@ export class SlackRuntime {
       this.ownedBindingSessionKeys.add(route.sessionKey);
       this.recentBindingBySessionKey.set(route.sessionKey, binding);
     }
+    this.syncProgressDelivery(route);
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
     await this.stopThinkingReaction(sessionKey);
+    this.clearProgressStateBySessionKey(sessionKey);
     this.routes.delete(sessionKey);
     this.ownedBindingSessionKeys.delete(sessionKey);
     if (this.routes.size === 0) await this.stop();
@@ -123,6 +127,7 @@ export class SlackRuntime {
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     await this.stopThinkingReaction(route.sessionKey);
+    this.clearProgressState(route);
     if (!this.adapter) return;
     const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
       ?? this.recentBindingBySessionKey.get(route.sessionKey);
@@ -625,6 +630,80 @@ export class SlackRuntime {
     return next;
   }
 
+  private progressKey(route: SessionRoute): string | undefined {
+    const binding = this.recentBindingBySessionKey.get(route.sessionKey);
+    return binding ? `${route.sessionKey}:${binding.conversationId}:${binding.userId}` : undefined;
+  }
+
+  private clearAllProgressStates(): void {
+    for (const state of this.progressStates.values()) {
+      if (state.timer) clearTimeout(state.timer);
+    }
+    this.progressStates.clear();
+  }
+
+  private clearProgressState(route: SessionRoute): void {
+    const key = this.progressKey(route);
+    if (!key) return;
+    const state = this.progressStates.get(key);
+    if (state?.timer) clearTimeout(state.timer);
+    this.progressStates.delete(key);
+  }
+
+  private clearProgressStateBySessionKey(sessionKey: string): void {
+    for (const [key, state] of this.progressStates) {
+      if (!key.startsWith(`${sessionKey}:`)) continue;
+      if (state.timer) clearTimeout(state.timer);
+      this.progressStates.delete(key);
+    }
+  }
+
+  private syncProgressDelivery(route: SessionRoute): void {
+    const event = route.notification.progressEvent;
+    const binding = this.recentBindingBySessionKey.get(route.sessionKey);
+    const key = this.progressKey(route);
+    if (!key || !event || !binding || binding.paused || route.notification.lastStatus !== "running") {
+      if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
+      return;
+    }
+    const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+    if (!shouldSendNonTerminalProgress(mode)) return;
+    let state = this.progressStates.get(key);
+    if (!state) {
+      state = { pending: [] };
+      this.progressStates.set(key, state);
+    }
+    if (state.lastEventId === event.id) return;
+    state.lastEventId = event.id;
+    state.pending.push(event);
+    if (state.timer) return;
+    const interval = progressIntervalMsFor(mode, this.config);
+    const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
+    const delay = Math.max(0, interval - elapsed);
+    state.timer = setTimeout(() => {
+      void this.flushProgress(route.sessionKey, binding, key);
+    }, delay);
+    unrefTimer(state.timer);
+  }
+
+  private async flushProgress(sessionKey: string, expectedBinding: ChannelPersistedBindingRecord, key: string): Promise<void> {
+    const state = this.progressStates.get(key);
+    if (!state) return;
+    state.timer = undefined;
+    const route = this.routes.get(sessionKey);
+    const binding = this.recentBindingBySessionKey.get(sessionKey);
+    if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
+      if (route) this.clearProgressState(route);
+      else this.progressStates.delete(key);
+      return;
+    }
+    const pending = state.pending.splice(0);
+    const text = formatProgressUpdate(pending, this.config);
+    if (!text || !this.adapter) return;
+    state.lastSentAt = Date.now();
+    await this.adapter.sendText(bindingAddress(binding), text);
+  }
+
   private async startThinkingReaction(route: SessionRoute, message: ChannelInboundMessage): Promise<void> {
     const timestamp = message.messageId;
     if (!timestamp || !this.operations?.addReaction) {
@@ -791,6 +870,20 @@ function slackTurnNotificationText(route: SessionRoute, status: "completed" | "f
   if (status === "completed") return route.notification.lastSummary || route.notification.lastAssistantText || `Pi session ${route.sessionLabel} completed.`;
   if (status === "failed") return route.notification.lastFailure || `Pi session ${route.sessionLabel} failed.`;
   return `Pi session ${route.sessionLabel} was aborted.`;
+}
+
+function channelProgressMode(binding: ChannelPersistedBindingRecord): ProgressMode | undefined {
+  const mode = binding.metadata?.progressMode;
+  if (mode === "quiet" || mode === "normal" || mode === "verbose" || mode === "completionOnly") return mode;
+  return undefined;
+}
+
+function isTerminalStatus(status: SessionRoute["notification"]["lastStatus"]): boolean {
+  return status === "completed" || status === "failed" || status === "aborted";
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  if (typeof timer === "object" && timer && "unref" in timer && typeof timer.unref === "function") timer.unref();
 }
 
 function slackRuntimeStartError(config: TelegramTunnelConfig["slack"] | undefined): string {

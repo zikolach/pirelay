@@ -1074,6 +1074,11 @@ describe("PiRelay integration behavior", () => {
     expect(clipboardTexts.at(-1)).toMatch(/^pirelay pair \d{3}-\d{3}\n$/);
     expect(closeCount).toBe(0);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
+    const registerCallsAfterConnect = fakeSlackRuntime.registerRoute.mock.calls.length;
+    await pi.emit("agent_start", {}, context);
+    expect(fakeSlackRuntime.registerRoute.mock.calls.length).toBeGreaterThan(registerCallsAfterConnect);
+    const latestRegisterCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
+    expect(latestRegisterCall?.[0]).toMatchObject({ notification: { lastStatus: "running", progressEvent: expect.objectContaining({ text: "Pi task started" }) } });
     expect(notifications.some((entry) => entry.message.includes("pairing command copied to clipboard"))).toBe(true);
     expect(notifications.at(-1)?.message).toContain("Slack pairing PIN ready");
     const store = new TunnelStateStore(config.stateDir);

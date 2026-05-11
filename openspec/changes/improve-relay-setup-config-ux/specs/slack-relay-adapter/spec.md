@@ -44,6 +44,18 @@ The runtime SHALL make successful remote pairings visible locally with messenger
 - **WHEN** Discord or Telegram pairing completes
 - **THEN** the local Pi session receives the same style of messenger-specific pairing notification
 
+### Requirement: Slack progress notifications
+The Slack runtime SHALL deliver non-terminal progress updates for paired Slack bindings according to each binding's progress mode.
+
+#### Scenario: Verbose Slack binding receives progress updates
+- **WHEN** a Slack binding has progress mode `verbose` and the paired Pi route reports running progress events
+- **THEN** PiRelay sends coalesced `Pi progress` updates to the bound Slack conversation using the verbose progress interval
+- **AND** thread context is preserved when the binding was associated with a Slack thread
+
+#### Scenario: Quiet Slack binding suppresses non-terminal progress
+- **WHEN** a Slack binding has progress mode `quiet` or `completion-only`
+- **THEN** PiRelay suppresses non-terminal progress updates while still allowing terminal completion notifications
+
 ### Requirement: Slack thinking indicator
 The Slack runtime SHALL prefer reaction-based thinking indicators for accepted Slack prompts and fall back safely when reactions are unavailable.
 
