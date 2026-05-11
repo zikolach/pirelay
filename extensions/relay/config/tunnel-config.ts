@@ -263,12 +263,13 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
 
   const telegramConfig = fileConfig?.messengers?.telegram?.default;
   const botToken = process.env.TELEGRAM_BOT_TOKEN
+    ?? process.env.PI_RELAY_TELEGRAM_BOT_TOKEN
     ?? resolveConfigSecret(telegramConfig?.botToken ?? telegramConfig?.token, telegramConfig?.tokenEnv)
     ?? fileConfig?.botToken
     ?? fileConfig?.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
     throw new ConfigError(
-      `Missing Telegram bot token. Set TELEGRAM_BOT_TOKEN or create ${configPath} with {\n  \"botToken\": \"<token>\"\n}.`,
+      `Missing Telegram bot token. Set TELEGRAM_BOT_TOKEN or PI_RELAY_TELEGRAM_BOT_TOKEN, or create ${configPath} with {\n  \"botToken\": \"<token>\"\n}.`,
     );
   }
 

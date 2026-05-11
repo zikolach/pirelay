@@ -3,10 +3,19 @@
 ### Requirement: Slack pairing command parsing and guidance
 The Slack runtime SHALL use explicit non-slash pairing commands while keeping safe compatibility for legacy pairing text.
 
+#### Scenario: Slack help advertises non-slash commands
+- **WHEN** a paired Slack user requests help
+- **THEN** PiRelay shows commands in the `pirelay <command>` form
+- **AND** the help text explains that leading slash text is not recommended in Slack because Slack treats it as app slash commands
+
 #### Scenario: Slack status command is not parsed as pairing
 - **WHEN** a paired Slack user sends `pirelay status`
 - **THEN** PiRelay treats the message as a Slack command
 - **AND** it does not report the word `status` as an invalid or expired pairing code
+
+#### Scenario: Slack runtime guidance uses non-slash commands
+- **WHEN** PiRelay sends Slack guidance for post-pairing status, paused delivery, progress usage, one-shot sends, or unknown commands
+- **THEN** the guidance uses the `pirelay <command>` form instead of leading-slash command text
 
 #### Scenario: Slack pairing accepts safe legacy forms
 - **WHEN** a Slack user sends `pirelay pair <pin>` for an active pending pairing

@@ -60,6 +60,11 @@ The system SHALL define environment-to-config mappings for Telegram, Discord, an
 - **THEN** it defines the Telegram bot token as a secret env reference mapping
 - **AND** it defines supported Telegram authorization identity env vars as non-secret config mappings
 
+#### Scenario: Canonical Telegram token env bootstraps setup
+- **WHEN** no config file exists and `PI_RELAY_TELEGRAM_BOT_TOKEN` is defined
+- **THEN** PiRelay can load Telegram setup from that env var so the copied setup snippet can bootstrap `/relay setup` and `/relay connect`
+- **AND** legacy `TELEGRAM_BOT_TOKEN` remains supported
+
 #### Scenario: Discord env mapping is available
 - **WHEN** Discord setup metadata is requested
 - **THEN** it defines the Discord bot token as a secret env reference mapping

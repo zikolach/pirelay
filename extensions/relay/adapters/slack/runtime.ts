@@ -12,7 +12,12 @@ import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEven
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 
 const SLACK_CHANNEL = "slack" as const;
-const SLACK_HELP_TEXT = buildHelpText({ title: "PiRelay Slack commands:", commandPrefix: "/" });
+const SLACK_HELP_TEXT = buildHelpText({
+  title: "PiRelay Slack commands:",
+  commandPrefix: "pirelay",
+  includeSharedRoomHints: false,
+  footerLines: ["", "Tip: do not prefix commands with `/` in Slack; Slack treats leading slash text as slash commands for apps."],
+});
 const SLACK_THINKING_REACTION = "thinking_face";
 
 export interface SlackRuntimeOptions {
@@ -365,7 +370,7 @@ export class SlackRuntime {
       return;
     }
     if (binding.paused) {
-      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use /resume to re-enable prompts.");
+      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` to re-enable prompts.");
       return;
     }
     if (!route.actions.context.isIdle()) {
@@ -387,7 +392,7 @@ export class SlackRuntime {
 
   private async handleSlackCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: SlackCommand): Promise<void> {
     if (binding.paused && !commandAllowsWhilePaused(command.name)) {
-      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use /resume first.");
+      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` first.");
       return;
     }
     switch (command.name) {
@@ -418,7 +423,7 @@ export class SlackRuntime {
           return;
         }
         if (!target.prompt) {
-          await this.sendText(message, "Usage: /to <session> <prompt>");
+          await this.sendText(message, "Usage: pirelay to <session> <prompt>");
           return;
         }
         const targetRoute = this.routes.get(target.result.entry.sessionKey);
@@ -441,7 +446,7 @@ export class SlackRuntime {
         return;
       case "images":
       case "send-image":
-        await this.sendText(message, "Slack image/file upload delivery is not available in this runtime yet. Use /summary or /full for text output, or retrieve generated files locally.");
+        await this.sendText(message, "Slack image/file upload delivery is not available in this runtime yet. Use `pirelay summary` or `pirelay full` for text output, or retrieve generated files locally.");
         return;
       case "full":
         await this.sendText(message, formatFullOutput(route));
@@ -456,7 +461,7 @@ export class SlackRuntime {
       case "notify": {
         const mode = normalizeProgressMode(command.args);
         if (!mode) {
-          await this.sendText(message, "Usage: /progress <quiet|normal|verbose|completion-only>");
+          await this.sendText(message, "Usage: pirelay progress <quiet|normal|verbose|completion-only>");
           return;
         }
         const next = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, progressMode: mode }, instanceId: this.instanceId, lastSeenAt: new Date().toISOString() });
@@ -478,7 +483,7 @@ export class SlackRuntime {
         return;
       case "pause":
         await this.updateBinding(binding, { paused: true });
-        await this.sendText(message, "Slack remote delivery paused. Use /resume to re-enable it.");
+        await this.sendText(message, "Slack remote delivery paused. Use `pirelay resume` to re-enable it.");
         return;
       case "resume":
         await this.updateBinding(binding, { paused: false });
@@ -491,7 +496,7 @@ export class SlackRuntime {
         await this.sendText(message, "Slack binding disconnected for this Pi session.");
         return;
       default:
-        await this.sendText(message, `Unknown Slack command: /${command.name}. Send /help for available commands.`);
+        await this.sendText(message, `Unknown Slack command: ${command.name}. Send \`pirelay help\` for available commands.`);
     }
   }
 
@@ -553,7 +558,7 @@ export class SlackRuntime {
     const pairedUser = binding.identity?.displayName ?? binding.userId;
     route.actions.appendAudit(`Slack paired with ${pairedUser}.`);
     route.actions.notifyLocal?.(`Slack paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
-    await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send /status or a prompt to control Pi.`);
+    await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send \`pirelay status\` or a prompt to control Pi.`);
   }
 
   private async livePreseededBinding(message: ChannelInboundMessage): Promise<ChannelPersistedBindingRecord | undefined> {

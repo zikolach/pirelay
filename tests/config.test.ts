@@ -8,6 +8,8 @@ const tempDirs: string[] = [];
 
 beforeEach(() => {
   for (const name of [
+    "TELEGRAM_BOT_TOKEN",
+    "PI_RELAY_TELEGRAM_BOT_TOKEN",
     "PI_RELAY_DISCORD_BOT_TOKEN",
     "PI_RELAY_DISCORD_CLIENT_ID",
     "PI_RELAY_DISCORD_APPLICATION_ID",
@@ -40,6 +42,17 @@ describe("telegram tunnel config", () => {
     const { config } = await loadTelegramTunnelConfig();
 
     expect(config.progressMode).toBe("completionOnly");
+  });
+
+  it("loads canonical Telegram token env fallback before config exists", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    vi.stubEnv("PI_RELAY_CONFIG", join(dir, "missing-config.json"));
+    vi.stubEnv("PI_RELAY_TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.botToken).toBe("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
   });
 
   it("loads top-level env-style Discord and Slack keys from config files", async () => {

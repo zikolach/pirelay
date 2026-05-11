@@ -255,6 +255,7 @@ describe("SlackRuntime foundations", () => {
     });
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", text: expect.stringContaining("Slack paired with Docs") });
+    expect(operations.posts.at(-1)?.text).toContain("pirelay status");
     expect(testRoute.actions.appendAudit).toHaveBeenCalledWith("Slack paired with U_DRIVER.");
     await expect(store.inspectPendingPairing(nonce, { channel: "slack" })).resolves.toMatchObject({ status: "consumed" });
     await expect(store.getChannelBindingBySessionKey("slack", testRoute.sessionKey)).resolves.toMatchObject({ conversationId: "D1", userId: "U_DRIVER", instanceId: "default" });
@@ -455,6 +456,9 @@ describe("SlackRuntime foundations", () => {
 
     await send("/help", "40");
     expect(operations.posts.at(-1)?.text).toContain("PiRelay Slack commands");
+    expect(operations.posts.at(-1)?.text).toContain("pirelay status - session and relay dashboard");
+    expect(operations.posts.at(-1)?.text).not.toContain("/status - session and relay dashboard");
+    expect(operations.posts.at(-1)?.text).toContain("do not prefix commands with `/`");
     await send("/status", "41");
     expect(operations.posts.at(-1)?.text).toContain("Session: Docs");
     await send("/sessions", "42");
@@ -473,7 +477,7 @@ describe("SlackRuntime foundations", () => {
     await send("/pause", "46");
     expect(operations.posts.at(-1)?.text).toContain("paused");
     await send("ordinary while paused", "47");
-    expect(operations.posts.at(-1)?.text).toContain("paused");
+    expect(operations.posts.at(-1)?.text).toContain("pirelay resume");
     await send("/resume", "48");
     expect(operations.posts.at(-1)?.text).toContain("resumed");
     await send("/abort", "49");
@@ -484,6 +488,7 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("No recent activity");
     await send("/unknown", "52");
     expect(operations.posts.at(-1)?.text).toContain("Unknown Slack command");
+    expect(operations.posts.at(-1)?.text).toContain("pirelay help");
     await send("threaded prompt", "53", "parent-1");
     expect(operations.posts.at(-1)).toMatchObject({ threadTs: "parent-1", text: expect.stringContaining("Sent to Docs") });
     testRoute.notification.lastSummary = "done in thread";
