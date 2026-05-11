@@ -228,21 +228,44 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtimes;
   }
 
-  async function stopAndClearRuntimes(ctx: ExtensionContext): Promise<void> {
-    const stops: Array<Promise<void>> = [];
-    if (runtime) stops.push(runtime.stop());
-    for (const discord of discordRuntimes.values()) stops.push(discord.stop());
-    for (const slack of slackRuntimes.values()) stops.push(slack.stop());
-    const results = await Promise.allSettled(stops);
-    const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-    runtime = undefined;
-    discordRuntimes.clear();
-    slackRuntimes.clear();
+  async function stopAndClearRuntimes(ctx: ExtensionContext): Promise<{ telegramStopped: boolean; discordStopped: string[]; slackStopped: string[] }> {
+    let telegramStopped = false;
+    const discordStopped: string[] = [];
+    const slackStopped: string[] = [];
+    const failures: unknown[] = [];
+    if (runtime) {
+      try {
+        await runtime.stop();
+        runtime = undefined;
+        telegramStopped = true;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    for (const [instanceId, discord] of [...discordRuntimes]) {
+      try {
+        await discord.stop();
+        discordRuntimes.delete(instanceId);
+        discordStopped.push(instanceId);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    for (const [instanceId, slack] of [...slackRuntimes]) {
+      try {
+        await slack.stop();
+        slackRuntimes.delete(instanceId);
+        slackStopped.push(instanceId);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     if (failures.length > 0) {
-      const first = failures[0]?.reason;
+      const first = failures[0];
       const message = first instanceof Error ? first.message : String(first);
       ctx.ui.notify(`Stopped PiRelay runtimes with ${failures.length} warning(s): ${redactSecrets(message)}`, "warning");
     }
+    return { telegramStopped, discordStopped, slackStopped };
   }
 
   function statusKeyForChannel(channel: RelayStatusLineChannel, instanceId = "default"): string {
@@ -293,6 +316,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     await refreshMessengerStatus(ctx, "telegram");
     for (const [instanceId, discord] of discordRuntimes) await refreshMessengerStatus(ctx, "discord", discord.getStatus(), instanceId);
     for (const [instanceId, slack] of slackRuntimes) await refreshMessengerStatus(ctx, "slack", slack.getStatus(), instanceId);
+  }
+
+  async function resetStoppedRuntimeStatuses(ctx: ExtensionContext, stopped: { telegramStopped: boolean; discordStopped: string[]; slackStopped: string[] }): Promise<void> {
+    const config = await ensureConfig(ctx, false);
+    if (stopped.telegramStopped) await setMessengerStatus(ctx, "telegram", { configured: Boolean(config.botToken), runtimeStarted: false });
+    for (const instanceId of stopped.discordStopped) {
+      const configured = Boolean(config.discordInstances?.[instanceId]?.enabled && config.discordInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.discord?.enabled && config.discord.botToken));
+      await setMessengerStatus(ctx, "discord", { configured, runtimeStarted: false }, instanceId);
+    }
+    for (const instanceId of stopped.slackStopped) {
+      const configured = Boolean(config.slackInstances?.[instanceId]?.enabled && config.slackInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.slack?.enabled && config.slack.botToken));
+      await setMessengerStatus(ctx, "slack", { configured, runtimeStarted: false }, instanceId);
+    }
   }
 
   function refreshRelayStatusesSoon(ctx?: ExtensionContext): void {
@@ -673,8 +709,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     const result = await writeRelaySetupConfigFromEnv(channel, { configPath: config.configPath });
-    await stopAndClearRuntimes(ctx);
+    const stopped = await stopAndClearRuntimes(ctx);
     configCache = undefined;
+    await resetStoppedRuntimeStatuses(ctx, stopped);
     ctx.ui.notify(redactSecrets([
       `Updated PiRelay ${channel} config from environment variables.`,
       `Config: ${result.configPath}`,

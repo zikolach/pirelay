@@ -198,7 +198,7 @@ function jsonSnippetForChannel(channel: RelaySetupChannel): string[] {
   switch (channel) {
     case "telegram":
       return [
-        JSON.stringify({ messengers: { telegram: { default: { enabled: true, tokenEnv: "TELEGRAM_BOT_TOKEN", allowUserIds: ["123456789"] } } } }, null, 2),
+        JSON.stringify({ messengers: { telegram: { default: { enabled: true, tokenEnv: "PI_RELAY_TELEGRAM_BOT_TOKEN", allowUserIds: ["123456789"] } } } }, null, 2),
       ];
     case "discord":
       return [

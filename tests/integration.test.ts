@@ -659,7 +659,7 @@ describe("PiRelay integration behavior", () => {
 
     const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
-    const { context } = createMockContext("setup-write-stops-runtime");
+    const { context, statuses } = createMockContext("setup-write-stops-runtime");
     relayExtension(pi.api as any);
 
     await pi.runCommand("relay", "connect slack", context);
@@ -677,6 +677,8 @@ describe("PiRelay integration behavior", () => {
 
     expect(fakeSlackRuntime.stop).toHaveBeenCalledTimes(1);
     expect(fakeRuntime.stop).toHaveBeenCalledTimes(1);
+    expect(statuses).toContainEqual({ key: "relay", value: "telegram: starting" });
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: starting" });
   });
 
   it("scopes Slack status lines by configured instance", async () => {

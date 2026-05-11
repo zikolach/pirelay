@@ -155,7 +155,12 @@ async function readRelayConfigFile(configPath: string): Promise<RelayConfigFile 
   } catch {
     return undefined;
   }
-  return JSON.parse(await readFile(configPath, "utf8")) as RelayConfigFile;
+  try {
+    return JSON.parse(await readFile(configPath, "utf8")) as RelayConfigFile;
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
 }
 
 async function backupExistingConfig(configPath: string, now: Date): Promise<string | undefined> {

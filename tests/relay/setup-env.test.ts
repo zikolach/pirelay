@@ -157,6 +157,22 @@ describe("relay setup config from env", () => {
     expect(written).not.toContain("xapp-secret-token");
   });
 
+  it("backs up invalid existing config before replacing it from env", async () => {
+    const configPath = await tempConfigPath();
+    await writeFile(configPath, "{ invalid json", { mode: 0o600 });
+
+    const result = await writeRelaySetupConfigFromEnv("telegram", {
+      configPath,
+      now: new Date("2026-05-11T09:00:00.000Z"),
+      env: { PI_RELAY_TELEGRAM_BOT_TOKEN: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" },
+    });
+
+    expect(result.backupPath).toBe(`${configPath}.bak-2026-05-11T09-00-00-000Z`);
+    await expect(readFile(result.backupPath!, "utf8")).resolves.toBe("{ invalid json");
+    const written = await readFile(configPath, "utf8");
+    expect(written).toContain("PI_RELAY_TELEGRAM_BOT_TOKEN");
+  });
+
   it("backs up existing config before writing", async () => {
     const configPath = await tempConfigPath();
     await writeFile(configPath, JSON.stringify({ relay: { machineId: "old" } }), { mode: 0o600 });

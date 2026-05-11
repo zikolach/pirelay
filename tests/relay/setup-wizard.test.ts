@@ -39,6 +39,8 @@ describe("relay setup wizard model", () => {
     expect(model.panels.find((panel) => panel.id === "links")?.qrUrl).toBe("https://t.me/BotFather");
     expect(text).toContain("BotFather");
     expect(text).toContain("/relay connect telegram");
+    expect(text).toContain("PI_RELAY_TELEGRAM_BOT_TOKEN");
+    expect(text).not.toContain('tokenEnv":"TELEGRAM_BOT_TOKEN');
     expect(model.actions.map((action) => action.id)).toEqual(["copy-env-snippet", "write-config-from-env"]);
     expect(text).not.toContain("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
   });
