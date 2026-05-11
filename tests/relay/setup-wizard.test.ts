@@ -67,8 +67,11 @@ describe("relay setup wizard model", () => {
     expect(model.checklist.map((item) => item.label)).toEqual(expect.arrayContaining(["Bot token", "Signing secret", "App Home messages", "App ID", "Workspace boundary", "Event mode", "DM-first safety", "Allow-list"]));
     expect(text).toContain("PI_RELAY_SLACK_SIGNING_SECRET");
     expect(text).toContain("PI_RELAY_SLACK_APP_ID");
-    expect(model.panels.find((panel) => panel.id === "manifest")?.lines.join("\n")).toContain("message.im");
+    const manifestText = model.panels.find((panel) => panel.id === "manifest")?.lines.join("\n") ?? "";
+    expect(manifestText).toContain("message.im");
+    expect(manifestText).toContain("reactions:write");
     expect(slackAppManifestText()).toContain("messages_tab_enabled: true");
+    expect(slackAppManifestText()).toContain("reactions:write");
     expect(text).not.toContain("xoxb-super-secret-token");
     expect(text).not.toContain("slack-signing-secret-super");
   });
