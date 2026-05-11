@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostMessagePayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
+import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
 import { SlackLiveOperations } from "../extensions/relay/adapters/slack/live-client.js";
 import { SlackRuntime } from "../extensions/relay/adapters/slack/runtime.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
@@ -48,7 +48,7 @@ class FakeWebSocket {
 class FakeSlackOperations implements SlackApiOperations {
   handler?: (event: SlackEnvelope) => Promise<void>;
   readonly posts: SlackPostMessagePayload[] = [];
-  readonly ephemeral: Array<{ channel: string; user: string; text: string }> = [];
+  readonly ephemeral: SlackPostEphemeralPayload[] = [];
   readonly responses: Array<{ url: string; text: string }> = [];
 
   async startSocketMode(handler: (event: SlackEnvelope) => Promise<void>): Promise<void> {
@@ -71,7 +71,7 @@ class FakeSlackOperations implements SlackApiOperations {
     throw new Error("not implemented");
   }
 
-  async postEphemeral(payload: { channel: string; user: string; text: string }): Promise<void> {
+  async postEphemeral(payload: SlackPostEphemeralPayload): Promise<void> {
     this.ephemeral.push(payload);
   }
 
@@ -245,10 +245,11 @@ describe("SlackRuntime foundations", () => {
       type: "event_callback",
       envelopeId: "pair-env",
       eventId: "pair-event",
-      event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: `/pirelay ${nonce}`, ts: "10", team: "T1" },
+      event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: `pirelay pair ${nonce}`, ts: "10", team: "T1" },
     });
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", text: expect.stringContaining("Slack paired with Docs") });
+    expect(testRoute.actions.appendAudit).toHaveBeenCalledWith("Slack paired with U_DRIVER.");
     await expect(store.inspectPendingPairing(nonce, { channel: "slack" })).resolves.toMatchObject({ status: "consumed" });
     await expect(store.getChannelBindingBySessionKey("slack", testRoute.sessionKey)).resolves.toMatchObject({ conversationId: "D1", userId: "U_DRIVER", instanceId: "default" });
 
@@ -260,7 +261,18 @@ describe("SlackRuntime foundations", () => {
     });
 
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("hello");
+    expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "11" });
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", text: expect.stringContaining("Sent to Docs") });
+
+    await operations.handler!({
+      type: "event_callback",
+      envelopeId: "status-env",
+      eventId: "status-event",
+      event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "pirelay status", ts: "12", team: "T1" },
+    });
+
+    expect(operations.posts.at(-1)?.text).not.toContain("pairing code is invalid");
+    expect(operations.posts.at(-1)?.text).toContain("Docs");
   });
 
   it("reports missing Socket Mode operations instead of silently succeeding", async () => {
@@ -300,6 +312,38 @@ describe("SlackRuntime foundations", () => {
     await operations.handler!({ type: "event_callback", envelopeId: "error-env", eventId: "error-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "explode", ts: "35", thread_ts: "parent-35", team: "T1" } });
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-35", text: expect.stringContaining("PiRelay Slack error") });
+  });
+
+  it("does not retarget current-turn completion notifications to busy follow-up threads", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    const testRoute = route();
+    testRoute.actions.context = { isIdle: () => false } as never;
+    testRoute.notification.lastSummary = "current turn done";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { threadTs: "old-parent" },
+    });
+    await store.setActiveChannelSelection("slack", "D1", "U_DRIVER", testRoute.sessionKey);
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "busy-thread-env", eventId: "busy-thread-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "What is the current openspec status?", ts: "36", thread_ts: "new-parent", team: "T1" } });
+
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("What is the current openspec status?", { deliverAs: "followUp" });
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "new-parent", text: expect.stringContaining("queued") });
+    await runtime.notifyTurnCompleted(testRoute, "completed");
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "old-parent", text: "current turn done" });
   });
 
   it("routes Slack DM commands through session helpers", async () => {
@@ -343,6 +387,7 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("not available");
     await send("/to Docs hello there", "45");
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("hello there", undefined);
+    expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "45" });
     await send("/pause", "46");
     expect(operations.posts.at(-1)?.text).toContain("paused");
     await send("ordinary while paused", "47");
@@ -367,6 +412,33 @@ describe("SlackRuntime foundations", () => {
     expect(operations.responses.at(-1)?.text).toBe("done in thread");
     await send("/disconnect", "54");
     expect(operations.posts.at(-1)?.text).toContain("disconnected");
+  });
+
+  it("routes Slack channel commands after channel pairing", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const { nonce } = await store.createPendingPairing({
+      channel: "slack",
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      expiryMs: 300_000,
+      codeKind: "pin",
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "channel-pair-env", eventId: "channel-pair-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: `pirelay pair ${nonce}`, ts: "70", team: "T1" } });
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", text: expect.stringContaining("Slack paired") });
+
+    await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
+    await operations.handler!({ type: "event_callback", envelopeId: "channel-status-env", eventId: "channel-status-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "pirelay status", ts: "71", team: "T1" } });
+
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", text: expect.stringContaining("Session: Docs") });
+    expect(operations.posts.at(-1)?.text).not.toContain("pairing code is invalid");
   });
 
   it("routes Slack shared-room messages only when locally targeted or actively selected", async () => {
@@ -408,21 +480,21 @@ describe("SlackRuntime foundations", () => {
     await runtime.start();
 
     const { nonce: expiredNonce } = await store.createPendingPairing({ channel: "slack", sessionId: "expired", sessionLabel: "Expired", expiryMs: -1 });
-    await operations.handler!({ type: "event_callback", envelopeId: "expired-env", eventId: "expired-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `/pirelay ${expiredNonce}`, ts: "19", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "expired-env", eventId: "expired-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `pirelay pair ${expiredNonce}`, ts: "19", team: "T1" } });
     expect(operations.posts.at(-1)?.text).toContain("invalid or expired");
     const { nonce: wrongChannelNonce } = await store.createPendingPairing({ channel: "discord", sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, expiryMs: 300_000 });
-    await operations.handler!({ type: "event_callback", envelopeId: "wrong-channel-env", eventId: "wrong-channel-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `/pirelay ${wrongChannelNonce}`, ts: "19.5", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "wrong-channel-env", eventId: "wrong-channel-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `pirelay pair ${wrongChannelNonce}`, ts: "19.5", team: "T1" } });
     expect(operations.posts.at(-1)?.text).toContain("invalid or expired");
 
     const { nonce } = await store.createPendingPairing({ channel: "slack", sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, expiryMs: 300_000 });
-    await operations.handler!({ type: "event_callback", envelopeId: "bad-env", eventId: "bad-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_BAD", text: `/pirelay ${nonce}`, ts: "20", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "bad-env", eventId: "bad-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_BAD", text: `pirelay pair ${nonce}`, ts: "20", team: "T1" } });
     expect(operations.posts.at(-1)?.text).toContain("not authorized");
     await expect(store.inspectPendingPairing(nonce, { channel: "slack" })).resolves.toMatchObject({ status: "active" });
 
-    await operations.handler!({ type: "event_callback", envelopeId: "ok-env", eventId: "ok-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `/pirelay ${nonce}`, ts: "21", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "ok-env", eventId: "ok-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `pirelay pair ${nonce}`, ts: "21", team: "T1" } });
     expect(operations.posts.at(-1)?.text).toContain("Slack paired");
     const postCount = operations.posts.length;
-    await operations.handler!({ type: "event_callback", envelopeId: "reuse-env", eventId: "reuse-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `/pirelay ${nonce}`, ts: "22", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "reuse-env", eventId: "reuse-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `pirelay pair ${nonce}`, ts: "22", team: "T1" } });
     expect(operations.posts).toHaveLength(postCount);
   });
 
@@ -438,7 +510,7 @@ describe("SlackRuntime foundations", () => {
     await runtime.registerRoute(testRoute);
     await runtime.start();
 
-    await operations.handler!({ type: "event_callback", envelopeId: "trust-env", eventId: "trust-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_NEW", text: `/pirelay ${nonce}`, ts: "30", team: "T1" } });
+    await operations.handler!({ type: "event_callback", envelopeId: "trust-env", eventId: "trust-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_NEW", text: `pirelay pair ${nonce}`, ts: "30", team: "T1" } });
 
     expect(operations.posts.at(-1)?.text).toContain("Slack paired");
     await expect(store.getTrustedRelayUser("slack", "U_NEW")).resolves.toMatchObject({ userId: "U_NEW" });

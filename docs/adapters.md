@@ -55,7 +55,7 @@ Examples:
 /relay connect discord:personal api
 ```
 
-When Pi has an interactive TUI, `/relay setup <messenger>` opens a read-only setup wizard for Telegram, Discord, Slack, or future adapters. The wizard uses adapter setup metadata plus shared diagnostics to show checklists, links, config/env snippets, QR/invite information where available, troubleshooting notes, and next steps. In headless/no-UI contexts it falls back to the same secret-safe plain text guidance.
+When Pi has an interactive TUI, `/relay setup <messenger>` opens a secret-safe setup wizard for Telegram, Discord, Slack, or future adapters. The wizard uses tab-like navigation so diagnostics, env snippets, config snippets, links/QR, and troubleshooting stay on their own tabs. Press `c` to copy placeholder env exports to the system clipboard, or `w` to write/update canonical config from currently defined env vars without persisting resolved secret values. If clipboard access is unavailable, PiRelay falls back to placing the snippet in the Pi editor. For Slack, the wizard also has an App manifest tab and `m` copy action for a ready-to-paste secret-free manifest; set `slack.appId`/`PI_RELAY_SLACK_APP_ID` to enable an App Home QR link, and enable App Home Messages Tab plus `message.im`/`im:history`/`im:read`, and `reactions:write` for thinking indicators. In headless/no-UI contexts it falls back to the same secret-safe plain text guidance and never writes config implicitly.
 
 ## Middleware layer
 

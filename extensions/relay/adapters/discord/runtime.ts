@@ -350,7 +350,9 @@ export class DiscordRuntime {
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     await this.setActiveSelection(message, binding.sessionKey);
     route.lastActivityAt = Date.now();
-    route.actions.appendAudit(`Discord paired with ${binding.identity?.displayName ?? binding.userId}.`);
+    const pairedUser = binding.identity?.displayName ?? binding.userId;
+    route.actions.appendAudit(`Discord paired with ${pairedUser}.`);
+    route.actions.notifyLocal?.(`Discord paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
     await this.sendText(message, `Discord paired with ${route.sessionLabel}. Send relay status or a prompt to control Pi.`);
   }
 

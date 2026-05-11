@@ -1034,7 +1034,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     this.activeSessionByChatUser.set(this.activeSessionKey(message.chat.id, message.user.id), route.sessionKey);
     await this.store.upsertBinding(binding);
     route.actions.persistBinding(binding, false);
-    route.actions.appendAudit(`Telegram relay paired with ${getTelegramUserLabel(message.user)}.`);
+    const pairedUser = getTelegramUserLabel(message.user);
+    route.actions.appendAudit(`Telegram relay paired with ${pairedUser}.`);
+    route.actions.notifyLocal?.(`Telegram paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
     await this.api.sendPlainText(
       message.chat.id,
       `Connected to Pi session ${route.sessionLabel}. Send text prompts directly, or use /help for tunnel commands.`,

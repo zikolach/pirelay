@@ -1,5 +1,6 @@
 import type { DiscordRelayConfig, SlackRelayConfig, TelegramTunnelConfig } from "../core/types.js";
-import { discordInviteUrl, redactSecrets, relayChannelReady, relaySetupDiagnostics, relaySetupGuidance, type RelaySetupChannel, type RelaySetupFacts, type RelaySetupFinding, type RelaySetupSeverity } from "./setup.js";
+import { discordInviteUrl, redactSecrets, relayChannelReady, relaySetupDiagnostics, relaySetupGuidance, slackAppRedirectUrl, type RelaySetupChannel, type RelaySetupFacts, type RelaySetupFinding, type RelaySetupSeverity } from "./setup.js";
+import { envSnippetForSetupChannel, setupEnvBindingsForChannel, type RelaySetupEnvBinding } from "./setup-env.js";
 
 export type RelaySetupWizardItemStatus = RelaySetupSeverity | "info";
 
@@ -16,6 +17,14 @@ export interface RelaySetupWizardPanel {
   qrUrl?: string;
 }
 
+export type RelaySetupWizardActionId = "copy-env-snippet" | "copy-slack-manifest" | "write-config-from-env";
+
+export interface RelaySetupWizardAction {
+  id: RelaySetupWizardActionId;
+  label: string;
+  detail: string;
+}
+
 export interface RelayAdapterSetupMetadata {
   channel: RelaySetupChannel;
   title: string;
@@ -23,6 +32,7 @@ export interface RelayAdapterSetupMetadata {
   optionalCredentials?: string[];
   platformLinks: Array<{ label: string; url: string }>;
   safetyNotes: string[];
+  envBindings: readonly RelaySetupEnvBinding[];
 }
 
 export interface RelaySetupWizardModel {
@@ -32,6 +42,7 @@ export interface RelaySetupWizardModel {
   statusLabel: string;
   checklist: RelaySetupWizardChecklistItem[];
   panels: RelaySetupWizardPanel[];
+  actions: RelaySetupWizardAction[];
   nextSteps: string[];
   findings: RelaySetupFinding[];
   metadata: RelayAdapterSetupMetadata;
@@ -69,6 +80,7 @@ export function setupMetadataForChannel(channel: RelaySetupChannel): RelayAdapte
           { label: "BotFather docs", url: "https://core.telegram.org/bots/features#botfather" },
         ],
         safetyNotes: ["Pair in a private Telegram chat.", "Use allowUserIds or local trusted users to avoid repeated local confirmation."],
+        envBindings: setupEnvBindingsForChannel(channel),
       };
     case "discord":
       return {
@@ -77,15 +89,17 @@ export function setupMetadataForChannel(channel: RelaySetupChannel): RelayAdapte
         requiredCredentials: ["PI_RELAY_DISCORD_BOT_TOKEN or discord.tokenEnv", "PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) or discord.applicationId (or clientId)"],
         platformLinks: [{ label: "Discord Developer Portal", url: "https://discord.com/developers/docs/quick-start/getting-started" }],
         safetyNotes: ["Enable Message Content Intent for DM text prompts.", "The bot and user generally need to share a server before DMs work.", "Use allowUserIds or local trusted users before enabling broad control."],
+        envBindings: setupEnvBindingsForChannel(channel),
       };
     case "slack":
       return {
         channel,
         title: "Slack setup",
         requiredCredentials: ["PI_RELAY_SLACK_BOT_TOKEN or slack.tokenEnv", "PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv", "PI_RELAY_SLACK_APP_TOKEN or slack.appTokenEnv for Socket Mode"],
-        optionalCredentials: ["slack.workspaceId", "slack.botUserId fallback"],
+        optionalCredentials: ["slack.appId for App Home QR links", "slack.workspaceId", "slack.botUserId fallback"],
         platformLinks: [{ label: "Slack apps", url: "https://api.slack.com/apps" }],
-        safetyNotes: ["Socket Mode is recommended for local Pi usage.", "Keep Slack DM-first unless channel messages are explicitly required.", "Use allowUserIds and workspaceId boundaries for safety."],
+        safetyNotes: ["Socket Mode is recommended for local Pi usage.", "Enable App Home Messages Tab for Slack app DMs.", "Keep Slack DM-first unless channel messages are explicitly required.", "Use allowUserIds and workspaceId boundaries for safety."],
+        envBindings: setupEnvBindingsForChannel(channel),
       };
   }
 }
@@ -113,6 +127,8 @@ function slackChecklist(config: SlackRelayConfig | undefined): RelaySetupWizardC
     checklistItem("Bot token", Boolean(config?.enabled && config.botToken), "Set PI_RELAY_SLACK_BOT_TOKEN or messengers.slack.default.tokenEnv."),
     checklistItem("Signing secret", Boolean(config?.signingSecret), "Set PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv."),
     checklistItem("Socket Mode app token", config?.eventMode === "webhook" || Boolean(config?.appToken), "Set PI_RELAY_SLACK_APP_TOKEN or slack.appTokenEnv to an app-level token with connections:write."),
+    checklistItem("App Home messages", true, "In Slack app settings, enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history, im:read, and reactions:write scopes, then reinstall."),
+    checklistItem("App ID", Boolean(config?.appId), "Optional: set PI_RELAY_SLACK_APP_ID or slack.appId to show an App Home QR link for /relay connect slack.", { warningWhenFalse: true }),
     checklistItem("Workspace boundary", Boolean(config?.workspaceId), "Set slack.workspaceId to restrict the app to the expected workspace.", { warningWhenFalse: true }),
     checklistItem("Bot user id", Boolean(config?.botUserId), "Optional fallback; runtime normally discovers bot user id via auth.test.", { warningWhenFalse: true }),
     checklistItem("Event mode", true, `Current mode: ${config?.eventMode ?? "socket"}. Socket Mode is recommended for local Pi usage.`),
@@ -132,30 +148,65 @@ function checklistForChannel(channel: RelaySetupChannel, config: TelegramTunnelC
   }
 }
 
-function envSnippetForChannel(channel: RelaySetupChannel): string[] {
-  switch (channel) {
-    case "telegram":
-      return ["# Telegram", "export TELEGRAM_BOT_TOKEN=<telegram-bot-token>"];
-    case "discord":
-      return ["# Discord", "export PI_RELAY_DISCORD_ENABLED=true", "export PI_RELAY_DISCORD_BOT_TOKEN=<discord-bot-token>", "export PI_RELAY_DISCORD_APPLICATION_ID=<discord-application-id>"];
-    case "slack":
-      return ["# Slack", "export PI_RELAY_SLACK_ENABLED=true", "export PI_RELAY_SLACK_BOT_TOKEN=<slack-bot-token>", "export PI_RELAY_SLACK_SIGNING_SECRET=<slack-signing-secret>", "export PI_RELAY_SLACK_APP_TOKEN=<slack-app-level-token>"];
-  }
+export function slackAppManifestSnippet(): string[] {
+  return [
+    "display_information:",
+    "  name: PiRelay",
+    "  description: Remote control and monitor Pi sessions from Slack.",
+    "  background_color: \"#2f855a\"",
+    "features:",
+    "  app_home:",
+    "    home_tab_enabled: false",
+    "    messages_tab_enabled: true",
+    "    messages_tab_read_only_enabled: false",
+    "  bot_user:",
+    "    display_name: PiRelay",
+    "    always_online: false",
+    "oauth_config:",
+    "  scopes:",
+    "    bot:",
+    "      - app_mentions:read",
+    "      - channels:history",
+    "      - channels:read",
+    "      - chat:write",
+    "      - files:read",
+    "      - groups:history",
+    "      - groups:read",
+    "      - im:history",
+    "      - im:read",
+    "      - reactions:write",
+    "settings:",
+    "  event_subscriptions:",
+    "    bot_events:",
+    "      - app_mention",
+    "      - message.channels",
+    "      - message.groups",
+    "      - message.im",
+    "  interactivity:",
+    "    is_enabled: true",
+    "  org_deploy_enabled: false",
+    "  socket_mode_enabled: true",
+    "  token_rotation_enabled: false",
+  ];
+}
+
+export function slackAppManifestText(): string {
+  return `${slackAppManifestSnippet().join("\n")}\n`;
 }
 
 function jsonSnippetForChannel(channel: RelaySetupChannel): string[] {
   switch (channel) {
     case "telegram":
       return [
-        JSON.stringify({ messengers: { telegram: { default: { enabled: true, tokenEnv: "TELEGRAM_BOT_TOKEN", allowUserIds: ["<telegram-user-id>"] } } } }, null, 2),
+        JSON.stringify({ messengers: { telegram: { default: { enabled: true, tokenEnv: "TELEGRAM_BOT_TOKEN", allowUserIds: ["123456789"] } } } }, null, 2),
       ];
     case "discord":
       return [
-        JSON.stringify({ messengers: { discord: { default: { enabled: true, tokenEnv: "PI_RELAY_DISCORD_BOT_TOKEN", applicationId: "<discord-application-id>", allowUserIds: ["<discord-user-id>"] } } } }, null, 2),
+        JSON.stringify({ messengers: { discord: { default: { enabled: true, tokenEnv: "PI_RELAY_DISCORD_BOT_TOKEN", applicationId: "123456789012345678", allowUserIds: ["123456789012345678"] } } } }, null, 2),
       ];
     case "slack":
       return [
-        JSON.stringify({ messengers: { slack: { default: { enabled: true, tokenEnv: "PI_RELAY_SLACK_BOT_TOKEN", signingSecretEnv: "PI_RELAY_SLACK_SIGNING_SECRET", appTokenEnv: "PI_RELAY_SLACK_APP_TOKEN", workspaceId: "<workspace-id>", allowUserIds: ["<slack-user-id>"] } } } }, null, 2),
+        JSON.stringify({ messengers: { slack: { default: { enabled: true, tokenEnv: "PI_RELAY_SLACK_BOT_TOKEN", signingSecretEnv: "PI_RELAY_SLACK_SIGNING_SECRET", appTokenEnv: "PI_RELAY_SLACK_APP_TOKEN", appId: "A0123456789", workspaceId: "T0123456789", allowUserIds: ["U9876543210"] } } } }, null, 2),
       ];
   }
 }
@@ -172,6 +223,14 @@ function linkPanel(channel: RelaySetupChannel, config: TelegramTunnelConfig, met
     lines.push("", `Discord invite/open URL: ${qrUrl}`, "Invite with bot scope and permissions=0 for DM-first operation.");
   } else if (channel === "discord") {
     lines.push("", "Discord QR redirect unavailable until Application ID is configured.");
+  } else if (channel === "slack") {
+    if (config.slack?.appId) {
+      qrUrl = slackAppRedirectUrl(config.slack.appId, config.slack.workspaceId);
+      lines.push("", `Slack App Home URL: ${qrUrl}`, "Scan the QR code to open the app in Slack, then use the Messages tab to send the pairing command.");
+    } else {
+      lines.push("", "Slack App Home QR unavailable until Slack App ID is configured. Set PI_RELAY_SLACK_APP_ID or slack.appId from Basic Information > App Credentials > App ID.");
+    }
+    lines.push("Enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, and reinstall the app if Slack says sending messages is turned off.");
   }
   return { id: "links", label: qrUrl ? "Links / QR" : "Links", lines: lines.map(redactSecrets), qrUrl };
 }
@@ -221,8 +280,9 @@ export function buildRelaySetupWizardModel(channel: RelaySetupChannel, config: T
   const status = statusFromFindings(findings, relayChannelReady(config, channel));
   const panels: RelaySetupWizardPanel[] = [
     { id: "diagnostics", label: "Diagnostics", lines: diagnosticPanelLines(checklist, findings) },
-    { id: "env", label: "Env snippet", lines: envSnippetForChannel(channel) },
+    { id: "env", label: "Env snippet", lines: envSnippetForSetupChannel(channel) },
     { id: "json", label: "Config snippet", lines: jsonSnippetForChannel(channel) },
+    ...(channel === "slack" ? [{ id: "manifest", label: "App manifest", lines: slackAppManifestSnippet() }] : []),
     linkPanel(channel, config, metadata),
     { id: "troubleshooting", label: "Troubleshooting", lines: troubleshootingLines(channel) },
   ];
@@ -234,6 +294,11 @@ export function buildRelaySetupWizardModel(channel: RelaySetupChannel, config: T
     statusLabel: statusLabel(status),
     checklist,
     panels: panels.map((panel) => ({ ...panel, lines: panel.lines.map((line) => redactSecrets(line)) })),
+    actions: [
+      { id: "copy-env-snippet", label: "Copy env snippet to clipboard", detail: "Copy placeholder shell exports for pasting into your shell profile." },
+      ...(channel === "slack" ? [{ id: "copy-slack-manifest" as const, label: "Copy Slack app manifest", detail: "Copy a secret-free Slack app manifest for pasting into Slack's manifest editor." }] : []),
+      { id: "write-config-from-env", label: "Write config from env", detail: "Update PiRelay config using currently defined environment variables without storing secret values." },
+    ],
     nextSteps: nextStepsForChannel(channel),
     findings,
     metadata,

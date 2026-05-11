@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostMessagePayload, SlackUploadFilePayload } from "./adapter.js";
+import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackReactionPayload, SlackUploadFilePayload } from "./adapter.js";
 import { redactSecrets } from "../../config/setup.js";
 import type { SlackRelayConfig } from "../../core/types.js";
 
@@ -97,8 +97,16 @@ export class SlackLiveOperations implements SlackApiOperations {
     throw new Error(`Slack live file upload is not implemented for ${payload.fileName}.`);
   }
 
-  async postEphemeral(payload: { channel: string; user: string; text: string }): Promise<void> {
-    await this.callSlackApi("chat.postEphemeral", this.botToken, payload);
+  async addReaction(payload: SlackReactionPayload): Promise<void> {
+    await this.callSlackApi("reactions.add", this.botToken, { channel: payload.channel, timestamp: payload.timestamp, name: payload.name });
+  }
+
+  async removeReaction(payload: SlackReactionPayload): Promise<void> {
+    await this.callSlackApi("reactions.remove", this.botToken, { channel: payload.channel, timestamp: payload.timestamp, name: payload.name });
+  }
+
+  async postEphemeral(payload: SlackPostEphemeralPayload): Promise<void> {
+    await this.callSlackApi("chat.postEphemeral", this.botToken, { channel: payload.channel, user: payload.user, text: payload.text, thread_ts: payload.threadTs });
   }
 
   async postResponse(responseUrl: string, payload: { text: string; replaceOriginal?: boolean; ephemeral?: boolean }): Promise<void> {

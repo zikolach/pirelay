@@ -88,7 +88,7 @@ describe("relay setup wizard helpers", () => {
     expect(relaySetupFallbackGuidance("slack")).toContain("https://api.slack.com/apps");
     expect(relayPairingInstruction("discord", "abc")).toContain("relay pair abc");
     expect(relayPairingInstruction("discord", "abc")).toContain("/start abc");
-    expect(relayPairingInstruction("slack", "abc")).toContain("/pirelay abc");
+    expect(relayPairingInstruction("slack", "abc")).toContain("pirelay pair abc");
   });
 
   it("builds Discord invite URLs from trimmed Application IDs for guild bot install", () => {

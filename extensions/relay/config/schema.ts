@@ -43,6 +43,7 @@ export interface MessengerInstanceFileConfig {
   signingSecretEnv?: string;
   appToken?: string;
   appTokenEnv?: string;
+  appId?: string;
   botUserId?: string;
   applicationId?: string;
   clientId?: string;
@@ -91,6 +92,7 @@ export interface RelayConfigFile {
   PI_RELAY_SLACK_SIGNING_SECRET?: string;
   PI_RELAY_SLACK_APP_TOKEN?: string;
   PI_RELAY_SLACK_EVENT_MODE?: string;
+  PI_RELAY_SLACK_APP_ID?: string;
   PI_RELAY_SLACK_WORKSPACE_ID?: string;
   PI_RELAY_SLACK_BOT_USER_ID?: string;
   PI_RELAY_SLACK_ALLOW_USER_IDS?: string;
@@ -110,6 +112,7 @@ export interface ResolvedMessengerInstanceConfig {
   signingSecretEnv?: string;
   appToken?: string;
   appTokenEnv?: string;
+  appId?: string;
   botUserId?: string;
   applicationId?: string;
   clientId?: string;

@@ -42,27 +42,32 @@ describe("channel pairing", () => {
   });
 
   it("creates Slack bindings from authorized workspace DM pairing commands", () => {
-    const result = completeSlackPairing(message("slack", "/pirelay abc"), pairing, "abc", { allowUserIds: ["su1"], workspaceId: "T1" }, Date.parse("2026-05-01T00:01:00.000Z"));
+    const result = completeSlackPairing(message("slack", "pirelay pair abc"), pairing, "abc", { allowUserIds: ["su1"], workspaceId: "T1" }, Date.parse("2026-05-01T00:01:00.000Z"));
 
     expect(result).toMatchObject({ ok: true, binding: { channel: "slack", conversationId: "S1", userId: "su1", sessionKey: pairing.sessionKey } });
-    expect(slackPairingInstruction("abc")).toContain("/pirelay abc");
+    expect(slackPairingInstruction("abc")).toContain("pirelay pair abc");
   });
 
   it("gates Slack pairing in channel conversations unless channel messages are enabled", () => {
-    const channelMessage = message("slack", "/pirelay abc", { conversation: { channel: "slack", id: "C1", kind: "channel" } });
+    const channelMessage = message("slack", "pirelay pair abc", { conversation: { channel: "slack", id: "C1", kind: "channel" } });
 
     expect(completeSlackPairing(channelMessage, pairing, "abc", { allowUserIds: ["su1"], allowChannelMessages: false, workspaceId: "T1" }, Date.parse("2026-05-01T00:01:00.000Z"))).toEqual({ ok: false, reason: "unsupported-conversation" });
     expect(completeSlackPairing(channelMessage, pairing, "abc", { allowUserIds: ["su1"], allowChannelMessages: true, workspaceId: "T1" }, Date.parse("2026-05-01T00:01:00.000Z"))).toMatchObject({ ok: true, binding: { conversationId: "C1", channel: "slack", userId: "su1" } });
   });
 
   it("rejects unauthorized Slack pairing attempts before command matching", () => {
-    const result = completeSlackPairing(message("slack", "/pirelay abc", { sender: { channel: "slack", userId: "su2", username: "other", metadata: { teamId: "T2" } } }), pairing, "abc", { allowUserIds: ["su1"], workspaceId: "T1" }, Date.parse("2026-05-01T00:01:00.000Z"));
+    const result = completeSlackPairing(message("slack", "pirelay pair abc", { sender: { channel: "slack", userId: "su2", username: "other", metadata: { teamId: "T2" } } }), pairing, "abc", { allowUserIds: ["su1"], workspaceId: "T1" }, Date.parse("2026-05-01T00:01:00.000Z"));
 
     expect(result).toEqual({ ok: false, reason: "unauthorized" });
   });
 
+  it("accepts legacy Slack pairing command forms while recommending non-slash text", () => {
+    expect(completeSlackPairing(message("slack", "pirelay abc"), pairing, "abc", {}, Date.parse("2026-05-01T00:01:00.000Z"))).toMatchObject({ ok: true, binding: { channel: "slack" } });
+    expect(completeSlackPairing(message("slack", "/pirelay abc"), pairing, "abc", {}, Date.parse("2026-05-01T00:01:00.000Z"))).toMatchObject({ ok: true, binding: { channel: "slack" } });
+  });
+
   it("rejects expired or mismatched pairing commands", () => {
-    expect(completeSlackPairing(message("slack", "/pirelay wrong"), pairing, "abc", {}, Date.parse("2026-05-01T00:01:00.000Z"))).toEqual({ ok: false, reason: "command-mismatch" });
-    expect(completeSlackPairing(message("slack", "/pirelay abc"), pairing, "abc", {}, Date.parse("2026-05-01T00:11:00.000Z"))).toEqual({ ok: false, reason: "expired" });
+    expect(completeSlackPairing(message("slack", "pirelay pair wrong"), pairing, "abc", {}, Date.parse("2026-05-01T00:01:00.000Z"))).toEqual({ ok: false, reason: "command-mismatch" });
+    expect(completeSlackPairing(message("slack", "pirelay pair abc"), pairing, "abc", {}, Date.parse("2026-05-01T00:11:00.000Z"))).toEqual({ ok: false, reason: "expired" });
   });
 });

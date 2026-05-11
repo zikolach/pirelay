@@ -32,6 +32,7 @@ interface ConfigFileShape extends RelayConfigFile {
   PI_RELAY_SLACK_SIGNING_SECRET?: string;
   PI_RELAY_SLACK_APP_TOKEN?: string;
   PI_RELAY_SLACK_EVENT_MODE?: string;
+  PI_RELAY_SLACK_APP_ID?: string;
   PI_RELAY_SLACK_WORKSPACE_ID?: string;
   PI_RELAY_SLACK_BOT_USER_ID?: string;
   PI_RELAY_SLACK_ALLOW_USER_IDS?: string;
@@ -204,6 +205,7 @@ function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, 
     botToken,
     signingSecret,
     appToken,
+    appId: (useLegacyFallback ? process.env.PI_RELAY_SLACK_APP_ID : undefined) ?? slackConfig?.appId ?? slackConfig?.applicationId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_APP_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.appId ?? legacyConfig?.applicationId : undefined),
     eventMode: resolveSlackEventMode((useLegacyFallback ? process.env.PI_RELAY_SLACK_EVENT_MODE : undefined) ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_EVENT_MODE : undefined) ?? slackConfig?.eventMode ?? (useLegacyFallback ? legacyConfig?.eventMode : undefined)),
     workspaceId: (useLegacyFallback ? process.env.PI_RELAY_SLACK_WORKSPACE_ID : undefined) ?? slackConfig?.workspaceId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_WORKSPACE_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.workspaceId : undefined),
     botUserId: (useLegacyFallback ? process.env.PI_RELAY_SLACK_BOT_USER_ID : undefined) ?? slackConfig?.botUserId ?? (useLegacyFallback ? fileConfig?.PI_RELAY_SLACK_BOT_USER_ID : undefined) ?? (useLegacyFallback ? legacyConfig?.botUserId : undefined),
@@ -221,7 +223,7 @@ function resolveSlackConfigForInstance(fileConfig: ConfigFileShape | undefined, 
 
 function resolveSlackConfigs(fileConfig: ConfigFileShape | undefined, defaultImageMimeTypes: string[]): Record<string, SlackRelayConfig> {
   const instanceIds = new Set(Object.keys(fileConfig?.messengers?.slack ?? {}));
-  if (fileConfig?.slack || fileConfig?.PI_RELAY_SLACK_BOT_TOKEN || fileConfig?.PI_RELAY_SLACK_APP_TOKEN || process.env.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_SIGNING_SECRET || process.env.PI_RELAY_SLACK_APP_TOKEN || process.env.PI_RELAY_SLACK_ENABLED) instanceIds.add("default");
+  if (fileConfig?.slack || fileConfig?.PI_RELAY_SLACK_BOT_TOKEN || fileConfig?.PI_RELAY_SLACK_APP_TOKEN || fileConfig?.PI_RELAY_SLACK_APP_ID || process.env.PI_RELAY_SLACK_BOT_TOKEN || process.env.PI_RELAY_SLACK_SIGNING_SECRET || process.env.PI_RELAY_SLACK_APP_TOKEN || process.env.PI_RELAY_SLACK_APP_ID || process.env.PI_RELAY_SLACK_ENABLED) instanceIds.add("default");
   const configs: Record<string, SlackRelayConfig> = {};
   for (const instanceId of instanceIds) {
     const config = resolveSlackConfigForInstance(fileConfig, defaultImageMimeTypes, instanceId);

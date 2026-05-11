@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildRelaySetupWizardModel } from "../../extensions/relay/config/setup-wizard.js";
+import { buildRelaySetupWizardModel, slackAppManifestText } from "../../extensions/relay/config/setup-wizard.js";
 import { RelaySetupWizardScreen } from "../../extensions/relay/ui/setup-wizard.js";
 import type { TelegramTunnelConfig } from "../../extensions/relay/core/types.js";
 
@@ -39,6 +39,7 @@ describe("relay setup wizard model", () => {
     expect(model.panels.find((panel) => panel.id === "links")?.qrUrl).toBe("https://t.me/BotFather");
     expect(text).toContain("BotFather");
     expect(text).toContain("/relay connect telegram");
+    expect(model.actions.map((action) => action.id)).toEqual(["copy-env-snippet", "write-config-from-env"]);
     expect(text).not.toContain("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
   });
 
@@ -63,10 +64,39 @@ describe("relay setup wizard model", () => {
     const model = buildRelaySetupWizardModel("slack", config);
     const text = JSON.stringify(model);
 
-    expect(model.checklist.map((item) => item.label)).toEqual(expect.arrayContaining(["Bot token", "Signing secret", "Workspace boundary", "Event mode", "DM-first safety", "Allow-list"]));
+    expect(model.checklist.map((item) => item.label)).toEqual(expect.arrayContaining(["Bot token", "Signing secret", "App Home messages", "App ID", "Workspace boundary", "Event mode", "DM-first safety", "Allow-list"]));
     expect(text).toContain("PI_RELAY_SLACK_SIGNING_SECRET");
+    expect(text).toContain("PI_RELAY_SLACK_APP_ID");
+    expect(model.panels.find((panel) => panel.id === "manifest")?.lines.join("\n")).toContain("message.im");
+    expect(slackAppManifestText()).toContain("messages_tab_enabled: true");
     expect(text).not.toContain("xoxb-super-secret-token");
     expect(text).not.toContain("slack-signing-secret-super");
+  });
+
+  it("builds Slack App Home QR link when app id is configured", () => {
+    const config = baseConfig();
+    config.slack = { enabled: true, botToken: "xoxb-test-token", signingSecret: "slack-signing-secret-test", appToken: "xapp-test-token", appId: "A123", workspaceId: "T123" };
+
+    const model = buildRelaySetupWizardModel("slack", config);
+    const links = model.panels.find((panel) => panel.id === "links");
+    const text = JSON.stringify(links);
+
+    expect(links?.qrUrl).toBe("https://slack.com/app_redirect?app=A123&team=T123");
+    expect(text).toContain("Slack App Home URL");
+    expect(text).toContain("Messages Tab");
+  });
+
+  it("exposes consistent setup action classes for every supported messenger", () => {
+    const config = baseConfig();
+    config.discord = { enabled: true, botToken: "discord-token-test", applicationId: "123456789012345678" };
+    config.slack = { enabled: true, botToken: "xoxb-test-token", signingSecret: "slack-signing-secret-test", appToken: "xapp-test-token" };
+
+    for (const channel of ["telegram", "discord", "slack"] as const) {
+      const model = buildRelaySetupWizardModel(channel, config);
+      expect(model.actions.map((action) => action.id)).toEqual(channel === "slack" ? ["copy-env-snippet", "copy-slack-manifest", "write-config-from-env"] : ["copy-env-snippet", "write-config-from-env"]);
+      expect(model.panels.map((panel) => panel.id)).toEqual(expect.arrayContaining(["diagnostics", "env", "json", "links", "troubleshooting"]));
+      if (channel === "slack") expect(model.panels.map((panel) => panel.id)).toContain("manifest");
+    }
   });
 });
 
@@ -88,9 +118,35 @@ describe("RelaySetupWizardScreen", () => {
     screen.handleInput("j");
     const second = screen.render(72).join("\n");
     expect(second).toContain("PI_RELAY_DISCORD_BOT_TOKEN");
+    expect(second).not.toContain("Actions");
+    expect(second).not.toContain("Next steps");
+    expect(second).not.toContain("Panels");
+    expect(second).toContain("c copy env to clipboard");
+    expect(second).toContain("w write config");
 
+    screen.handleInput("c");
+    expect(done).toHaveBeenCalledWith("copy-env-snippet");
+    screen.handleInput("w");
+    expect(done).toHaveBeenCalledWith("write-config-from-env");
     screen.handleInput("q");
-    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith();
+  });
+
+  it("runs copy actions without closing when inline copy handlers are provided", () => {
+    const config = baseConfig();
+    const model = buildRelaySetupWizardModel("slack", config);
+    const done = vi.fn();
+    const onCopyEnvSnippet = vi.fn();
+    const onCopySlackManifest = vi.fn();
+    const screen = new RelaySetupWizardScreen(model, theme, done, { onCopyEnvSnippet, onCopySlackManifest });
+
+    screen.handleInput("c");
+    screen.handleInput("m");
+
+    expect(onCopyEnvSnippet).toHaveBeenCalledTimes(1);
+    expect(onCopySlackManifest).toHaveBeenCalledTimes(1);
+    expect(done).not.toHaveBeenCalled();
+    expect(screen.render(100).join("\n")).toContain("m copy manifest");
   });
 
   it("preserves JSON snippet formatting in the TUI details panel", () => {

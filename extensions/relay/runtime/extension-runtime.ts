@@ -5,6 +5,7 @@ import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { loadTelegramTunnelConfig, ConfigError } from "../config/tunnel-config.js";
 import { renderQrLines } from "../ui/qr.js";
 import { RelaySetupWizardScreen } from "../ui/setup-wizard.js";
+import { copyTextToClipboard } from "../ui/clipboard.js";
 import { getOrCreateTunnelRuntime, sendSessionNotification } from "../adapters/telegram/runtime.js";
 import { TunnelStateStore } from "../state/tunnel-store.js";
 import type { BindingEntryData, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, RelayPairingIdentity, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
@@ -12,8 +13,9 @@ import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
-import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
-import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback } from "../config/setup-wizard.js";
+import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, slackAppRedirectUrl, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
+import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback, slackAppManifestText, type RelaySetupWizardActionId } from "../config/setup-wizard.js";
+import { computeRelaySetupConfigPatchFromEnv, envSnippetTextForSetupChannel, writeRelaySetupConfigFromEnv } from "../config/setup-env.js";
 import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfigMigrationPlan } from "../config/migration.js";
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
 
@@ -47,6 +49,11 @@ function wrapPlainText(text: string, maxWidth: number): string[] {
   return lines;
 }
 
+interface PairingQrScreenOptions {
+  command?: string;
+  onCopyCommand?: (command: string) => void | Promise<void>;
+}
+
 class PairingQrScreen {
   constructor(
     private readonly theme: Theme,
@@ -57,9 +64,14 @@ class PairingQrScreen {
     private readonly expiryMinutes: number,
     private readonly instructions: string[],
     private readonly done: () => void,
+    private readonly options: PairingQrScreenOptions = {},
   ) {}
 
   handleInput(data: string): void {
+    if ((data === "c" || data === "C") && this.options.command) {
+      if (this.options.onCopyCommand) void Promise.resolve(this.options.onCopyCommand(this.options.command));
+      return;
+    }
     if (matchesKey(data, "escape") || matchesKey(data, "enter") || matchesKey(data, "ctrl+c")) {
       this.done();
     }
@@ -92,11 +104,18 @@ class PairingQrScreen {
     for (const wrapped of wrapPlainText(this.link, innerWidth)) {
       lines.push(row(wrapped));
     }
+    if (this.options.command) {
+      lines.push(row());
+      lines.push(row(this.theme.fg("accent", "Command to send:")));
+      for (const wrapped of wrapPlainText(this.options.command, innerWidth)) {
+        lines.push(row(this.theme.fg("accent", wrapped)));
+      }
+    }
     lines.push(row());
     for (const instruction of this.instructions) {
       for (const wrapped of wrapPlainText(instruction, innerWidth)) lines.push(row(this.theme.fg("dim", wrapped)));
     }
-    lines.push(row(this.theme.fg("dim", "Press Esc or Enter when done.")));
+    lines.push(row(this.theme.fg("dim", this.options.command ? "c copy command · Press Esc or Enter when done." : "Press Esc or Enter when done.")));
     lines.push(bottomBorder);
     return lines;
   }
@@ -305,6 +324,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     pi.appendEntry<BindingEntryData>(BINDING_ENTRY_TYPE, data);
   }
 
+  function channelLabel(channel: string): string {
+    switch (channel) {
+      case "telegram":
+        return "Telegram";
+      case "discord":
+        return "Discord";
+      case "slack":
+        return "Slack";
+      default:
+        return channel.charAt(0).toUpperCase() + channel.slice(1);
+    }
+  }
+
   function pairingIdentityLabel(identity: RelayPairingIdentity): string {
     if ("id" in identity) return identity.displayName ?? getTelegramUserLabel(identity);
     return identity.displayName ?? identity.username ?? identity.userId;
@@ -327,7 +359,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       `User ID: ${userId}`,
       identity.conversationKind ? `Conversation: ${identity.conversationKind}` : undefined,
     ].filter(Boolean).join("\n");
-    const approved = await ctx.ui.confirm(`${channel === "telegram" ? "Telegram" : "Discord"} Pairing Request`, details);
+    const approved = await ctx.ui.confirm(`${channelLabel(channel)} Pairing Request`, details);
     if (!approved) return "deny";
     const trust = await ctx.ui.confirm("Trust relay user?", `Trust ${label} (${channel} ${userId}) so future fresh pairing codes can skip local confirmation on this machine?`);
     return trust ? "trust" : "allow";
@@ -361,6 +393,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           return loadImagePathForTelegram(latestContext ?? ctx, relativePath, turnId, 0);
         },
         appendAudit,
+        notifyLocal: (message, level = "info") => ctx.ui.notify(message, level),
         persistBinding,
         promptLocalConfirmation: async (identity) => promptPairingApproval(latestContext ?? ctx, identity, currentRoute?.sessionLabel ?? sessionLabel),
         abort: () => latestContext?.abort(),
@@ -462,17 +495,36 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const findings = allFindings.filter((finding) => finding.channel === channel || finding.channel === "all");
       const model = buildRelaySetupWizardModel(channel, config, { facts, findings: allFindings });
       if (ctx.hasUI) {
+        let action: RelaySetupWizardActionId | undefined;
         try {
-          await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => new RelaySetupWizardScreen(model, theme, () => done(undefined)));
-          return;
+          action = await ctx.ui.custom<RelaySetupWizardActionId | undefined>((_tui, theme, _keybindings, done) => new RelaySetupWizardScreen(model, theme, done, {
+            onCopyEnvSnippet: async () => {
+              try {
+                await handleRelaySetupWizardAction(ctx, channel, config, "copy-env-snippet");
+              } catch (copyError) {
+                const safeMessage = copyError instanceof Error ? copyError.message : String(copyError);
+                ctx.ui.notify(redactSecrets(`Unable to copy setup env snippet: ${safeMessage}`), "warning");
+              }
+            },
+            onCopySlackManifest: async () => {
+              try {
+                await handleRelaySetupWizardAction(ctx, channel, config, "copy-slack-manifest");
+              } catch (copyError) {
+                const safeMessage = copyError instanceof Error ? copyError.message : String(copyError);
+                ctx.ui.notify(redactSecrets(`Unable to copy Slack app manifest: ${safeMessage}`), "warning");
+              }
+            },
+          }));
         } catch (wizardError) {
           const safeMessage = wizardError instanceof Error ? wizardError.message : String(wizardError);
           ctx.ui.notify(redactSecrets(`Interactive setup wizard failed: ${safeMessage}. Showing plain setup guidance instead.`), "warning");
           ctx.ui.notify(renderRelaySetupWizardFallback(model, config), findings.some((finding) => finding.severity === "error") ? "warning" : "info");
           return;
         }
+        if (action) await handleRelaySetupWizardAction(ctx, channel, config, action);
+        return;
       }
-      const lines = [relaySetupGuidance(channel, config)];
+      const lines = [relaySetupGuidance(channel, config), "", "Env snippet:", envSnippetTextForSetupChannel(channel).trimEnd()];
       if (findings.length > 0) {
         lines.push("", "Diagnostics:", ...findings.map((finding) => `- ${finding.severity}: ${finding.message}`));
       }
@@ -481,6 +533,70 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(redactSecrets([relaySetupFallbackGuidance(channel), "", `Config issue: ${message}`].join("\n")), "warning");
     }
+  }
+
+  async function copyPairingCommandToClipboard(ctx: ExtensionContext, channel: RelaySetupChannel, command: string): Promise<void> {
+    await copySetupTextToClipboard(ctx, `${command}\n`, `PiRelay ${channel} pairing command`, "Paste it into the messenger app to complete pairing.");
+  }
+
+  async function copySetupTextToClipboard(ctx: ExtensionContext, text: string, label: string, nextStep: string): Promise<void> {
+    const copied = await copyTextToClipboard(text);
+    if (copied.ok) {
+      ctx.ui.notify(`${label} copied to clipboard${copied.command ? ` using ${copied.command}` : ""}. ${nextStep}`, "info");
+    } else {
+      ctx.ui.setEditorText(text);
+      ctx.ui.notify(`Clipboard copy is unavailable (${redactSecrets(copied.error ?? "unknown error")}). ${label} was placed in the Pi editor instead.`, "warning");
+    }
+  }
+
+  async function handleRelaySetupWizardAction(ctx: ExtensionContext, channel: RelaySetupChannel, config: TelegramTunnelConfig, action: RelaySetupWizardActionId): Promise<void> {
+    if (action === "copy-env-snippet") {
+      const snippet = envSnippetTextForSetupChannel(channel);
+      await copySetupTextToClipboard(ctx, snippet, `PiRelay ${channel} env snippet`, `Add values in your shell profile, restart/export them, then run /relay setup ${channel} again to write config from env.`);
+      return;
+    }
+    if (action === "copy-slack-manifest") {
+      if (channel !== "slack") return;
+      await copySetupTextToClipboard(ctx, slackAppManifestText(), "PiRelay Slack app manifest", "Paste it in Slack: Create New App → From an app manifest, then install/reinstall the app and copy the generated tokens into env/config.");
+      return;
+    }
+
+    const preview = computeRelaySetupConfigPatchFromEnv(channel);
+    if (preview.missingRequiredEnvVars.length > 0) {
+      ctx.ui.notify([
+        `Cannot write ${channel} config yet: required env vars are missing.`,
+        `Missing: ${preview.missingRequiredEnvVars.join(", ")}`,
+        `Use the setup wizard's copy env snippet action to copy placeholder exports to the clipboard.`,
+      ].join("\n"), "warning");
+      return;
+    }
+
+    const confirmed = await ctx.ui.confirm(
+      `Write PiRelay ${channel} config from env?`,
+      [
+        `Target: ${config.configPath ?? "default PiRelay config path"}`,
+        "PiRelay will write env var references for secrets, not secret values.",
+        preview.changedFields.length > 0 ? `Fields: ${preview.changedFields.join(", ")}` : "No defined env vars were found for this messenger.",
+        "A timestamped backup will be created if the config file already exists and the written file will be chmod 600.",
+      ].join("\n"),
+    );
+    if (!confirmed) {
+      ctx.ui.notify(`Skipped PiRelay ${channel} config update; no changes were made.`, "info");
+      return;
+    }
+
+    const result = await writeRelaySetupConfigFromEnv(channel, { configPath: config.configPath });
+    configCache = undefined;
+    runtime = undefined;
+    discordRuntimes.clear();
+    slackRuntimes.clear();
+    ctx.ui.notify(redactSecrets([
+      `Updated PiRelay ${channel} config from environment variables.`,
+      `Config: ${result.configPath}`,
+      `Backup: ${result.backupPath ?? "not created"}`,
+      `Fields: ${result.changedFields.length > 0 ? result.changedFields.join(", ") : "none"}`,
+      "Run /relay doctor to verify setup.",
+    ].join("\n")), "info");
   }
 
   async function promptAndApplyConfigMigration(ctx: ExtensionContext, migrationPlan: RelayConfigMigrationPlan): Promise<boolean> {
@@ -594,9 +710,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     const config = await ensureConfig(ctx, true);
     const selectedDiscordConfig = channel === "discord" ? config.discordInstances?.[instanceId] ?? (instanceId === "default" ? config.discord : undefined) : undefined;
+    const selectedSlackConfig = channel === "slack" ? config.slackInstances?.[instanceId] ?? (instanceId === "default" ? config.slack : undefined) : undefined;
     const channelReady = channel === "discord"
       ? Boolean(selectedDiscordConfig?.enabled && selectedDiscordConfig.botToken)
-      : relayChannelReady(config, channel);
+      : channel === "slack"
+        ? Boolean(selectedSlackConfig?.enabled && selectedSlackConfig.botToken && selectedSlackConfig.signingSecret)
+        : relayChannelReady(config, channel);
     if (!channelReady) {
       const findings = relaySetupDiagnostics(config).filter((finding) => finding.channel === channel && finding.severity === "error");
       ctx.ui.notify(redactSecrets([
@@ -623,11 +742,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       await discord.registerRoute(currentRoute);
       await startDiscordRuntime(ctx, discord, true);
     }
+    let discoveredSlackAppId: string | undefined;
+    let discoveredSlackTeamId: string | undefined;
     if (channel === "slack") {
       const slack = await ensureSlackRuntime(ctx, true, instanceId);
       if (!slack) throw new Error("Slack runtime is not configured. Run /relay setup slack or /relay doctor for details.");
       await slack.registerRoute(currentRoute);
       await startSlackRuntime(ctx, slack, true);
+      const slackStatus = slack.getStatus();
+      discoveredSlackAppId = slackStatus.appId;
+      discoveredSlackTeamId = slackStatus.teamId;
     }
     const store = new TunnelStateStore(config.stateDir);
     const { nonce, pairing } = await store.createPendingPairing({
@@ -636,18 +760,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       sessionFile: currentRoute.sessionFile,
       sessionLabel: currentRoute.sessionLabel,
       expiryMs: config.pairingExpiryMs,
-      codeKind: channel === "discord" ? "pin" : "nonce",
+      codeKind: channel === "discord" || channel === "slack" ? "pin" : "nonce",
     });
     const expiryMinutes = Math.round((Date.parse(pairing.expiresAt) - Date.now()) / 60_000);
     const discordApplicationId = selectedDiscordConfig?.applicationId ?? selectedDiscordConfig?.clientId;
     if (channel === "discord" && discordApplicationId) {
       const chatUrl = discordBotChatUrl(discordApplicationId);
       const qrLines = renderQrLines(chatUrl);
+      const pairingCommand = `relay pair ${nonce}`;
       const instructions = [
-        "Scan the QR code to open the Discord bot profile/DM.",
-        "Bot authorization/invite is handled by /relay setup discord; make sure you and the bot already share a server and that Discord DMs are allowed.",
-        "For shared-room mode, invite one dedicated PiRelay bot per machine into the same authorized server channel and run the pairing command in that channel when guild-channel control is enabled, or pair in DM first and then use machine-aware commands in the shared channel.",
-        `Then send to the bot DM or authorized shared channel: relay pair ${nonce}`,
+        "Choose one pairing path:",
+        "A) DM: scan the QR code/open the link to the Discord bot profile, then send the highlighted command in the bot DM.",
+        "B) Channel: invite the bot to an allowed server channel, enable Discord guild-channel control, then copy the highlighted command with c and paste it in that channel.",
+        "Bot authorization/invite is handled by /relay setup discord; for DM pairing, make sure you and the bot already share a server and Discord DMs are allowed.",
         `${`/start ${nonce}`} is also accepted as a compatibility alias.`,
       ];
       if (ctx.hasUI) {
@@ -655,7 +780,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         try {
           await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
             closeConnectQrScreen = () => done(undefined);
-            return new PairingQrScreen(theme, "Discord relay pairing", currentRoute!.sessionLabel, qrLines, chatUrl, expiryMinutes, instructions, () => done(undefined));
+            return new PairingQrScreen(theme, "Discord relay pairing", currentRoute!.sessionLabel, qrLines, chatUrl, expiryMinutes, instructions, () => done(undefined), {
+              command: pairingCommand,
+              onCopyCommand: async (command) => copyPairingCommandToClipboard(ctx, "discord", command),
+            });
           });
         } finally {
           closeConnectQrScreen = undefined;
@@ -666,10 +794,52 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(redactSecrets([
         `Discord pairing ready for session ${currentRoute.sessionLabel}.`,
         `Open bot profile/DM: ${chatUrl}`,
-        "Bot authorization/invite is handled by /relay setup discord; make sure you and the bot already share a server and that Discord DMs are allowed.",
-        "Shared-room mode: invite one dedicated PiRelay bot per machine into the same authorized server channel; when guild-channel control is enabled you may pair from that channel, otherwise pair in DM and then use machine-aware commands in the shared channel.",
-        `Send to the bot DM or authorized shared channel: relay pair ${nonce}`,
+        "Choose one pairing path:",
+        "A) DM: open the bot profile/DM link, then send the pairing command in the bot DM. Make sure you and the bot already share a server and Discord DMs are allowed.",
+        "B) Channel: invite the bot to an allowed server channel, enable Discord guild-channel control, then paste the pairing command in that channel.",
+        `Pairing command: relay pair ${nonce}`,
         `/start ${nonce} is also accepted as a compatibility alias.`,
+        `Expires in about ${expiryMinutes} minute(s).`,
+      ].join("\n")), "info");
+      return;
+    }
+    const slackAppId = selectedSlackConfig?.appId ?? discoveredSlackAppId;
+    const slackTeamId = selectedSlackConfig?.workspaceId ?? discoveredSlackTeamId;
+    if (channel === "slack" && slackAppId) {
+      const appUrl = slackAppRedirectUrl(slackAppId, slackTeamId);
+      const qrLines = renderQrLines(appUrl);
+      const pairingCommand = `pirelay pair ${nonce}`;
+      const instructions = [
+        "Choose one pairing path:",
+        "A) DM: scan the QR code/open the link to Slack App Home, open the Messages tab, then send the highlighted command in the app DM.",
+        "B) Channel: invite the app to the target Slack channel, enable slack.allowChannelMessages, then copy the highlighted command with c and paste it in that channel/thread.",
+        "If Slack says sending messages to this app is turned off, enable App Home > Messages Tab > Allow users to send messages to your app, add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, reinstall the app, then retry.",
+        "Do not prefix the highlighted command with /; Slack treats leading slash text as a slash command.",
+      ];
+      if (ctx.hasUI) {
+        ctx.ui.setWidget(CONNECT_WIDGET_KEY, undefined);
+        try {
+          await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+            closeConnectQrScreen = () => done(undefined);
+            return new PairingQrScreen(theme, "Slack relay pairing", currentRoute!.sessionLabel, qrLines, appUrl, expiryMinutes, instructions, () => done(undefined), {
+              command: pairingCommand,
+              onCopyCommand: async (command) => copyPairingCommandToClipboard(ctx, "slack", command),
+            });
+          });
+        } finally {
+          closeConnectQrScreen = undefined;
+        }
+        ctx.ui.notify(`Slack pairing PIN ready: ${pairingCommand}. Expires in about ${expiryMinutes} minute(s).`, "info");
+        return;
+      }
+      ctx.ui.notify(redactSecrets([
+        `Slack pairing ready for session ${currentRoute.sessionLabel}.`,
+        `Open Slack app home: ${appUrl}`,
+        "Choose one pairing path:",
+        "A) DM: open Slack App Home, use the Messages tab, then send the pairing command in the app DM.",
+        "B) Channel: invite the app to the target Slack channel, enable slack.allowChannelMessages, then paste the pairing command in that channel/thread.",
+        "If Slack says sending messages to this app is turned off, enable App Home > Messages Tab > Allow users to send messages to your app, add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, reinstall the app, then retry.",
+        `Pairing command: pirelay pair ${nonce}`,
         `Expires in about ${expiryMinutes} minute(s).`,
       ].join("\n")), "info");
       return;
@@ -677,8 +847,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(redactSecrets([
       `${channel} pairing ready for session ${currentRoute.sessionLabel}.`,
       relayPairingInstruction(channel, nonce),
-      channel === "discord" ? "Shared-room mode: use one dedicated Discord bot per machine in the same authorized server channel; with guild-channel control enabled, send the pairing PIN in that channel to bind this room." : undefined,
+      channel === "discord" ? "Choose one pairing path: DM the bot, or paste the pairing command in an allowed server channel after enabling Discord guild-channel control." : undefined,
       channel === "discord" ? "QR redirect unavailable: set discord.applicationId (or clientId) or PI_RELAY_DISCORD_APPLICATION_ID (or PI_RELAY_DISCORD_CLIENT_ID) from Discord Developer Portal > General Information > Application ID." : undefined,
+      channel === "slack" ? "Choose one pairing path: DM the Slack app, or paste the pairing command in a Slack channel/thread after inviting the app and enabling slack.allowChannelMessages." : undefined,
+      channel === "slack" ? "Slack App Home QR unavailable: set slack.appId or PI_RELAY_SLACK_APP_ID from Slack Basic Information > App Credentials > App ID." : undefined,
+      channel === "slack" ? "If Slack says sending messages to this app is turned off, enable App Home > Messages Tab > Allow users to send messages to your app, add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, reinstall the app, then retry." : undefined,
       `Expires in about ${expiryMinutes} minute(s).`,
     ].filter(Boolean).join("\n")), "info");
   }
@@ -811,8 +984,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
   pi.registerMessageRenderer(AUDIT_MESSAGE_TYPE, (message, _options, theme) => ({
     render(width: number) {
-      const text = typeof message.content === "string" ? message.content : "Telegram action";
-      const rendered = theme.fg("accent", `Telegram › ${text}`);
+      const text = typeof message.content === "string" ? message.content : "Relay action";
+      const rendered = theme.fg("accent", `Relay › ${text}`);
       return [rendered.length > width ? rendered.slice(0, width) : rendered];
     },
     invalidate() {},
