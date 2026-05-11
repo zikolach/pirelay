@@ -72,6 +72,17 @@ describe("relay setup config from env", () => {
     expect(patch.invalidEnvVars).toEqual(["PI_RELAY_DISCORD_ALLOW_GUILD_CHANNELS"]);
   });
 
+  it("requires Slack app token only for Socket Mode setup", () => {
+    const base = {
+      PI_RELAY_SLACK_BOT_TOKEN: "xoxb-secret-token",
+      PI_RELAY_SLACK_SIGNING_SECRET: "slack-signing-secret-value",
+    };
+
+    expect(computeRelaySetupConfigPatchFromEnv("slack", base).missingRequiredEnvVars).toEqual(["PI_RELAY_SLACK_APP_TOKEN"]);
+    expect(computeRelaySetupConfigPatchFromEnv("slack", { ...base, PI_RELAY_SLACK_EVENT_MODE: "socket" }).missingRequiredEnvVars).toEqual(["PI_RELAY_SLACK_APP_TOKEN"]);
+    expect(computeRelaySetupConfigPatchFromEnv("slack", { ...base, PI_RELAY_SLACK_EVENT_MODE: "webhook" }).missingRequiredEnvVars).toEqual([]);
+  });
+
   it("uses legacy Telegram aliases when canonical env vars are absent", () => {
     const patch = computeRelaySetupConfigPatchFromEnv("telegram", {
       TELEGRAM_BOT_TOKEN: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",

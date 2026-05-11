@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
+import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackReactionPayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
 import { SlackLiveOperations } from "../extensions/relay/adapters/slack/live-client.js";
 import { SlackRuntime } from "../extensions/relay/adapters/slack/runtime.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
@@ -50,6 +50,8 @@ class FakeSlackOperations implements SlackApiOperations {
   readonly posts: SlackPostMessagePayload[] = [];
   readonly ephemeral: SlackPostEphemeralPayload[] = [];
   readonly responses: Array<{ url: string; text: string }> = [];
+  addReaction?: (payload: SlackReactionPayload) => Promise<void>;
+  removeReaction?: (payload: SlackReactionPayload) => Promise<void>;
 
   async startSocketMode(handler: (event: SlackEnvelope) => Promise<void>): Promise<void> {
     this.handler = handler;
@@ -283,6 +285,82 @@ describe("SlackRuntime foundations", () => {
 
     await expect(runtime.start()).rejects.toThrow("app-level token");
     expect(runtime.getStatus()).toMatchObject({ enabled: true, started: false, error: expect.stringContaining("app-level token") });
+  });
+
+  it("adds and removes Slack thinking reactions for accepted prompts", async () => {
+    const operations = new FakeSlackOperations();
+    const addReaction = vi.fn(async (_payload: SlackReactionPayload) => undefined);
+    const removeReaction = vi.fn(async (_payload: SlackReactionPayload) => undefined);
+    operations.addReaction = addReaction;
+    operations.removeReaction = removeReaction;
+    const runtimeConfig = await config();
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "react-env", eventId: "react-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "hello", ts: "31", team: "T1" } });
+
+    expect(addReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "31", name: "thinking_face" });
+    expect(operations.ephemeral).toHaveLength(0);
+    await runtime.notifyTurnCompleted(testRoute, "completed");
+    expect(removeReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "31", name: "thinking_face" });
+  });
+
+  it("cleans Slack thinking reactions on stop and route unregister", async () => {
+    const startRuntime = async (ts: string) => {
+      const operations = new FakeSlackOperations();
+      operations.addReaction = vi.fn(async (_payload: SlackReactionPayload) => undefined);
+      operations.removeReaction = vi.fn(async (_payload: SlackReactionPayload) => undefined);
+      const runtimeConfig = await config();
+      const testRoute = route();
+      const store = new TunnelStateStore(runtimeConfig.stateDir);
+      await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+      const runtime = new SlackRuntime(runtimeConfig, { operations });
+      await runtime.registerRoute(testRoute);
+      await runtime.start();
+      await operations.handler!({ type: "event_callback", envelopeId: `cleanup-env-${ts}`, eventId: `cleanup-event-${ts}`, event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "hello", ts, team: "T1" } });
+      return { operations, runtime, testRoute };
+    };
+
+    const stopped = await startRuntime("32");
+    await stopped.runtime.stop();
+    expect(stopped.operations.removeReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "32", name: "thinking_face" });
+
+    const unregistered = await startRuntime("33");
+    await unregistered.runtime.unregisterRoute(unregistered.testRoute.sessionKey);
+    expect(unregistered.operations.removeReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "33", name: "thinking_face" });
+  });
+
+  it("falls back to ephemeral Slack activity when thinking reactions fail", async () => {
+    const operations = new FakeSlackOperations();
+    operations.addReaction = vi.fn(async () => {
+      throw new Error("missing_scope");
+    });
+    const runtimeConfig = await config();
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "react-fallback-env", eventId: "react-fallback-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "hello", ts: "34", thread_ts: "parent-34", team: "T1" } });
+
+    expect(operations.addReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "34", name: "thinking_face" });
+    expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "parent-34" });
   });
 
   it("preserves Slack thread context for runtime error responses", async () => {

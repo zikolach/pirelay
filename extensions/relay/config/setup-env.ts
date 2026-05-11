@@ -86,7 +86,7 @@ export function computeRelaySetupConfigPatchFromEnv(channel: RelaySetupChannel, 
   for (const binding of setupEnvBindings[channel]) {
     const resolved = resolveBindingEnv(binding, env);
     if (!resolved) {
-      if (binding.required) missingRequiredEnvVars.push(binding.env);
+      if (setupEnvBindingRequired(channel, binding, env)) missingRequiredEnvVars.push(binding.env);
       continue;
     }
 
@@ -171,6 +171,14 @@ function resolveBindingEnv(binding: RelaySetupEnvBinding, env: NodeJS.ProcessEnv
     if (value !== undefined && value !== "") return { envName, value };
   }
   return undefined;
+}
+
+function setupEnvBindingRequired(channel: RelaySetupChannel, binding: RelaySetupEnvBinding, env: NodeJS.ProcessEnv): boolean {
+  if (!binding.required) return false;
+  if (channel === "slack" && binding.env === "PI_RELAY_SLACK_APP_TOKEN") {
+    return (env.PI_RELAY_SLACK_EVENT_MODE ?? "socket").trim().toLowerCase() !== "webhook";
+  }
+  return true;
 }
 
 function parseBindingValue(binding: RelaySetupEnvBinding, envName: string, value: string): { ok: true; value: unknown } | { ok: false } {

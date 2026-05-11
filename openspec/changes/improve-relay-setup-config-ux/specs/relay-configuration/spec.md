@@ -70,6 +70,11 @@ The system SHALL define environment-to-config mappings for Telegram, Discord, an
 - **THEN** it defines the Slack bot token, signing secret, and app-level Socket Mode token as secret env reference mappings
 - **AND** it defines supported Slack App ID, workspace id, bot user id, user allow-list, and channel-message env vars as non-secret config mappings
 
+#### Scenario: Slack app token requirement follows event mode
+- **WHEN** Slack config update from env is computed
+- **THEN** `PI_RELAY_SLACK_APP_TOKEN` is required for Socket Mode or when event mode is unspecified
+- **AND** `PI_RELAY_SLACK_APP_TOKEN` is not required when `PI_RELAY_SLACK_EVENT_MODE=webhook`
+
 #### Scenario: Snippet and writer use the same metadata
 - **WHEN** setup env snippets are rendered and config-from-env updates are computed for a messenger
 - **THEN** both operations use the same env mapping metadata
