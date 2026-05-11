@@ -228,6 +228,23 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtimes;
   }
 
+  async function stopAndClearRuntimes(ctx: ExtensionContext): Promise<void> {
+    const stops: Array<Promise<void>> = [];
+    if (runtime) stops.push(runtime.stop());
+    for (const discord of discordRuntimes.values()) stops.push(discord.stop());
+    for (const slack of slackRuntimes.values()) stops.push(slack.stop());
+    const results = await Promise.allSettled(stops);
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    runtime = undefined;
+    discordRuntimes.clear();
+    slackRuntimes.clear();
+    if (failures.length > 0) {
+      const first = failures[0]?.reason;
+      const message = first instanceof Error ? first.message : String(first);
+      ctx.ui.notify(`Stopped PiRelay runtimes with ${failures.length} warning(s): ${redactSecrets(message)}`, "warning");
+    }
+  }
+
   function statusKeyForChannel(channel: RelayStatusLineChannel): string {
     return channel === "telegram" ? "relay" : `${channel}-relay`;
   }
@@ -652,10 +669,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     const result = await writeRelaySetupConfigFromEnv(channel, { configPath: config.configPath });
+    await stopAndClearRuntimes(ctx);
     configCache = undefined;
-    runtime = undefined;
-    discordRuntimes.clear();
-    slackRuntimes.clear();
     ctx.ui.notify(redactSecrets([
       `Updated PiRelay ${channel} config from environment variables.`,
       `Config: ${result.configPath}`,

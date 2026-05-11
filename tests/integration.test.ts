@@ -621,6 +621,64 @@ describe("PiRelay integration behavior", () => {
     expect(notifications.at(-1)?.message).toContain("Updated PiRelay slack config from environment variables");
   });
 
+  it("stops active runtimes before reloading config written from env", async () => {
+    const config = await createRuntimeConfig("pi-setup-write-stops-runtime-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath!);
+    vi.stubEnv("PI_RELAY_SLACK_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_SLACK_BOT_TOKEN", "xoxb-secret-token");
+    vi.stubEnv("PI_RELAY_SLACK_SIGNING_SECRET", "slack-signing-secret-value");
+    vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "xapp-secret-token");
+    vi.stubEnv("PI_RELAY_SLACK_WORKSPACE_ID", "T1");
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    let slackStarted = false;
+    const fakeSlackRuntime = {
+      start: vi.fn(async () => { slackStarted = true; }),
+      stop: vi.fn(async () => { slackStarted = false; }),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: slackStarted, appId: "A1", teamId: "T1" })),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: () => fakeSlackRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("setup-write-stops-runtime");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "connect slack", context);
+    expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
+    context.ui.custom = vi.fn(async (factory: (...args: any[]) => { handleInput?: (data: string) => void } | undefined) => {
+      let result: unknown;
+      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, (value: unknown) => {
+        result = value;
+      });
+      screen?.handleInput?.("w");
+      return result;
+    });
+
+    await pi.runCommand("relay", "setup slack", context);
+
+    expect(fakeSlackRuntime.stop).toHaveBeenCalledTimes(1);
+    expect(fakeRuntime.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("does not write setup config when confirmation is cancelled", async () => {
     const config = await createRuntimeConfig("pi-setup-write-cancel-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
