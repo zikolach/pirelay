@@ -65,6 +65,7 @@ describe("relay setup wizard model", () => {
     const text = JSON.stringify(model);
 
     expect(model.checklist.map((item) => item.label)).toEqual(expect.arrayContaining(["Bot token", "Signing secret", "App Home messages", "App ID", "Workspace boundary", "Event mode", "DM-first safety", "Allow-list"]));
+    expect(model.checklist.find((item) => item.label === "App Home messages")?.status).toBe("info");
     expect(text).toContain("PI_RELAY_SLACK_SIGNING_SECRET");
     expect(text).toContain("PI_RELAY_SLACK_APP_ID");
     const manifestText = model.panels.find((panel) => panel.id === "manifest")?.lines.join("\n") ?? "";

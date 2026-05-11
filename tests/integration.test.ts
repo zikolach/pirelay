@@ -679,6 +679,68 @@ describe("PiRelay integration behavior", () => {
     expect(fakeRuntime.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("scopes Slack status lines by configured instance", async () => {
+    const config = await createRuntimeConfig("pi-slack-instance-status-");
+    await writeFile(config.configPath!, JSON.stringify({
+      messengers: {
+        telegram: { default: { botToken: config.botToken } },
+        slack: {
+          default: { enabled: true, botToken: "slack-default", signingSecret: "secret-default", eventMode: "webhook" },
+          beta: { enabled: true, botToken: "slack-beta", signingSecret: "secret-beta", eventMode: "webhook" },
+        },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath!);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const sessionId = "slack-instance-status";
+    const sessionFile = `/tmp/${sessionId}.jsonl`;
+    const sessionKey = sessionKeyOf(sessionId, sessionFile);
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "beta", conversationId: "C_BETA", userId: "U_BETA", sessionKey, sessionId, sessionFile, sessionLabel: `${sessionId}.jsonl`, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "channel" } });
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const slackRuntimes = new Map<string, { started: boolean; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; registerRoute: ReturnType<typeof vi.fn>; unregisterRoute: ReturnType<typeof vi.fn>; getStatus: ReturnType<typeof vi.fn> }>();
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: (_config: TelegramTunnelConfig, _operations: unknown, instanceId = "default") => {
+        let runtime = slackRuntimes.get(instanceId);
+        if (!runtime) {
+          runtime = {
+            started: false,
+            start: vi.fn(async () => { runtime!.started = true; }),
+            stop: vi.fn(async () => { runtime!.started = false; }),
+            registerRoute: vi.fn(async () => undefined),
+            unregisterRoute: vi.fn(async () => undefined),
+            getStatus: vi.fn(() => ({ enabled: true, started: runtime!.started })),
+          };
+          slackRuntimes.set(instanceId, runtime);
+        }
+        return runtime;
+      },
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, statuses } = createMockContext(sessionId);
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "status", context);
+
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: ready unpaired" });
+    expect(statuses).toContainEqual({ key: "slack-relay:beta", value: "slack: paired channel" });
+  });
+
   it("does not write setup config when confirmation is cancelled", async () => {
     const config = await createRuntimeConfig("pi-setup-write-cancel-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);

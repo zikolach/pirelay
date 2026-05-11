@@ -366,6 +366,48 @@ describe("SlackRuntime foundations", () => {
 
     expect(operations.addReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "34", name: "thinking_face" });
     expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "parent-34" });
+    expect(runtime.getStatus().error).toBeUndefined();
+  });
+
+  it("keeps best-effort Slack activity failures out of runtime health", async () => {
+    const operations = new FakeSlackOperations();
+    operations.postEphemeral = vi.fn(async () => {
+      throw new Error("ephemeral_not_allowed");
+    });
+    const runtimeConfig = await config();
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "activity-fallback-env", eventId: "activity-fallback-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "hello", ts: "35", thread_ts: "parent-35", team: "T1" } });
+    await waitForSlackRuntimeTimers();
+
+    expect(operations.postEphemeral).toHaveBeenCalled();
+    expect(runtime.getStatus().error).toBeUndefined();
+  });
+
+  it("contains failed Slack progress sends from timer callbacks", async () => {
+    const operations = new FakeSlackOperations();
+    operations.postMessage = vi.fn(async () => {
+      throw new Error("slack_unavailable");
+    });
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    testRoute.notification.progressEvent = { id: "progress-fail", kind: "tool", text: "Running tests", at: Date.now() };
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "verbose" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeTimers();
+
+    expect(operations.postMessage).toHaveBeenCalled();
+    expect(runtime.getStatus().error).toBeUndefined();
   });
 
   it("preserves Slack thread context for runtime error responses", async () => {

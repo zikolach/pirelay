@@ -127,7 +127,7 @@ function slackChecklist(config: SlackRelayConfig | undefined): RelaySetupWizardC
     checklistItem("Bot token", Boolean(config?.enabled && config.botToken), "Set PI_RELAY_SLACK_BOT_TOKEN or messengers.slack.default.tokenEnv."),
     checklistItem("Signing secret", Boolean(config?.signingSecret), "Set PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv."),
     checklistItem("Socket Mode app token", config?.eventMode === "webhook" || Boolean(config?.appToken), "Set PI_RELAY_SLACK_APP_TOKEN or slack.appTokenEnv to an app-level token with connections:write."),
-    checklistItem("App Home messages", true, "In Slack app settings, enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history, im:read, and reactions:write scopes, then reinstall."),
+    { label: "App Home messages", status: "info", detail: "Manual Slack app setting: enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history, im:read, and reactions:write scopes, then reinstall." },
     checklistItem("App ID", Boolean(config?.appId), "Optional: set PI_RELAY_SLACK_APP_ID or slack.appId to show an App Home QR link for /relay connect slack.", { warningWhenFalse: true }),
     checklistItem("Workspace boundary", Boolean(config?.workspaceId), "Set slack.workspaceId to restrict the app to the expected workspace.", { warningWhenFalse: true }),
     checklistItem("Bot user id", Boolean(config?.botUserId), "Optional fallback; runtime normally discovers bot user id via auth.test.", { warningWhenFalse: true }),

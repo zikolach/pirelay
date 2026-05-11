@@ -245,8 +245,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
   }
 
-  function statusKeyForChannel(channel: RelayStatusLineChannel): string {
-    return channel === "telegram" ? "relay" : `${channel}-relay`;
+  function statusKeyForChannel(channel: RelayStatusLineChannel, instanceId = "default"): string {
+    if (channel === "telegram") return "relay";
+    const base = `${channel}-relay`;
+    return instanceId === "default" ? base : `${base}:${instanceId}`;
   }
 
   function telegramStatusBinding(binding: PersistedBindingRecord | TelegramBindingMetadata | undefined): RelayStatusLineBindingState | undefined {
@@ -260,37 +262,37 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return { paused: binding.paused, conversationKind };
   }
 
-  async function currentStatusBinding(config: TelegramTunnelConfig, channel: RelayStatusLineChannel): Promise<RelayStatusLineBindingState | undefined> {
+  async function currentStatusBinding(config: TelegramTunnelConfig, channel: RelayStatusLineChannel, instanceId = "default"): Promise<RelayStatusLineBindingState | undefined> {
     if (!currentRoute) return undefined;
     const store = new TunnelStateStore(config.stateDir);
     if (channel === "telegram") return telegramStatusBinding(currentRoute.binding ?? await store.getBindingBySessionKey(currentRoute.sessionKey));
-    return channelStatusBinding(await store.getChannelBindingBySessionKey(channel, currentRoute.sessionKey));
+    return channelStatusBinding(await store.getChannelBindingBySessionKey(channel, currentRoute.sessionKey, instanceId));
   }
 
-  async function setMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, state: Omit<Parameters<typeof formatRelayStatusLine>[0], "channel" | "binding"> & { binding?: RelayStatusLineBindingState }): Promise<void> {
-    ctx.ui.setStatus(statusKeyForChannel(channel), formatRelayStatusLine({ channel, ...state }));
+  async function setMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, state: Omit<Parameters<typeof formatRelayStatusLine>[0], "channel" | "binding"> & { binding?: RelayStatusLineBindingState }, instanceId = "default"): Promise<void> {
+    ctx.ui.setStatus(statusKeyForChannel(channel, instanceId), formatRelayStatusLine({ channel, ...state }));
   }
 
-  async function refreshMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, runtimeStatus?: { enabled: boolean; started: boolean; error?: string }): Promise<void> {
+  async function refreshMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, runtimeStatus?: { enabled: boolean; started: boolean; error?: string }, instanceId = "default"): Promise<void> {
     const config = await ensureConfig(ctx, false);
     const configured = channel === "telegram"
       ? Boolean(config.botToken)
       : channel === "discord"
-        ? discordInstanceIds(config).length > 0
-        : slackInstanceIds(config).length > 0;
-    const binding = runtimeStatus?.error ? undefined : await currentStatusBinding(config, channel);
+        ? Boolean(config.discordInstances?.[instanceId]?.enabled && config.discordInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.discord?.enabled && config.discord.botToken))
+        : Boolean(config.slackInstances?.[instanceId]?.enabled && config.slackInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.slack?.enabled && config.slack.botToken));
+    const binding = runtimeStatus?.error ? undefined : await currentStatusBinding(config, channel, instanceId);
     await setMessengerStatus(ctx, channel, {
       configured,
       runtimeStarted: channel === "telegram" ? Boolean(runtime) : runtimeStatus?.started,
       error: runtimeStatus?.error ? redactSecrets(runtimeStatus.error) : undefined,
       binding,
-    });
+    }, instanceId);
   }
 
   async function refreshRelayStatuses(ctx: ExtensionContext): Promise<void> {
     await refreshMessengerStatus(ctx, "telegram");
-    for (const discord of discordRuntimes.values()) await refreshMessengerStatus(ctx, "discord", discord.getStatus());
-    for (const slack of slackRuntimes.values()) await refreshMessengerStatus(ctx, "slack", slack.getStatus());
+    for (const [instanceId, discord] of discordRuntimes) await refreshMessengerStatus(ctx, "discord", discord.getStatus(), instanceId);
+    for (const [instanceId, slack] of slackRuntimes) await refreshMessengerStatus(ctx, "slack", slack.getStatus(), instanceId);
   }
 
   function refreshRelayStatusesSoon(ctx?: ExtensionContext): void {
@@ -302,27 +304,27 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     });
   }
 
-  async function startDiscordRuntime(ctx: ExtensionContext, discord: DiscordRuntime, failHard = false): Promise<boolean> {
+  async function startDiscordRuntime(ctx: ExtensionContext, discord: DiscordRuntime, failHard = false, instanceId = "default"): Promise<boolean> {
     if (discord.getStatus().started) {
-      await refreshMessengerStatus(ctx, "discord", discord.getStatus());
+      await refreshMessengerStatus(ctx, "discord", discord.getStatus(), instanceId);
       return true;
     }
     try {
       await discord.start();
-      await refreshMessengerStatus(ctx, "discord", discord.getStatus());
+      await refreshMessengerStatus(ctx, "discord", discord.getStatus(), instanceId);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const safeMessage = redactSecrets(message);
-      await setMessengerStatus(ctx, "discord", { configured: true, runtimeStarted: false, error: safeMessage });
+      await setMessengerStatus(ctx, "discord", { configured: true, runtimeStarted: false, error: safeMessage }, instanceId);
       if (failHard) throw new Error(`Discord runtime failed to start: ${safeMessage}`);
       return false;
     }
   }
 
-  async function startSlackRuntime(ctx: ExtensionContext, slack: SlackRuntime, failHard = false): Promise<boolean> {
+  async function startSlackRuntime(ctx: ExtensionContext, slack: SlackRuntime, failHard = false, instanceId = "default"): Promise<boolean> {
     if (slack.getStatus().started) {
-      await refreshMessengerStatus(ctx, "slack", slack.getStatus());
+      await refreshMessengerStatus(ctx, "slack", slack.getStatus(), instanceId);
       return true;
     }
     try {
@@ -330,16 +332,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const status = slack.getStatus();
       if (!status.started) {
         const safeMessage = redactSecrets(status.error || "Slack runtime did not start.");
-        await setMessengerStatus(ctx, "slack", { configured: true, runtimeStarted: false, error: safeMessage });
+        await setMessengerStatus(ctx, "slack", { configured: true, runtimeStarted: false, error: safeMessage }, instanceId);
         if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
         return false;
       }
-      await refreshMessengerStatus(ctx, "slack", status);
+      await refreshMessengerStatus(ctx, "slack", status, instanceId);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const safeMessage = redactSecrets(message);
-      await setMessengerStatus(ctx, "slack", { configured: true, runtimeStarted: false, error: safeMessage });
+      await setMessengerStatus(ctx, "slack", { configured: true, runtimeStarted: false, error: safeMessage }, instanceId);
       if (failHard) throw new Error(`Slack runtime failed to start: ${safeMessage}`);
       return false;
     }
@@ -541,13 +543,15 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     const restoredBinding = await restoreBinding(ctx, config);
     currentRoute = buildRoute(ctx, restoredBinding);
-    for (const discord of await ensureAllDiscordRuntimes()) {
+    await ensureAllDiscordRuntimes();
+    for (const [instanceId, discord] of discordRuntimes) {
       await discord.registerRoute(currentRoute);
-      await startDiscordRuntime(ctx, discord, false);
+      await startDiscordRuntime(ctx, discord, false, instanceId);
     }
-    for (const slack of await ensureAllSlackRuntimes()) {
+    await ensureAllSlackRuntimes();
+    for (const [instanceId, slack] of slackRuntimes) {
       await slack.registerRoute(currentRoute);
-      await startSlackRuntime(ctx, slack, false);
+      await startSlackRuntime(ctx, slack, false, instanceId);
     }
     try {
       runtime = await ensureRuntime();
@@ -746,13 +750,15 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     await tunnelRuntime.registerRoute(currentRoute);
 
-    for (const discord of await ensureAllDiscordRuntimes(ctx, true)) {
+    await ensureAllDiscordRuntimes(ctx, true);
+    for (const [instanceId, discord] of discordRuntimes) {
       await discord.registerRoute(currentRoute);
-      await startDiscordRuntime(ctx, discord, false);
+      await startDiscordRuntime(ctx, discord, false, instanceId);
     }
-    for (const slack of await ensureAllSlackRuntimes(ctx, true)) {
+    await ensureAllSlackRuntimes(ctx, true);
+    for (const [instanceId, slack] of slackRuntimes) {
       await slack.registerRoute(currentRoute);
-      await startSlackRuntime(ctx, slack, false);
+      await startSlackRuntime(ctx, slack, false, instanceId);
     }
     const store = new TunnelStateStore(config.stateDir);
     const { nonce, pairing } = await store.createPendingPairing({
@@ -821,7 +827,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const discord = await ensureDiscordRuntime(ctx, true, instanceId);
       if (!discord) throw new Error("Discord runtime is not configured. Run /relay setup discord or /relay doctor for details.");
       await discord.registerRoute(currentRoute);
-      await startDiscordRuntime(ctx, discord, true);
+      await startDiscordRuntime(ctx, discord, true, instanceId);
     }
     let discoveredSlackAppId: string | undefined;
     let discoveredSlackTeamId: string | undefined;
@@ -829,7 +835,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const slack = await ensureSlackRuntime(ctx, true, instanceId);
       if (!slack) throw new Error("Slack runtime is not configured. Run /relay setup slack or /relay doctor for details.");
       await slack.registerRoute(currentRoute);
-      await startSlackRuntime(ctx, slack, true);
+      await startSlackRuntime(ctx, slack, true, instanceId);
       const slackStatus = slack.getStatus();
       discoveredSlackAppId = slackStatus.appId;
       discoveredSlackTeamId = slackStatus.teamId;

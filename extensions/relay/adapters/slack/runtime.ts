@@ -690,7 +690,9 @@ export class SlackRuntime {
     const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
     const delay = Math.max(0, interval - elapsed);
     state.timer = setTimeout(() => {
-      void this.flushProgress(route.sessionKey, binding, key);
+      void this.flushProgress(route.sessionKey, binding, key).catch((error: unknown) => {
+        debugSlackRuntime(`Slack progress delivery failed: ${safeSlackRuntimeError(error)}`);
+      });
     }, delay);
     unrefTimer(state.timer);
   }
@@ -725,7 +727,7 @@ export class SlackRuntime {
       await this.operations.addReaction(reaction);
       this.thinkingReactions.set(route.sessionKey, reaction);
     } catch (error) {
-      this.lastError = safeSlackRuntimeError(error);
+      debugSlackRuntime(`Slack thinking reaction failed: ${safeSlackRuntimeError(error)}`);
       this.sendActivityBestEffort(slackAddress(message));
     }
   }
@@ -738,7 +740,7 @@ export class SlackRuntime {
     try {
       await this.operations.removeReaction(reaction);
     } catch (error) {
-      this.lastError = safeSlackRuntimeError(error);
+      debugSlackRuntime(`Slack thinking reaction cleanup failed: ${safeSlackRuntimeError(error)}`);
     }
   }
 
@@ -748,7 +750,7 @@ export class SlackRuntime {
 
   private sendActivityBestEffort(address: ChannelRouteAddress): void {
     void this.adapter?.sendActivity(address, "typing").catch((error: unknown) => {
-      this.lastError = safeSlackRuntimeError(error);
+      debugSlackRuntime(`Slack activity indicator failed: ${safeSlackRuntimeError(error)}`);
     });
   }
 
