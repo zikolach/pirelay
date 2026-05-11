@@ -55,6 +55,18 @@ describe("telegram tunnel config", () => {
     expect(config.botToken).toBe("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
   });
 
+  it("prefers canonical Telegram token env over legacy alias", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    vi.stubEnv("PI_RELAY_CONFIG", join(dir, "missing-config.json"));
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "111111:ABCDEFGHIJKLMNOPQRSTUVWXYZ111111");
+    vi.stubEnv("PI_RELAY_TELEGRAM_BOT_TOKEN", "222222:ABCDEFGHIJKLMNOPQRSTUVWXYZ222222");
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.botToken).toBe("222222:ABCDEFGHIJKLMNOPQRSTUVWXYZ222222");
+  });
+
   it("loads top-level env-style Discord and Slack keys from config files", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
     tempDirs.push(dir);

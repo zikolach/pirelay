@@ -262,8 +262,8 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
   }
 
   const telegramConfig = fileConfig?.messengers?.telegram?.default;
-  const botToken = process.env.TELEGRAM_BOT_TOKEN
-    ?? process.env.PI_RELAY_TELEGRAM_BOT_TOKEN
+  const botToken = process.env.PI_RELAY_TELEGRAM_BOT_TOKEN
+    ?? process.env.TELEGRAM_BOT_TOKEN
     ?? resolveConfigSecret(telegramConfig?.botToken ?? telegramConfig?.token, telegramConfig?.tokenEnv)
     ?? fileConfig?.botToken
     ?? fileConfig?.TELEGRAM_BOT_TOKEN;
