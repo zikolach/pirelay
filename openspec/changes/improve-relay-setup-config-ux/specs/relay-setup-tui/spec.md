@@ -57,6 +57,11 @@ The setup wizard SHALL provide a consistent action for Telegram, Discord, and Sl
 - **THEN** PiRelay does not write config by default
 - **AND** the wizard explains which env variable names are missing and offers the copy-to-clipboard env snippet action as the next step
 
+#### Scenario: Env vars are present but invalid
+- **WHEN** the local user selects the write config from env action and one or more defined env vars cannot be parsed, such as an invalid boolean value
+- **THEN** PiRelay does not write config by default
+- **AND** the wizard explains which env variable names are invalid so the user can fix them before retrying
+
 #### Scenario: User cancels config write confirmation
 - **WHEN** the local user selects the write config from env action and then cancels the confirmation prompt
 - **THEN** PiRelay does not write or modify the config file
