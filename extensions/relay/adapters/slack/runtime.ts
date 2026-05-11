@@ -676,7 +676,10 @@ export class SlackRuntime {
       return;
     }
     const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
-    if (!shouldSendNonTerminalProgress(mode)) return;
+    if (!shouldSendNonTerminalProgress(mode)) {
+      this.clearProgressState(route);
+      return;
+    }
     let state = this.progressStates.get(key);
     if (!state) {
       state = { pending: [] };
@@ -706,6 +709,11 @@ export class SlackRuntime {
     if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);
+      return;
+    }
+    const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+    if (!shouldSendNonTerminalProgress(mode)) {
+      this.clearProgressState(route);
       return;
     }
     const pending = state.pending.splice(0);

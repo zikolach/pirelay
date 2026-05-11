@@ -596,6 +596,31 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts).toHaveLength(0);
   });
 
+  it("cancels pending Slack progress when mode changes to quiet", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 50;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const baseBinding = { channel: "slack" as const, instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() };
+    await store.upsertChannelBinding({ ...baseBinding, metadata: { progressMode: "verbose" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-before-quiet", kind: "tool", text: "First update", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(operations.posts).toHaveLength(1);
+
+    testRoute.notification.progressEvent = { id: "progress-after-quiet", kind: "tool", text: "Should not send", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await store.upsertChannelBinding({ ...baseBinding, metadata: { progressMode: "quiet" } });
+    await runtime.registerRoute(testRoute);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+
+    expect(operations.posts).toHaveLength(1);
+  });
+
   it("routes Slack channel commands after channel pairing", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
