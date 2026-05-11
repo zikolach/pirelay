@@ -1048,17 +1048,19 @@ describe("PiRelay integration behavior", () => {
     const { context, notifications } = createMockContext("slack-qr-session");
     const rendered: string[][] = [];
     let closeCount = 0;
-    context.ui.custom = vi.fn(async (factory: (...args: any[]) => { render?: (width: number) => string[]; handleInput?: (data: string) => void } | undefined) => {
-      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, () => {
+    context.ui.custom = vi.fn((factory: (...args: any[]) => { render?: (width: number) => string[]; handleInput?: (data: string) => void } | undefined) => new Promise((resolve) => {
+      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, (value: unknown) => {
         closeCount += 1;
+        resolve(value);
       });
       rendered.push(screen?.render?.(100) ?? []);
       screen?.handleInput?.("c");
-      await flushAsyncActions();
-    });
+    }));
     relayExtension(pi.api as any);
 
-    await pi.runCommand("relay", "connect slack docs", context);
+    const connectPromise = pi.runCommand("relay", "connect slack docs", context);
+    await waitFor(() => rendered.length > 0);
+    await flushAsyncActions();
 
     const screenText = rendered.flat().join("\n");
     expect(screenText).toContain("Slack relay pairing");
@@ -1074,13 +1076,19 @@ describe("PiRelay integration behavior", () => {
     expect(clipboardTexts.at(-1)).toMatch(/^pirelay pair \d{3}-\d{3}\n$/);
     expect(closeCount).toBe(0);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
+    expect(notifications.some((entry) => entry.message.includes("pairing command copied to clipboard"))).toBe(true);
     const registerCallsAfterConnect = fakeSlackRuntime.registerRoute.mock.calls.length;
+    const routeForPairingCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
+    const routeForPairing = routeForPairingCall?.[0] as SessionRoute;
+    routeForPairing.actions.notifyLocal?.("Slack paired with U5FUPDYM9 for docs.", "info");
+    await connectPromise;
+    expect(closeCount).toBe(1);
+    expect(notifications.some((entry) => entry.message.includes("Slack pairing PIN ready"))).toBe(true);
+    expect(notifications).toContainEqual({ message: "Slack paired with U5FUPDYM9 for docs.", level: "info" });
     await pi.emit("agent_start", {}, context);
     expect(fakeSlackRuntime.registerRoute.mock.calls.length).toBeGreaterThan(registerCallsAfterConnect);
     const latestRegisterCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
     expect(latestRegisterCall?.[0]).toMatchObject({ notification: { lastStatus: "running", progressEvent: expect.objectContaining({ text: "Pi task started" }) } });
-    expect(notifications.some((entry) => entry.message.includes("pairing command copied to clipboard"))).toBe(true);
-    expect(notifications.at(-1)?.message).toContain("Slack pairing PIN ready");
     const store = new TunnelStateStore(config.stateDir);
     const pending = Object.values((await store.load()).pendingPairings)[0];
     expect(pending).toMatchObject({ channel: "slack", sessionLabel: "docs", codeKind: "pin" });

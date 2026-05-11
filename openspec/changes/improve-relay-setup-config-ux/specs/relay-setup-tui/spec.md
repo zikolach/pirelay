@@ -115,6 +115,11 @@ The TUI pairing screens SHALL make copy/paste pairing commands easy to identify 
 - **THEN** the pairing command uses the same short PIN format as Discord instead of a long nonce
 - **AND** the pairing remains expiring, single-use, channel-scoped, and subject to the same authorization/local-confirmation rules
 
+#### Scenario: Pairing completion closes local pairing screen
+- **WHEN** a Telegram, Discord, or Slack pairing completes while the local pairing QR/dialog screen is open
+- **THEN** PiRelay closes the local pairing screen automatically
+- **AND** it shows a local messenger-specific notification identifying the paired user and session label even when the user was already allow-listed
+
 ### Requirement: Setup wizard action parity
 The setup wizard SHALL expose the same action classes, keyboard semantics, and secret-safety guarantees for Telegram, Discord, and Slack.
 

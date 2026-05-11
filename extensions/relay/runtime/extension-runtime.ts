@@ -393,7 +393,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           return loadImagePathForTelegram(latestContext ?? ctx, relativePath, turnId, 0);
         },
         appendAudit,
-        notifyLocal: (message, level = "info") => ctx.ui.notify(message, level),
+        notifyLocal: (message, level = "info") => {
+          closeConnectQrScreen?.();
+          closeConnectQrScreen = undefined;
+          (latestContext ?? ctx).ui.notify(message, level);
+        },
         persistBinding,
         promptLocalConfirmation: async (identity) => promptPairingApproval(latestContext ?? ctx, identity, currentRoute?.sessionLabel ?? sessionLabel),
         abort: () => latestContext?.abort(),
