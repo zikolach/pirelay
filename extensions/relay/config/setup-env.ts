@@ -33,6 +33,11 @@ export interface RelaySetupConfigWriteResult extends RelaySetupConfigPatch {
   backupPath?: string;
 }
 
+export interface RelaySetupConfigPatchOptions {
+  existingConfig?: RelayConfigFile;
+  effectiveEventMode?: string;
+}
+
 const setupEnvBindings: Record<RelaySetupChannel, RelaySetupEnvBinding[]> = {
   telegram: [
     { env: "PI_RELAY_TELEGRAM_BOT_TOKEN", aliases: ["TELEGRAM_BOT_TOKEN"], placeholder: "123456789:AA…", configKeys: ["tokenEnv"], kind: "secret-ref", required: true, description: "Telegram bot token" },
@@ -76,7 +81,7 @@ export function envSnippetTextForSetupChannel(channel: RelaySetupChannel): strin
   return `${envSnippetForSetupChannel(channel).join("\n")}\n`;
 }
 
-export function computeRelaySetupConfigPatchFromEnv(channel: RelaySetupChannel, env: NodeJS.ProcessEnv = process.env): RelaySetupConfigPatch {
+export function computeRelaySetupConfigPatchFromEnv(channel: RelaySetupChannel, env: NodeJS.ProcessEnv = process.env, options: RelaySetupConfigPatchOptions = {}): RelaySetupConfigPatch {
   const patch: Record<string, unknown> = {};
   const changedFields = new Set<string>();
   const missingRequiredEnvVars: string[] = [];
@@ -86,7 +91,7 @@ export function computeRelaySetupConfigPatchFromEnv(channel: RelaySetupChannel, 
   for (const binding of setupEnvBindings[channel]) {
     const resolved = resolveBindingEnv(binding, env);
     if (!resolved) {
-      if (setupEnvBindingRequired(channel, binding, env)) missingRequiredEnvVars.push(binding.env);
+      if (setupEnvBindingRequired(channel, binding, env, options)) missingRequiredEnvVars.push(binding.env);
       continue;
     }
 
@@ -135,7 +140,7 @@ export async function writeRelaySetupConfigFromEnv(
   const env = options.env ?? process.env;
   const configPath = resolveRelaySetupConfigPath(env, options.configPath);
   const existing = await readRelayConfigFile(configPath) ?? {};
-  const patch = computeRelaySetupConfigPatchFromEnv(channel, env);
+  const patch = computeRelaySetupConfigPatchFromEnv(channel, env, { existingConfig: existing });
   const merged = mergeRelaySetupConfigPatch(existing, patch);
   const backupPath = await backupExistingConfig(configPath, options.now ?? new Date());
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
@@ -173,12 +178,23 @@ function resolveBindingEnv(binding: RelaySetupEnvBinding, env: NodeJS.ProcessEnv
   return undefined;
 }
 
-function setupEnvBindingRequired(channel: RelaySetupChannel, binding: RelaySetupEnvBinding, env: NodeJS.ProcessEnv): boolean {
+function setupEnvBindingRequired(channel: RelaySetupChannel, binding: RelaySetupEnvBinding, env: NodeJS.ProcessEnv, options: RelaySetupConfigPatchOptions): boolean {
   if (!binding.required) return false;
   if (channel === "slack" && binding.env === "PI_RELAY_SLACK_APP_TOKEN") {
-    return (env.PI_RELAY_SLACK_EVENT_MODE ?? "socket").trim().toLowerCase() !== "webhook";
+    return effectiveSlackEventMode(env, options) !== "webhook";
   }
   return true;
+}
+
+function effectiveSlackEventMode(env: NodeJS.ProcessEnv, options: RelaySetupConfigPatchOptions): "socket" | "webhook" {
+  const rawMode = env.PI_RELAY_SLACK_EVENT_MODE ?? options.effectiveEventMode ?? existingSlackEventMode(options.existingConfig);
+  return rawMode?.trim().toLowerCase() === "webhook" ? "webhook" : "socket";
+}
+
+function existingSlackEventMode(existingConfig: RelayConfigFile | undefined): string | undefined {
+  if (!existingConfig) return undefined;
+  const canonical = canonicalizeRelayConfigFile(existingConfig);
+  return canonical.messengers?.slack?.default?.eventMode ?? canonical.slack?.eventMode ?? existingConfig.PI_RELAY_SLACK_EVENT_MODE;
 }
 
 function parseBindingValue(binding: RelaySetupEnvBinding, envName: string, value: string): { ok: true; value: unknown } | { ok: false } {

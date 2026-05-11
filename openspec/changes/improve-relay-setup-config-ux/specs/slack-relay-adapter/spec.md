@@ -21,6 +21,7 @@ The Slack runtime SHALL use explicit non-slash pairing commands while keeping sa
 - **WHEN** a Slack user sends `pirelay pair <pin>` for an active pending pairing
 - **THEN** PiRelay completes the Slack pairing
 - **AND** legacy `pirelay <pin>` and `/pirelay <pin>` text are accepted only when `<pin>` matches a real pending PIN or nonce format
+- **AND** Discord-style `relay pair <pin>` text is not treated as a Slack pairing command
 
 #### Scenario: Unpaired Slack channel receives channel-specific guidance
 - **WHEN** a Slack channel or thread message reaches the runtime without a usable binding

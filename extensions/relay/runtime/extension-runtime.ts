@@ -568,7 +568,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    const preview = computeRelaySetupConfigPatchFromEnv(channel);
+    const preview = computeRelaySetupConfigPatchFromEnv(channel, process.env, { effectiveEventMode: channel === "slack" ? config.slack?.eventMode : undefined });
     if (preview.missingRequiredEnvVars.length > 0 || preview.invalidEnvVars.length > 0) {
       ctx.ui.notify([
         `Cannot write ${channel} config yet: environment variables need attention.`,

@@ -81,6 +81,8 @@ describe("relay setup config from env", () => {
     expect(computeRelaySetupConfigPatchFromEnv("slack", base).missingRequiredEnvVars).toEqual(["PI_RELAY_SLACK_APP_TOKEN"]);
     expect(computeRelaySetupConfigPatchFromEnv("slack", { ...base, PI_RELAY_SLACK_EVENT_MODE: "socket" }).missingRequiredEnvVars).toEqual(["PI_RELAY_SLACK_APP_TOKEN"]);
     expect(computeRelaySetupConfigPatchFromEnv("slack", { ...base, PI_RELAY_SLACK_EVENT_MODE: "webhook" }).missingRequiredEnvVars).toEqual([]);
+    expect(computeRelaySetupConfigPatchFromEnv("slack", base, { existingConfig: { messengers: { slack: { default: { eventMode: "webhook" } } } } }).missingRequiredEnvVars).toEqual([]);
+    expect(computeRelaySetupConfigPatchFromEnv("slack", base, { effectiveEventMode: "webhook" }).missingRequiredEnvVars).toEqual([]);
   });
 
   it("uses legacy Telegram aliases when canonical env vars are absent", () => {
@@ -134,6 +136,25 @@ describe("relay setup config from env", () => {
     expect(written).not.toContain("slack-signing-secret-value");
     expect(written).not.toContain("xapp-secret-token");
     expect((await stat(configPath)).mode & 0o077).toBe(0);
+  });
+
+  it("uses existing Slack webhook mode when checking write requirements", async () => {
+    const configPath = await tempConfigPath();
+    await writeFile(configPath, JSON.stringify({ messengers: { slack: { default: { eventMode: "webhook" } } } }), { mode: 0o600 });
+
+    const result = await writeRelaySetupConfigFromEnv("slack", {
+      configPath,
+      env: {
+        PI_RELAY_SLACK_BOT_TOKEN: "xoxb-secret-token",
+        PI_RELAY_SLACK_SIGNING_SECRET: "slack-signing-secret-value",
+      },
+    });
+
+    expect(result.missingRequiredEnvVars).toEqual([]);
+    const written = await readFile(configPath, "utf8");
+    expect(written).toContain('"eventMode": "webhook"');
+    expect(written).toContain("PI_RELAY_SLACK_BOT_TOKEN");
+    expect(written).not.toContain("xapp-secret-token");
   });
 
   it("backs up existing config before writing", async () => {

@@ -637,6 +637,10 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("invalid or expired");
 
     const { nonce } = await store.createPendingPairing({ channel: "slack", sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, expiryMs: 300_000 });
+    await operations.handler!({ type: "event_callback", envelopeId: "relay-pair-env", eventId: "relay-pair-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_ALLOWED", text: `relay pair ${nonce}`, ts: "19.75", team: "T1" } });
+    expect(operations.posts.at(-1)?.text ?? "").not.toContain("command mismatch");
+    await expect(store.inspectPendingPairing(nonce, { channel: "slack" })).resolves.toMatchObject({ status: "active" });
+
     await operations.handler!({ type: "event_callback", envelopeId: "bad-env", eventId: "bad-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_BAD", text: `pirelay pair ${nonce}`, ts: "20", team: "T1" } });
     expect(operations.posts.at(-1)?.text).toContain("not authorized");
     await expect(store.inspectPendingPairing(nonce, { channel: "slack" })).resolves.toMatchObject({ status: "active" });

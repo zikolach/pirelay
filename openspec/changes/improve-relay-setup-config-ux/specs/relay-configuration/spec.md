@@ -77,8 +77,9 @@ The system SHALL define environment-to-config mappings for Telegram, Discord, an
 
 #### Scenario: Slack app token requirement follows event mode
 - **WHEN** Slack config update from env is computed
-- **THEN** `PI_RELAY_SLACK_APP_TOKEN` is required for Socket Mode or when event mode is unspecified
+- **THEN** `PI_RELAY_SLACK_APP_TOKEN` is required for Socket Mode or when event mode is unspecified and no existing webhook mode is configured
 - **AND** `PI_RELAY_SLACK_APP_TOKEN` is not required when `PI_RELAY_SLACK_EVENT_MODE=webhook`
+- **AND** `PI_RELAY_SLACK_APP_TOKEN` is not required when the existing Slack config already has `eventMode: "webhook"`
 
 #### Scenario: Snippet and writer use the same metadata
 - **WHEN** setup env snippets are rendered and config-from-env updates are computed for a messenger

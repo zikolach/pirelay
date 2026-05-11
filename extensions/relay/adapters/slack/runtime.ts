@@ -804,7 +804,7 @@ function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent |
 
 function parseSlackPairingCode(text: string): string | undefined {
   const trimmed = text.trim();
-  const explicit = trimmed.match(/^(?:relay|pirelay)\s+pair\s+(\S+)$/i);
+  const explicit = trimmed.match(/^pirelay\s+pair\s+(\S+)$/i);
   if (explicit) return explicit[1];
   const legacy = trimmed.match(/^(?:\/pirelay|pirelay)\s+(\S+)$/i);
   const candidate = legacy?.[1];
