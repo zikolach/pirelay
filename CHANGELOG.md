@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - 2026-05-12
+
+- Added lifecycle notifications so paired Telegram, Discord, and Slack conversations are notified when a Pi session goes offline, comes back online, or is disconnected locally. #38
+- Improved relay setup and status UX with clearer readiness diagnostics, safer setup reloads, instance-scoped status keys, and paired/paused/error status line states. #36
+- Improved Slack runtime UX with safer progress notification handling, readiness checks, App Home guidance, and nonfatal best-effort activity failures. #36
+- Fixed Slack shared-room/channel routing so active selections are preserved safely, `pirelay to <session> <prompt>` works as a one-shot target, and stale selections are pruned after disconnects or runtime stops. #37
+- Fixed Telegram setup/config behavior to prefer `PI_RELAY_TELEGRAM_BOT_TOKEN` over legacy token inputs and surface runtime registration errors accurately. #36
+
 ## 0.4.0 - 2026-05-11
 
 - Added full Slack relay adapter/runtime support with Socket Mode ingress, pairing, trust, command handling, shared-room routing, thread context, Block Kit actions, and terminal notifications. #34
