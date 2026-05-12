@@ -2,6 +2,7 @@ import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { StructuredAnswerMetadata } from "./guided-answer.js";
 import type { ChannelBinding } from "./channel-adapter.js";
+import type { RelayLifecycleNotificationRecord } from "../notifications/lifecycle.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
@@ -184,6 +185,7 @@ export interface TunnelStoreData {
   channelBindings: Record<string, ChannelPersistedBindingRecord>;
   activeChannelSelections: Record<string, ChannelActiveSelectionRecord>;
   trustedRelayUsers: Record<string, TrustedRelayUserRecord>;
+  lifecycleNotifications: Record<string, RelayLifecycleNotificationRecord>;
 }
 
 export interface ParsedTelegramCommand {

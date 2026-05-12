@@ -13,6 +13,7 @@ import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
+import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../notifications/lifecycle.js";
 import { formatRelayStatusLine, type RelayStatusLineBindingState, type RelayStatusLineChannel } from "./status-line.js";
 import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, slackAppRedirectUrl, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
 import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback, slackAppManifestText, type RelaySetupWizardActionId } from "../config/setup-wizard.js";
@@ -24,12 +25,23 @@ const BINDING_ENTRY_TYPE = "relay-binding";
 const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
 const AUDIT_MESSAGE_TYPE = "relay-audit";
 const CONNECT_WIDGET_KEY = "relay-connect";
+const LIFECYCLE_NOTIFICATION_TIMEOUT_MS = 3_000;
 
 function shortenMiddle(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   const left = Math.ceil((maxLength - 1) / 2);
   const right = Math.floor((maxLength - 1) / 2);
   return `${text.slice(0, left)}…${text.slice(text.length - right)}`;
+}
+
+function withLifecycleNotificationTimeout(delivery: Promise<void>, timeoutMs = LIFECYCLE_NOTIFICATION_TIMEOUT_MS): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<void>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error("lifecycle notification timed out")), timeoutMs);
+  });
+  return Promise.race([delivery, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
 }
 
 function wrapPlainText(text: string, maxWidth: number): string[] {
@@ -564,6 +576,55 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     });
   }
 
+  async function notifyTelegramLifecycle(config: TelegramTunnelConfig, route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
+    if (!runtime || !route.binding) return;
+    const store = new TunnelStateStore(config.stateDir);
+    const decision = await store.recordLifecycleNotification({
+      channel: "telegram",
+      instanceId: "default",
+      sessionKey: route.sessionKey,
+      conversationId: String(route.binding.chatId),
+      userId: String(route.binding.userId),
+      kind,
+    });
+    if (!decision.shouldNotify) return;
+    await runtime.sendToBoundChat(route.sessionKey, formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: "telegram" }));
+    await store.markLifecycleNotificationDelivered({
+      channel: "telegram",
+      instanceId: "default",
+      sessionKey: route.sessionKey,
+      conversationId: String(route.binding.chatId),
+      userId: String(route.binding.userId),
+      kind,
+    });
+  }
+
+  async function notifyRelayLifecycle(ctx: ExtensionContext, kind: RelayLifecycleEventKind, route = currentRoute, onlyStarted?: { telegram?: boolean; discordInstances?: Set<string>; slackInstances?: Set<string> }): Promise<void> {
+    if (!route) return;
+    let config: TelegramTunnelConfig;
+    try {
+      config = await ensureConfig(ctx, false);
+    } catch {
+      return;
+    }
+    const deliveries: Array<Promise<void> | undefined> = [];
+    if (onlyStarted?.telegram ?? true) deliveries.push(notifyTelegramLifecycle(config, route, kind));
+    for (const [instanceId, discord] of discordRuntimes) {
+      if (onlyStarted?.discordInstances && !onlyStarted.discordInstances.has(instanceId)) continue;
+      deliveries.push(discord.notifyLifecycle?.(route, kind));
+    }
+    for (const [instanceId, slack] of slackRuntimes) {
+      if (onlyStarted?.slackInstances && !onlyStarted.slackInstances.has(instanceId)) continue;
+      deliveries.push(slack.notifyLifecycle?.(route, kind));
+    }
+    const results = await Promise.allSettled(deliveries.filter((delivery): delivery is Promise<void> => Boolean(delivery)).map((delivery) => withLifecycleNotificationTimeout(delivery)));
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (rejected) {
+      const message = rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason);
+      ctx.ui.setStatus("relay-lifecycle", `relay lifecycle warning: ${redactSecrets(message)}`);
+    }
+  }
+
   async function restoreBinding(ctx: ExtensionContext, config: TelegramTunnelConfig): Promise<TelegramBindingMetadata | undefined> {
     let latest: BindingEntryData | undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
@@ -595,26 +656,31 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     const restoredBinding = await restoreBinding(ctx, config);
     currentRoute = buildRoute(ctx, restoredBinding);
+    const startedDiscordInstances = new Set<string>();
+    const startedSlackInstances = new Set<string>();
     await ensureAllDiscordRuntimes();
     for (const [instanceId, discord] of discordRuntimes) {
       await discord.registerRoute(currentRoute);
-      await startDiscordRuntime(ctx, discord, false, instanceId);
+      if (await startDiscordRuntime(ctx, discord, false, instanceId)) startedDiscordInstances.add(instanceId);
     }
     await ensureAllSlackRuntimes();
     for (const [instanceId, slack] of slackRuntimes) {
       await slack.registerRoute(currentRoute);
-      await startSlackRuntime(ctx, slack, false, instanceId);
+      if (await startSlackRuntime(ctx, slack, false, instanceId)) startedSlackInstances.add(instanceId);
     }
+    let telegramStarted = false;
     try {
       runtime = await ensureRuntime();
       await runtime.registerRoute(currentRoute);
       telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: true };
+      telegramStarted = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: false, error: message };
       ctx.ui.setStatus("relay-sync", `telegram sync error: ${redactSecrets(message)}`);
     }
     await refreshRelayStatuses(ctx);
+    await notifyRelayLifecycle(ctx, "online", currentRoute, { telegram: telegramStarted, discordInstances: startedDiscordInstances, slackInstances: startedSlackInstances });
   }
 
   async function handleSetup(ctx: ExtensionContext): Promise<void> {
@@ -1029,6 +1095,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) await syncRoute(ctx);
     if (!currentRoute) return;
     const disconnectedRoute = currentRoute;
+    await notifyRelayLifecycle(ctx, "disconnected", disconnectedRoute);
     currentRoute.binding = undefined;
     await store.revokeBinding(currentRoute.sessionKey);
     await store.revokeChannelBindingsForSession(currentRoute.sessionKey);
@@ -1142,10 +1209,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     latestContext = ctx;
     closeConnectQrScreen = undefined;
+    if (currentRoute) await notifyRelayLifecycle(ctx, "offline", currentRoute);
     if (runtime && currentRoute) {
       await runtime.unregisterRoute(currentRoute.sessionKey);
     }
     if (currentRoute) {
+      for (const discordRuntime of discordRuntimes.values()) await discordRuntime.unregisterRoute(currentRoute.sessionKey);
       for (const slackRuntime of slackRuntimes.values()) await slackRuntime.unregisterRoute(currentRoute.sessionKey);
     }
   });

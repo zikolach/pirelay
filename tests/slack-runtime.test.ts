@@ -286,6 +286,36 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("Docs");
   });
 
+  it("sends lifecycle notifications through the matching Slack instance", async () => {
+    const runtimeConfig = await config();
+    runtimeConfig.slackInstances = {
+      beta: { ...runtimeConfig.slack!, enabled: true, botToken: "slack-beta", signingSecret: "secret", eventMode: "socket", appToken: "xapp-beta", allowUserIds: ["U_DRIVER"], allowChannelMessages: true },
+    };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "beta", conversationId: "C_BETA", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "channel" } });
+    const defaultOperations = new FakeSlackOperations();
+    const betaOperations = new FakeSlackOperations();
+    const defaultRuntime = new SlackRuntime(runtimeConfig, { operations: defaultOperations });
+    const betaRuntime = new SlackRuntime(runtimeConfig, { operations: betaOperations }, "beta");
+
+    await defaultRuntime.registerRoute(testRoute);
+    await betaRuntime.registerRoute(testRoute);
+    await defaultRuntime.start();
+    await betaRuntime.start();
+
+    await defaultRuntime.notifyLifecycle(testRoute, "offline");
+    await betaRuntime.notifyLifecycle(testRoute, "offline");
+
+    expect(defaultOperations.posts).toHaveLength(0);
+    expect(betaOperations.posts).toContainEqual(expect.objectContaining({ channel: "C_BETA", text: expect.stringContaining("went offline locally") }));
+
+    const postCount = betaOperations.posts.length;
+    await store.revokeChannelBinding("slack", testRoute.sessionKey, undefined, "beta");
+    await betaRuntime.notifyLifecycle(testRoute, "online");
+    expect(betaOperations.posts).toHaveLength(postCount);
+  });
+
   it("reports missing Socket Mode operations instead of silently succeeding", async () => {
     vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "");
     const runtimeConfig = await config();

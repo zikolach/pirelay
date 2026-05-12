@@ -8,6 +8,7 @@ import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocati
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
+import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -102,6 +103,9 @@ export class DiscordRuntime {
   async unregisterRoute(sessionKey: string): Promise<void> {
     this.stopTypingActivity(sessionKey);
     this.routes.delete(sessionKey);
+    this.ownedBindingSessionKeys.delete(sessionKey);
+    this.recentBindingBySessionKey.delete(sessionKey);
+    this.clearActiveSelectionsForSession(sessionKey);
     if (this.routes.size === 0) await this.stop();
   }
 
@@ -113,6 +117,30 @@ export class DiscordRuntime {
     if (!binding) return;
     const text = discordTurnNotificationText(route, status);
     await this.adapter.sendText(bindingAddress(binding), text);
+  }
+
+  async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
+    if (!this.adapter) return;
+    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId);
+    if (!binding || binding.paused) return;
+    const decision = await this.store.recordLifecycleNotification({
+      channel: DISCORD_CHANNEL,
+      instanceId: this.instanceId,
+      sessionKey: route.sessionKey,
+      conversationId: binding.conversationId,
+      userId: binding.userId,
+      kind,
+    });
+    if (!decision.shouldNotify) return;
+    await this.adapter.sendText(bindingAddress(binding), formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: DISCORD_CHANNEL }));
+    await this.store.markLifecycleNotificationDelivered({
+      channel: DISCORD_CHANNEL,
+      instanceId: this.instanceId,
+      sessionKey: route.sessionKey,
+      conversationId: binding.conversationId,
+      userId: binding.userId,
+      kind,
+    });
   }
 
   private async handleEvent(event: ChannelInboundEvent): Promise<void> {
@@ -738,6 +766,12 @@ export class DiscordRuntime {
   private async clearActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey?: string): Promise<void> {
     this.activeSessionByConversationUser.delete(this.activeSelectionKey(message));
     await this.store.clearActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId, sessionKey);
+  }
+
+  private clearActiveSelectionsForSession(sessionKey: string): void {
+    for (const [key, activeSessionKey] of this.activeSessionByConversationUser) {
+      if (activeSessionKey === sessionKey) this.activeSessionByConversationUser.delete(key);
+    }
   }
 
   private async targetSessionKeyForToCommand(message: ChannelInboundMessage, args: string): Promise<string | undefined> {
