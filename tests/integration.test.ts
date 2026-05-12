@@ -463,6 +463,47 @@ describe("PiRelay integration behavior", () => {
     expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("disconnected locally"));
   });
 
+  it("does not mark restored binding online when Telegram registration fails", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-startup-failure-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const sessionId = "lifecycle-startup-failure";
+    const sessionFile = `/tmp/${sessionId}.jsonl`;
+    const binding = createBinding(sessionId, 555, 42);
+    binding.sessionFile = sessionFile;
+    binding.sessionKey = sessionKeyOf(sessionId, sessionFile);
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertBinding(binding);
+    await store.recordLifecycleNotification({ channel: "telegram", sessionKey: binding.sessionKey, conversationId: String(binding.chatId), userId: String(binding.userId), kind: "offline", nowIso: "2026-05-12T10:00:00.000Z" });
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => { throw new Error("broker unavailable"); }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, statuses } = createMockContext(sessionId);
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+
+    expect(fakeRuntime.sendToBoundChat).not.toHaveBeenCalled();
+    expect(statuses).toContainEqual({ key: "relay-sync", value: "telegram sync error: broker unavailable" });
+    const lifecycleRecord = Object.values((await store.load()).lifecycleNotifications)[0];
+    expect(lifecycleRecord).toMatchObject({ state: "offline", lastEvent: "offline" });
+  });
+
   it("keeps lifecycle notification failures nonfatal", async () => {
     const config = await createRuntimeConfig("pi-lifecycle-failure-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);

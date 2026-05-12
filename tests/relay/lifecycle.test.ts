@@ -20,6 +20,8 @@ describe("relay lifecycle notifications", () => {
     expect(disconnected).toContain("pirelay pair <pin>");
     expect(disconnected).not.toContain("/pirelay");
     expect(disconnected).not.toContain("C0");
+    expect(formatRelayLifecycleNotification({ kind: "online", sessionLabel: "   " })).toBe("Pi session is back online.");
+    expect(formatRelayLifecycleNotification({ kind: "offline", sessionLabel: "   " })).not.toContain("Pi session Pi session");
   });
 
   it("initializes online state silently and sends restored notification only after offline", () => {

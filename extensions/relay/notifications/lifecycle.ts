@@ -23,16 +23,17 @@ export interface RelayLifecycleNotificationDecision {
 export const DEFAULT_LIFECYCLE_DEBOUNCE_MS = 60_000;
 
 export function formatRelayLifecycleNotification(input: { kind: RelayLifecycleEventKind; sessionLabel: string; channel?: ChannelAdapterKind }): string {
-  const label = input.sessionLabel.trim() || "Pi session";
+  const trimmedLabel = input.sessionLabel.trim();
+  const subject = trimmedLabel ? `Pi session ${trimmedLabel}` : "Pi session";
   switch (input.kind) {
     case "offline":
-      return `Pi session ${label} went offline locally. Restart Pi to resume relay control.`;
+      return `${subject} went offline locally. Restart Pi to resume relay control.`;
     case "online":
-      return `Pi session ${label} is back online.`;
+      return `${subject} is back online.`;
     case "disconnected":
       return input.channel === "slack"
-        ? `PiRelay was disconnected locally for ${label}. This chat is no longer paired; run \`pirelay pair <pin>\` from a fresh local pairing to reconnect.`
-        : `PiRelay was disconnected locally for ${label}. This chat is no longer paired; start a fresh local pairing to reconnect.`;
+        ? `PiRelay was disconnected locally for ${subject}. This chat is no longer paired; run \`pirelay pair <pin>\` from a fresh local pairing to reconnect.`
+        : `PiRelay was disconnected locally for ${subject}. This chat is no longer paired; start a fresh local pairing to reconnect.`;
   }
 }
 
