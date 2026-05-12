@@ -70,7 +70,8 @@ class PairingQrScreen {
 
   handleInput(data: string): void {
     if ((data === "c" || data === "C") && this.options.command) {
-      if (this.options.onCopyCommand) void Promise.resolve(this.options.onCopyCommand(this.options.command));
+      const command = this.options.command;
+      if (this.options.onCopyCommand) this.safeFireAndForget(() => this.options.onCopyCommand?.(command));
       return;
     }
     if (matchesKey(data, "escape") || matchesKey(data, "enter") || matchesKey(data, "ctrl+c")) {
@@ -79,6 +80,10 @@ class PairingQrScreen {
   }
 
   invalidate(): void {}
+
+  private safeFireAndForget(callback: () => void | Promise<void>): void {
+    void Promise.resolve().then(callback).catch(() => undefined);
+  }
 
   render(width: number): string[] {
     const outerWidth = Math.max(40, Math.min(width - 2, 88));
