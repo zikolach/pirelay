@@ -1195,6 +1195,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       await runtime.unregisterRoute(currentRoute.sessionKey);
     }
     if (currentRoute) {
+      for (const discordRuntime of discordRuntimes.values()) await discordRuntime.unregisterRoute(currentRoute.sessionKey);
       for (const slackRuntime of slackRuntimes.values()) await slackRuntime.unregisterRoute(currentRoute.sessionKey);
     }
   });

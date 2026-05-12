@@ -504,6 +504,51 @@ describe("PiRelay integration behavior", () => {
     expect(lifecycleRecord).toMatchObject({ state: "offline", lastEvent: "offline" });
   });
 
+  it("unregisters Discord routes on session shutdown", async () => {
+    const config = await createRuntimeConfig("pi-discord-shutdown-unregister-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_DISCORD_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_DISCORD_BOT_TOKEN", "discord-token-test");
+    const sessionId = "discord-shutdown";
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const fakeDiscordRuntime = {
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: true })),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/discord/runtime.js", () => ({
+      getOrCreateDiscordRuntime: () => fakeDiscordRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext(sessionId);
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    const registerCall = fakeDiscordRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
+    const registeredRoute = registerCall?.[0] as SessionRoute;
+    await pi.emit("session_shutdown", {}, context);
+
+    expect(fakeDiscordRuntime.unregisterRoute).toHaveBeenCalledWith(registeredRoute.sessionKey);
+  });
+
   it("keeps lifecycle notification failures nonfatal", async () => {
     const config = await createRuntimeConfig("pi-lifecycle-failure-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
