@@ -92,7 +92,7 @@ export class RelaySetupWizardScreen {
     }
     if (data === "c" || data === "C") {
       if (this.options.onCopyEnvSnippet) {
-        void Promise.resolve(this.options.onCopyEnvSnippet());
+        this.safeFireAndForget(this.options.onCopyEnvSnippet);
         return;
       }
       this.done("copy-env-snippet");
@@ -100,7 +100,7 @@ export class RelaySetupWizardScreen {
     }
     if ((data === "m" || data === "M") && this.hasAction("copy-slack-manifest")) {
       if (this.options.onCopySlackManifest) {
-        void Promise.resolve(this.options.onCopySlackManifest());
+        this.safeFireAndForget(this.options.onCopySlackManifest);
         return;
       }
       this.done("copy-slack-manifest");
@@ -117,6 +117,10 @@ export class RelaySetupWizardScreen {
   }
 
   invalidate(): void {}
+
+  private safeFireAndForget(callback: () => void | Promise<void>): void {
+    void Promise.resolve().then(callback).catch(() => undefined);
+  }
 
   render(width: number): string[] {
     const outerWidth = Math.max(32, Math.min(Math.max(32, width - 2), 100));

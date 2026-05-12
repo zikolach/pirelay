@@ -82,7 +82,11 @@ function runClipboardCommand(candidate: ClipboardCommand, text: string, timeoutM
       resolve(result);
     };
     const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
+      try {
+        if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+      } catch {
+        // Process may have exited between timeout firing and kill; finish below still reports timeout.
+      }
       finish({ ok: false, error: "timed out" });
     }, timeoutMs);
     child.stderr?.on("data", (chunk: Buffer) => {

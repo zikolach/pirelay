@@ -138,7 +138,7 @@ describe("RelaySetupWizardScreen", () => {
     expect(done).toHaveBeenCalledWith();
   });
 
-  it("runs copy actions without closing when inline copy handlers are provided", () => {
+  it("runs copy actions without closing when inline copy handlers are provided", async () => {
     const config = baseConfig();
     const model = buildRelaySetupWizardModel("slack", config);
     const done = vi.fn();
@@ -148,11 +148,27 @@ describe("RelaySetupWizardScreen", () => {
 
     screen.handleInput("c");
     screen.handleInput("m");
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(onCopyEnvSnippet).toHaveBeenCalledTimes(1);
     expect(onCopySlackManifest).toHaveBeenCalledTimes(1);
     expect(done).not.toHaveBeenCalled();
     expect(screen.render(100).join("\n")).toContain("m copy manifest");
+  });
+
+  it("contains rejected inline copy handlers", async () => {
+    const model = buildRelaySetupWizardModel("telegram", baseConfig());
+    const done = vi.fn();
+    const onCopyEnvSnippet = vi.fn(async () => {
+      throw new Error("clipboard failed");
+    });
+    const screen = new RelaySetupWizardScreen(model, theme, done, { onCopyEnvSnippet });
+
+    screen.handleInput("c");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onCopyEnvSnippet).toHaveBeenCalledTimes(1);
+    expect(done).not.toHaveBeenCalled();
   });
 
   it("preserves JSON snippet formatting in the TUI details panel", () => {
