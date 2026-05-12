@@ -355,8 +355,7 @@ export class SlackRuntime {
       if (active?.machineId && active.machineId !== (this.config.machineId ?? "local")) return undefined;
       if (!active) {
         const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
-        if (bindings.length === 0) return undefined;
-        if (!command && !bindings.some((binding) => binding.userId === message.sender.userId)) return undefined;
+        if (bindings.length === 0 || !command) return undefined;
       }
     }
     return hasLocalMention ? { ...message, text: stripLeadingSlackMentions(message.text) } : message;

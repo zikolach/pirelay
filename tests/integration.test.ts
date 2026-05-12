@@ -681,6 +681,50 @@ describe("PiRelay integration behavior", () => {
     expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: starting" });
   });
 
+  it("does not show Slack ready when required credentials are incomplete", async () => {
+    const config = await createRuntimeConfig("pi-slack-incomplete-status-");
+    await writeFile(config.configPath!, JSON.stringify({
+      messengers: {
+        telegram: { default: { botToken: config.botToken } },
+        slack: { default: { enabled: true, botToken: "slack-default", eventMode: "socket" } },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath!);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const fakeSlackRuntime = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: true })),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: () => fakeSlackRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, statuses } = createMockContext("slack-incomplete-status");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "status", context);
+
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: off" });
+  });
+
   it("scopes Slack status lines by configured instance", async () => {
     const config = await createRuntimeConfig("pi-slack-instance-status-");
     await writeFile(config.configPath!, JSON.stringify({

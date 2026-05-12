@@ -8,7 +8,7 @@ import { RelaySetupWizardScreen } from "../ui/setup-wizard.js";
 import { copyTextToClipboard } from "../ui/clipboard.js";
 import { getOrCreateTunnelRuntime, sendSessionNotification } from "../adapters/telegram/runtime.js";
 import { TunnelStateStore } from "../state/tunnel-store.js";
-import type { BindingEntryData, ChannelPersistedBindingRecord, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, PersistedBindingRecord, RelayPairingIdentity, SessionRoute, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
+import type { BindingEntryData, ChannelPersistedBindingRecord, DiscordRelayConfig, ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate, PairingApprovalDecision, PersistedBindingRecord, RelayPairingIdentity, SessionRoute, SlackRelayConfig, TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
 import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
@@ -296,13 +296,24 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.setStatus(statusKeyForChannel(channel, instanceId), formatRelayStatusLine({ channel, ...state }));
   }
 
+  function discordStatusConfigured(config: DiscordRelayConfig | undefined): boolean {
+    return Boolean(config?.enabled && config.botToken);
+  }
+
+  function slackStatusConfigured(config: SlackRelayConfig | undefined): boolean {
+    if (!config?.enabled || !config.botToken || !config.signingSecret) return false;
+    return (config.eventMode ?? "socket") === "webhook" || Boolean(config.appToken);
+  }
+
+  function statusConfiguredForChannel(config: TelegramTunnelConfig, channel: RelayStatusLineChannel, instanceId: string): boolean {
+    if (channel === "telegram") return Boolean(config.botToken);
+    if (channel === "discord") return discordStatusConfigured(config.discordInstances?.[instanceId] ?? (instanceId === "default" ? config.discord : undefined));
+    return slackStatusConfigured(config.slackInstances?.[instanceId] ?? (instanceId === "default" ? config.slack : undefined));
+  }
+
   async function refreshMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, runtimeStatus?: { enabled: boolean; started: boolean; error?: string }, instanceId = "default"): Promise<void> {
     const config = await ensureConfig(ctx, false);
-    const configured = channel === "telegram"
-      ? Boolean(config.botToken)
-      : channel === "discord"
-        ? Boolean(config.discordInstances?.[instanceId]?.enabled && config.discordInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.discord?.enabled && config.discord.botToken))
-        : Boolean(config.slackInstances?.[instanceId]?.enabled && config.slackInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.slack?.enabled && config.slack.botToken));
+    const configured = statusConfiguredForChannel(config, channel, instanceId);
     const binding = runtimeStatus?.error ? undefined : await currentStatusBinding(config, channel, instanceId);
     await setMessengerStatus(ctx, channel, {
       configured,
@@ -322,12 +333,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const config = await ensureConfig(ctx, false);
     if (stopped.telegramStopped) await setMessengerStatus(ctx, "telegram", { configured: Boolean(config.botToken), runtimeStarted: false });
     for (const instanceId of stopped.discordStopped) {
-      const configured = Boolean(config.discordInstances?.[instanceId]?.enabled && config.discordInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.discord?.enabled && config.discord.botToken));
-      await setMessengerStatus(ctx, "discord", { configured, runtimeStarted: false }, instanceId);
+      await setMessengerStatus(ctx, "discord", { configured: statusConfiguredForChannel(config, "discord", instanceId), runtimeStarted: false }, instanceId);
     }
     for (const instanceId of stopped.slackStopped) {
-      const configured = Boolean(config.slackInstances?.[instanceId]?.enabled && config.slackInstances[instanceId]?.botToken) || (instanceId === "default" && Boolean(config.slack?.enabled && config.slack.botToken));
-      await setMessengerStatus(ctx, "slack", { configured, runtimeStarted: false }, instanceId);
+      await setMessengerStatus(ctx, "slack", { configured: statusConfiguredForChannel(config, "slack", instanceId), runtimeStarted: false }, instanceId);
     }
   }
 

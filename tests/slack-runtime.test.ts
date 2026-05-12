@@ -649,7 +649,7 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts).toHaveLength(postCount);
 
     await operations.handler!({ type: "event_callback", envelopeId: "channel-bound-plain-env", eventId: "channel-bound-plain-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "ordinary channel prompt", ts: "70.6", team: "T1" } });
-    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("ordinary channel prompt");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(sendCount);
 
     await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
     await operations.handler!({ type: "event_callback", envelopeId: "channel-status-env", eventId: "channel-status-event", event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "pirelay status", ts: "71", team: "T1" } });
