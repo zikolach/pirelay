@@ -849,11 +849,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const config = await ensureConfig(ctx, true);
     const selectedDiscordConfig = channel === "discord" ? config.discordInstances?.[instanceId] ?? (instanceId === "default" ? config.discord : undefined) : undefined;
     const selectedSlackConfig = channel === "slack" ? config.slackInstances?.[instanceId] ?? (instanceId === "default" ? config.slack : undefined) : undefined;
-    const channelReady = channel === "discord"
-      ? Boolean(selectedDiscordConfig?.enabled && selectedDiscordConfig.botToken)
-      : channel === "slack"
-        ? Boolean(selectedSlackConfig?.enabled && selectedSlackConfig.botToken && selectedSlackConfig.signingSecret)
-        : relayChannelReady(config, channel);
+    const channelReady = statusConfiguredForChannel(config, channel, instanceId);
     if (!channelReady) {
       const findings = relaySetupDiagnostics(config).filter((finding) => finding.channel === channel && finding.severity === "error");
       ctx.ui.notify(redactSecrets([
