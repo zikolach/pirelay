@@ -712,6 +712,61 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.length).toBeGreaterThan(postCount);
   });
 
+  it("keeps shared-room plain text silent after Slack disconnect clears active selection", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+    const send = async (text: string, ts: string) => operations.handler!({ type: "event_callback", envelopeId: `disconnect-env-${ts}`, eventId: `disconnect-event-${ts}`, event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text, ts, team: "T1" } });
+
+    await send("pirelay use Docs", "80");
+    expect(operations.posts.at(-1)?.text).toContain("Active session set");
+    await send("active prompt before disconnect", "81");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith("active prompt before disconnect");
+    await send("pirelay disconnect", "82");
+    expect(operations.posts.at(-1)?.text).toContain("disconnected");
+
+    const sendCount = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
+    const postCount = operations.posts.length;
+    await send("ordinary chatter after disconnect", "83");
+
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(sendCount);
+    expect(operations.posts).toHaveLength(postCount);
+  });
+
+  it("clears in-memory Slack active selections on runtime stop", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+    const send = async (text: string, ts: string) => operations.handler!({ type: "event_callback", envelopeId: `stop-env-${ts}`, eventId: `stop-event-${ts}`, event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text, ts, team: "T1" } });
+
+    await send("pirelay use Docs", "90");
+    await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
+    await send("in-memory prompt before stop", "91");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith("in-memory prompt before stop");
+
+    await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
+    await runtime.stop();
+    await runtime.start();
+    const sendCount = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
+    const postCount = operations.posts.length;
+    await send("ordinary chatter after stop", "92");
+
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(sendCount);
+    expect(operations.posts).toHaveLength(postCount);
+  });
+
   it("rejects invalid Slack pairing attempts and prevents code reuse", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();

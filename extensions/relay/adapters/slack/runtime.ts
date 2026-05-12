@@ -107,6 +107,7 @@ export class SlackRuntime {
     this.started = false;
     await this.clearThinkingReactions();
     this.clearAllProgressStates();
+    this.activeSessionByConversationUser.clear();
     if (this.historyPollTimer) clearInterval(this.historyPollTimer);
     this.historyPollTimer = undefined;
     this.historyPollInFlight = false;
@@ -126,6 +127,7 @@ export class SlackRuntime {
   async unregisterRoute(sessionKey: string): Promise<void> {
     await this.stopThinkingReaction(sessionKey);
     this.clearProgressStateBySessionKey(sessionKey);
+    this.clearActiveSelectionsForSession(sessionKey);
     this.routes.delete(sessionKey);
     this.ownedBindingSessionKeys.delete(sessionKey);
     if (this.routes.size === 0) await this.stop();
@@ -497,6 +499,7 @@ export class SlackRuntime {
         return;
       case "disconnect":
         await this.store.revokeChannelBinding(SLACK_CHANNEL, route.sessionKey, undefined, this.instanceId);
+        await this.clearActiveSelection(message, route.sessionKey);
         this.ownedBindingSessionKeys.delete(route.sessionKey);
         this.recentBindingBySessionKey.delete(route.sessionKey);
         route.actions.refreshLocalStatus?.();
@@ -602,11 +605,27 @@ export class SlackRuntime {
     await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, sessionKey);
   }
 
+  private async clearActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey?: string): Promise<void> {
+    this.activeSessionByConversationUser.delete(this.activeSelectionKey(message));
+    await this.store.clearActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, sessionKey);
+  }
+
+  private clearActiveSelectionsForSession(sessionKey: string): void {
+    for (const [key, activeSessionKey] of this.activeSessionByConversationUser) {
+      if (activeSessionKey === sessionKey) this.activeSessionByConversationUser.delete(key);
+    }
+  }
+
   private async activeSelectionRecordForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<{ sessionKey: string; machineId?: string } | undefined> {
     const persisted = await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId);
     if (persisted) return persisted;
-    const inMemorySessionKey = this.activeSessionByConversationUser.get(this.activeSelectionKey(message));
-    return inMemorySessionKey ? { sessionKey: inMemorySessionKey } : undefined;
+    const key = this.activeSelectionKey(message);
+    const inMemorySessionKey = this.activeSessionByConversationUser.get(key);
+    if (!inMemorySessionKey) return undefined;
+    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, inMemorySessionKey, this.instanceId);
+    if (binding && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId) return { sessionKey: inMemorySessionKey };
+    this.activeSessionByConversationUser.delete(key);
+    return undefined;
   }
 
   private async findSlackBinding(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord | undefined> {
