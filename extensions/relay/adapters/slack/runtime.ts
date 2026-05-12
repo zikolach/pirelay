@@ -131,6 +131,7 @@ export class SlackRuntime {
     this.clearActiveSelectionsForSession(sessionKey);
     this.routes.delete(sessionKey);
     this.ownedBindingSessionKeys.delete(sessionKey);
+    this.recentBindingBySessionKey.delete(sessionKey);
     if (this.routes.size === 0) await this.stop();
   }
 
@@ -146,8 +147,7 @@ export class SlackRuntime {
 
   async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
-      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId);
     if (!binding || binding.paused) return;
     const decision = await this.store.recordLifecycleNotification({
       channel: SLACK_CHANNEL,
@@ -159,6 +159,14 @@ export class SlackRuntime {
     });
     if (!decision.shouldNotify) return;
     await this.adapter.sendText(bindingAddress(binding), formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: SLACK_CHANNEL }));
+    await this.store.markLifecycleNotificationDelivered({
+      channel: SLACK_CHANNEL,
+      instanceId: this.instanceId,
+      sessionKey: route.sessionKey,
+      conversationId: binding.conversationId,
+      userId: binding.userId,
+      kind,
+    });
   }
 
   private async initializeRuntime(): Promise<void> {

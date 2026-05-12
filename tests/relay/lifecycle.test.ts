@@ -54,4 +54,23 @@ describe("relay lifecycle notifications", () => {
     expect(Object.values(loaded.lifecycleNotifications)).toHaveLength(1);
     expect(Object.values(loaded.lifecycleNotifications)[0]).toMatchObject({ channel: "telegram", sessionKey: "s1", state: "offline" });
   });
+
+  it("marks lifecycle deliveries only after successful sends", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-lifecycle-delivery-"));
+    tempDirs.push(stateDir);
+    const store = new TunnelStateStore(stateDir);
+
+    const offline = await store.recordLifecycleNotification({ channel: "telegram", sessionKey: "s1", conversationId: "123", userId: "456", kind: "offline", nowIso: "2026-05-12T10:00:00.000Z" });
+    expect(offline.shouldNotify).toBe(true);
+    await store.markLifecycleNotificationDelivered({ channel: "telegram", sessionKey: "s1", conversationId: "123", userId: "456", kind: "offline", deliveredAt: "2026-05-12T10:00:01.000Z" });
+
+    const online = await store.recordLifecycleNotification({ channel: "telegram", sessionKey: "s1", conversationId: "123", userId: "456", kind: "online", nowIso: "2026-05-12T10:01:00.000Z" });
+    expect(online.shouldNotify).toBe(true);
+    let loaded = await store.load();
+    expect(Object.values(loaded.lifecycleNotifications)[0]).toMatchObject({ state: "offline", lastEvent: "offline" });
+
+    await store.markLifecycleNotificationDelivered({ channel: "telegram", sessionKey: "s1", conversationId: "123", userId: "456", kind: "online", deliveredAt: "2026-05-12T10:01:01.000Z" });
+    loaded = await store.load();
+    expect(Object.values(loaded.lifecycleNotifications)[0]).toMatchObject({ state: "online", lastEvent: "online" });
+  });
 });

@@ -172,6 +172,11 @@ describe("DiscordRuntime", () => {
 
     expect(defaultOperations.messages).toHaveLength(0);
     expect(betaOperations.messages).toContainEqual(expect.objectContaining({ channelId: "c-beta", content: expect.stringContaining("went offline locally") }));
+
+    const messageCount = betaOperations.messages.length;
+    await store.revokeChannelBinding("discord", session.sessionKey, undefined, "beta");
+    await betaRuntime.notifyLifecycle(session, "online");
+    expect(betaOperations.messages).toHaveLength(messageCount);
   });
 
   it("reports startup failures without exposing tokens", async () => {

@@ -352,11 +352,49 @@ export class TunnelStateStore {
     let decision: RelayLifecycleNotificationDecision | undefined;
     await this.update((data) => {
       const key = relayLifecycleStorageKey(input);
-      decision = decideRelayLifecycleNotification({ ...input, previous: data.lifecycleNotifications[key] });
-      data.lifecycleNotifications[key] = decision.record;
+      const previous = data.lifecycleNotifications[key];
+      decision = decideRelayLifecycleNotification({ ...input, previous });
+      if (decision.shouldNotify && input.kind === "online") return;
+      data.lifecycleNotifications[key] = {
+        ...decision.record,
+        lastNotifiedAt: previous?.lastNotifiedAt,
+        lastEvent: previous?.lastEvent,
+      };
     });
     return decision!;
   }
+
+  async markLifecycleNotificationDelivered(input: {
+    channel: ChannelBinding["channel"];
+    instanceId?: string;
+    sessionKey: string;
+    conversationId: string;
+    userId: string;
+    kind: RelayLifecycleEventKind;
+    deliveredAt?: string;
+  }): Promise<void> {
+    const deliveredAt = input.deliveredAt ?? toIsoNow();
+    await this.update((data) => {
+      const key = relayLifecycleStorageKey(input);
+      data.lifecycleNotifications[key] = {
+        channel: input.channel,
+        instanceId: input.instanceId ?? "default",
+        sessionKey: input.sessionKey,
+        conversationId: input.conversationId,
+        userId: input.userId,
+        state: lifecycleStateForNotification(input.kind),
+        updatedAt: deliveredAt,
+        lastNotifiedAt: deliveredAt,
+        lastEvent: input.kind,
+      };
+    });
+  }
+}
+
+function lifecycleStateForNotification(kind: RelayLifecycleEventKind): "online" | "offline" | "disconnected" {
+  if (kind === "online") return "online";
+  if (kind === "offline") return "offline";
+  return "disconnected";
 }
 
 function normalizePinLikeCode(value: string): string | undefined {

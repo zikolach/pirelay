@@ -25,12 +25,23 @@ const BINDING_ENTRY_TYPE = "relay-binding";
 const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
 const AUDIT_MESSAGE_TYPE = "relay-audit";
 const CONNECT_WIDGET_KEY = "relay-connect";
+const LIFECYCLE_NOTIFICATION_TIMEOUT_MS = 3_000;
 
 function shortenMiddle(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   const left = Math.ceil((maxLength - 1) / 2);
   const right = Math.floor((maxLength - 1) / 2);
   return `${text.slice(0, left)}…${text.slice(text.length - right)}`;
+}
+
+function withLifecycleNotificationTimeout(delivery: Promise<void>, timeoutMs = LIFECYCLE_NOTIFICATION_TIMEOUT_MS): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<void>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error("lifecycle notification timed out")), timeoutMs);
+  });
+  return Promise.race([delivery, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
 }
 
 function wrapPlainText(text: string, maxWidth: number): string[] {
@@ -578,6 +589,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     });
     if (!decision.shouldNotify) return;
     await runtime.sendToBoundChat(route.sessionKey, formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: "telegram" }));
+    await store.markLifecycleNotificationDelivered({
+      channel: "telegram",
+      instanceId: "default",
+      sessionKey: route.sessionKey,
+      conversationId: String(route.binding.chatId),
+      userId: String(route.binding.userId),
+      kind,
+    });
   }
 
   async function notifyRelayLifecycle(ctx: ExtensionContext, kind: RelayLifecycleEventKind, route = currentRoute, onlyStarted?: { telegram?: boolean; discordInstances?: Set<string>; slackInstances?: Set<string> }): Promise<void> {
@@ -598,7 +617,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       if (onlyStarted?.slackInstances && !onlyStarted.slackInstances.has(instanceId)) continue;
       deliveries.push(slack.notifyLifecycle?.(route, kind));
     }
-    const results = await Promise.allSettled(deliveries.filter((delivery): delivery is Promise<void> => Boolean(delivery)));
+    const results = await Promise.allSettled(deliveries.filter((delivery): delivery is Promise<void> => Boolean(delivery)).map((delivery) => withLifecycleNotificationTimeout(delivery)));
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (rejected) {
       const message = rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason);

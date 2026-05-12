@@ -309,6 +309,11 @@ describe("SlackRuntime foundations", () => {
 
     expect(defaultOperations.posts).toHaveLength(0);
     expect(betaOperations.posts).toContainEqual(expect.objectContaining({ channel: "C_BETA", text: expect.stringContaining("went offline locally") }));
+
+    const postCount = betaOperations.posts.length;
+    await store.revokeChannelBinding("slack", testRoute.sessionKey, undefined, "beta");
+    await betaRuntime.notifyLifecycle(testRoute, "online");
+    expect(betaOperations.posts).toHaveLength(postCount);
   });
 
   it("reports missing Socket Mode operations instead of silently succeeding", async () => {
