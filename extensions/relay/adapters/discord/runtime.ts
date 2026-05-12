@@ -8,6 +8,7 @@ import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocati
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
+import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -113,6 +114,23 @@ export class DiscordRuntime {
     if (!binding) return;
     const text = discordTurnNotificationText(route, status);
     await this.adapter.sendText(bindingAddress(binding), text);
+  }
+
+  async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
+    if (!this.adapter) return;
+    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId)
+      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    if (!binding || binding.paused) return;
+    const decision = await this.store.recordLifecycleNotification({
+      channel: DISCORD_CHANNEL,
+      instanceId: this.instanceId,
+      sessionKey: route.sessionKey,
+      conversationId: binding.conversationId,
+      userId: binding.userId,
+      kind,
+    });
+    if (!decision.shouldNotify) return;
+    await this.adapter.sendText(bindingAddress(binding), formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: DISCORD_CHANNEL }));
   }
 
   private async handleEvent(event: ChannelInboundEvent): Promise<void> {

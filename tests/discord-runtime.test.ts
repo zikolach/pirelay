@@ -149,6 +149,31 @@ describe("DiscordRuntime", () => {
     await workRuntime?.stop();
   });
 
+  it("sends lifecycle notifications through the matching Discord instance", async () => {
+    const cfg = await config();
+    cfg.discordInstances = {
+      beta: { ...cfg.discord!, enabled: true, botToken: "discord-beta", allowUserIds: ["u1"], allowGuildIds: ["g1"] },
+    };
+    const session = route().route;
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", instanceId: "beta", conversationId: "c-beta", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { guildId: "g1" } });
+    const defaultOperations = new FakeDiscordOperations();
+    const betaOperations = new FakeDiscordOperations();
+    const defaultRuntime = new DiscordRuntime(cfg, { operations: defaultOperations });
+    const betaRuntime = new DiscordRuntime(cfg, { operations: betaOperations }, "beta");
+
+    await defaultRuntime.registerRoute(session);
+    await betaRuntime.registerRoute(session);
+    await defaultRuntime.start();
+    await betaRuntime.start();
+
+    await defaultRuntime.notifyLifecycle(session, "offline");
+    await betaRuntime.notifyLifecycle(session, "offline");
+
+    expect(defaultOperations.messages).toHaveLength(0);
+    expect(betaOperations.messages).toContainEqual(expect.objectContaining({ channelId: "c-beta", content: expect.stringContaining("went offline locally") }));
+  });
+
   it("reports startup failures without exposing tokens", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations(new Error("bad discord-token-supersecret"));

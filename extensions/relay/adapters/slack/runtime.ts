@@ -8,6 +8,7 @@ import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemote
 import { formatFullOutput, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
+import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 
@@ -141,6 +142,23 @@ export class SlackRuntime {
       ?? this.recentBindingBySessionKey.get(route.sessionKey);
     if (!binding || binding.paused && status === "completed") return;
     await this.adapter.sendText(bindingAddress(binding), slackTurnNotificationText(route, status));
+  }
+
+  async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
+    if (!this.adapter) return;
+    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
+      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    if (!binding || binding.paused) return;
+    const decision = await this.store.recordLifecycleNotification({
+      channel: SLACK_CHANNEL,
+      instanceId: this.instanceId,
+      sessionKey: route.sessionKey,
+      conversationId: binding.conversationId,
+      userId: binding.userId,
+      kind,
+    });
+    if (!decision.shouldNotify) return;
+    await this.adapter.sendText(bindingAddress(binding), formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: SLACK_CHANNEL }));
   }
 
   private async initializeRuntime(): Promise<void> {

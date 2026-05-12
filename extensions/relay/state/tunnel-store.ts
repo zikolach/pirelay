@@ -3,6 +3,7 @@ import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getStateFilePath } from "./paths.js";
 import type { ChannelBinding } from "../core/channel-adapter.js";
 import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../broker/channel-registry.js";
+import { decideRelayLifecycleNotification, relayLifecycleStorageKey, type RelayLifecycleEventKind, type RelayLifecycleNotificationDecision } from "../notifications/lifecycle.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
@@ -13,6 +14,7 @@ function emptyStore(): TunnelStoreData {
     channelBindings: {},
     activeChannelSelections: {},
     trustedRelayUsers: {},
+    lifecycleNotifications: {},
   };
 }
 
@@ -41,6 +43,7 @@ export class TunnelStateStore {
         channelBindings: parsed.channelBindings ?? {},
         activeChannelSelections: parsed.activeChannelSelections ?? {},
         trustedRelayUsers: parsed.trustedRelayUsers ?? {},
+        lifecycleNotifications: parsed.lifecycleNotifications ?? {},
       };
     } catch {
       return emptyStore();
@@ -334,6 +337,25 @@ export class TunnelStateStore {
       delete data.trustedRelayUsers[key];
     });
     return removed;
+  }
+
+  async recordLifecycleNotification(input: {
+    channel: ChannelBinding["channel"];
+    instanceId?: string;
+    sessionKey: string;
+    conversationId: string;
+    userId: string;
+    kind: RelayLifecycleEventKind;
+    nowIso?: string;
+    debounceMs?: number;
+  }): Promise<RelayLifecycleNotificationDecision> {
+    let decision: RelayLifecycleNotificationDecision | undefined;
+    await this.update((data) => {
+      const key = relayLifecycleStorageKey(input);
+      decision = decideRelayLifecycleNotification({ ...input, previous: data.lifecycleNotifications[key] });
+      data.lifecycleNotifications[key] = decision.record;
+    });
+    return decision!;
   }
 }
 

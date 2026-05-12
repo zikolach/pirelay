@@ -13,6 +13,7 @@ import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
+import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../notifications/lifecycle.js";
 import { formatRelayStatusLine, type RelayStatusLineBindingState, type RelayStatusLineChannel } from "./status-line.js";
 import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, slackAppRedirectUrl, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
 import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback, slackAppManifestText, type RelaySetupWizardActionId } from "../config/setup-wizard.js";
@@ -564,6 +565,40 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     });
   }
 
+  async function notifyTelegramLifecycle(config: TelegramTunnelConfig, route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
+    if (!runtime || !route.binding) return;
+    const store = new TunnelStateStore(config.stateDir);
+    const decision = await store.recordLifecycleNotification({
+      channel: "telegram",
+      instanceId: "default",
+      sessionKey: route.sessionKey,
+      conversationId: String(route.binding.chatId),
+      userId: String(route.binding.userId),
+      kind,
+    });
+    if (!decision.shouldNotify) return;
+    await runtime.sendToBoundChat(route.sessionKey, formatRelayLifecycleNotification({ kind, sessionLabel: route.sessionLabel, channel: "telegram" }));
+  }
+
+  async function notifyRelayLifecycle(ctx: ExtensionContext, kind: RelayLifecycleEventKind, route = currentRoute): Promise<void> {
+    if (!route) return;
+    let config: TelegramTunnelConfig;
+    try {
+      config = await ensureConfig(ctx, false);
+    } catch {
+      return;
+    }
+    const deliveries: Array<Promise<void> | undefined> = [notifyTelegramLifecycle(config, route, kind)];
+    for (const discord of discordRuntimes.values()) deliveries.push(discord.notifyLifecycle?.(route, kind));
+    for (const slack of slackRuntimes.values()) deliveries.push(slack.notifyLifecycle?.(route, kind));
+    const results = await Promise.allSettled(deliveries.filter((delivery): delivery is Promise<void> => Boolean(delivery)));
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (rejected) {
+      const message = rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason);
+      ctx.ui.setStatus("relay-lifecycle", `relay lifecycle warning: ${redactSecrets(message)}`);
+    }
+  }
+
   async function restoreBinding(ctx: ExtensionContext, config: TelegramTunnelConfig): Promise<TelegramBindingMetadata | undefined> {
     let latest: BindingEntryData | undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
@@ -615,6 +650,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       ctx.ui.setStatus("relay-sync", `telegram sync error: ${redactSecrets(message)}`);
     }
     await refreshRelayStatuses(ctx);
+    await notifyRelayLifecycle(ctx, "online", currentRoute);
   }
 
   async function handleSetup(ctx: ExtensionContext): Promise<void> {
@@ -1029,6 +1065,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) await syncRoute(ctx);
     if (!currentRoute) return;
     const disconnectedRoute = currentRoute;
+    await notifyRelayLifecycle(ctx, "disconnected", disconnectedRoute);
     currentRoute.binding = undefined;
     await store.revokeBinding(currentRoute.sessionKey);
     await store.revokeChannelBindingsForSession(currentRoute.sessionKey);
@@ -1142,6 +1179,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     latestContext = ctx;
     closeConnectQrScreen = undefined;
+    if (currentRoute) await notifyRelayLifecycle(ctx, "offline", currentRoute);
     if (runtime && currentRoute) {
       await runtime.unregisterRoute(currentRoute.sessionKey);
     }
