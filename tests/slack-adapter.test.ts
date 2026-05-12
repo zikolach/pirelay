@@ -62,7 +62,7 @@ describe("SlackChannelAdapter", () => {
     const postResponse = vi.fn(async (_url: string, _payload: unknown) => undefined);
     const downloadFile = vi.fn(async (_url: string) => new Uint8Array([8]));
     const adapter = new SlackChannelAdapter(config, { postMessage, uploadFile, postEphemeral, postResponse, downloadFile });
-    const address = { channel: "slack", conversationId: "D1", userId: "U1" } as const;
+    const address = { channel: "slack", conversationId: "D1", userId: "U1", threadTs: "thread-1" } as const;
 
     await adapter.sendText(address, "x".repeat(95), { buttons: [[{ label: "Full", actionData: "full:t:chat", style: "primary" }]] });
     await adapter.sendDocument(address, { fileName: "out.md", mimeType: "text/markdown", data: new Uint8Array([1]), byteSize: 1 }, { caption: "Latest output" });
@@ -74,7 +74,7 @@ describe("SlackChannelAdapter", () => {
     expect(postMessage.mock.calls[0]?.[0]).toMatchObject({ channel: "D1", text: "x".repeat(40) });
     expect((postMessage.mock.calls.at(-1)?.[0] as { blocks: Array<Array<unknown>> }).blocks[0]![0]).toMatchObject({ text: "Full", value: "full:t:chat" });
     expect(uploadFile).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", fileName: "out.md", caption: "Latest output" }));
-    expect(postEphemeral).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", user: "U1", text: "Pi is working…" }));
+    expect(postEphemeral).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", user: "U1", text: "Pi is working…", threadTs: "thread-1" }));
     expect(postResponse).toHaveBeenCalledWith("https://hooks.slack.test/response", { text: "Done", ephemeral: true });
     expect(downloadFile).toHaveBeenCalledWith("https://slack.test/file");
   });
@@ -149,7 +149,7 @@ describe("SlackChannelAdapter", () => {
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U2", metadata: { teamId: "T1" } }, config)).toBe(false);
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U1", metadata: { teamId: "T2" } }, config)).toBe(false);
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U1" }, config)).toBe(false);
-    expect(slackPairingCommand("abc")).toBe("/pirelay abc");
+    expect(slackPairingCommand("abc")).toBe("pirelay pair abc");
   });
 
   it("normalizes Slack shared-room mentions", () => {

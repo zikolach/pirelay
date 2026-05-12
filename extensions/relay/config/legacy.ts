@@ -28,6 +28,7 @@ const legacyTopLevelKeys = new Set([
   "PI_RELAY_SLACK_SIGNING_SECRET",
   "PI_RELAY_SLACK_APP_TOKEN",
   "PI_RELAY_SLACK_EVENT_MODE",
+  "PI_RELAY_SLACK_APP_ID",
   "PI_RELAY_SLACK_WORKSPACE_ID",
   "PI_RELAY_SLACK_BOT_USER_ID",
   "PI_RELAY_SLACK_ALLOW_USER_IDS",
@@ -168,6 +169,7 @@ export function canonicalizeRelayConfigFile(input: RelayConfigFile): RelayConfig
     || input.PI_RELAY_SLACK_SIGNING_SECRET
     || input.PI_RELAY_SLACK_APP_TOKEN
     || input.PI_RELAY_SLACK_EVENT_MODE
+    || input.PI_RELAY_SLACK_APP_ID
     || input.PI_RELAY_SLACK_WORKSPACE_ID
     || input.PI_RELAY_SLACK_BOT_USER_ID
     || input.PI_RELAY_SLACK_ALLOW_USER_IDS
@@ -182,6 +184,7 @@ export function canonicalizeRelayConfigFile(input: RelayConfigFile): RelayConfig
       botToken: messengers.slack?.default?.botToken ?? legacy?.botToken ?? input.PI_RELAY_SLACK_BOT_TOKEN,
       signingSecret: messengers.slack?.default?.signingSecret ?? legacy?.signingSecret ?? input.PI_RELAY_SLACK_SIGNING_SECRET,
       appToken: messengers.slack?.default?.appToken ?? legacy?.appToken ?? input.PI_RELAY_SLACK_APP_TOKEN,
+      appId: messengers.slack?.default?.appId ?? legacy?.appId ?? legacy?.applicationId ?? input.PI_RELAY_SLACK_APP_ID,
       eventMode: messengers.slack?.default?.eventMode ?? legacy?.eventMode ?? eventMode,
       workspaceId: messengers.slack?.default?.workspaceId ?? legacy?.workspaceId ?? input.PI_RELAY_SLACK_WORKSPACE_ID,
       botUserId: messengers.slack?.default?.botUserId ?? legacy?.botUserId ?? input.PI_RELAY_SLACK_BOT_USER_ID,

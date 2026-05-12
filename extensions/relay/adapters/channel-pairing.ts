@@ -38,7 +38,7 @@ export function completeSlackPairing(
   if (event.channel !== "slack") return { ok: false, reason: "wrong-channel" };
   if (event.conversation.kind !== "private" && !config.allowChannelMessages) return { ok: false, reason: "unsupported-conversation" };
   if (!isSlackIdentityAllowed(event.sender, config)) return { ok: false, reason: "unauthorized" };
-  return completeChannelPairing(event, pairing, [slackPairingCommand(code)], now);
+  return completeChannelPairing(event, pairing, [slackPairingCommand(code), `pirelay ${code}`, `/pirelay ${code}`], now);
 }
 
 function completeChannelPairing(

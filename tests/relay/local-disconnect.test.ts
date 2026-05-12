@@ -146,7 +146,7 @@ describe("local relay disconnect", () => {
 
     expect(notifications.at(-1)?.message).toBe("PiRelay disconnected for this session.");
     expect(notifications.map((entry) => entry.message).join("\n")).not.toContain("Telegram tunnel disconnected");
-    expect(statuses).toContainEqual({ key: "relay", value: "relay: disconnected" });
+    expect(statuses).toContainEqual({ key: "relay", value: "telegram: ready unpaired" });
     expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(sessionKey);
     expect(await store.getBindingBySessionKey(sessionKey)).toMatchObject({ status: "revoked" });
     expect(await store.getChannelBindingBySessionKey("discord", sessionKey)).toBeUndefined();

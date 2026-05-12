@@ -1,18 +1,24 @@
 import { appendFileSync } from "node:fs";
 import type { ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelRouteAddress } from "../../core/channel-adapter.js";
-import type { ChannelPersistedBindingRecord, PairingApprovalDecision, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
+import type { ChannelPersistedBindingRecord, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { formatFullOutput, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
-import { normalizeProgressMode } from "../../notifications/progress.js";
+import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 
 const SLACK_CHANNEL = "slack" as const;
-const SLACK_HELP_TEXT = buildHelpText({ title: "PiRelay Slack commands:", commandPrefix: "/" });
+const SLACK_HELP_TEXT = buildHelpText({
+  title: "PiRelay Slack commands:",
+  commandPrefix: "pirelay",
+  includeSharedRoomHints: false,
+  footerLines: ["", "Tip: do not prefix commands with `/` in Slack; Slack treats leading slash text as slash commands for apps."],
+});
+const SLACK_THINKING_REACTION = "thinking_face";
 
 export interface SlackRuntimeOptions {
   operations?: SlackApiOperations;
@@ -22,6 +28,9 @@ export interface SlackRuntimeStatus {
   enabled: boolean;
   started: boolean;
   error?: string;
+  appId?: string;
+  teamId?: string;
+  botUserId?: string;
 }
 
 export class SlackRuntime {
@@ -35,6 +44,8 @@ export class SlackRuntime {
   private historyPollInFlight = false;
   private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
   private readonly seenEventKeys = new Map<string, number>();
+  private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
+  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
   private botIdentity?: SlackAuthTestResult;
   private started = false;
   private startPromise?: Promise<void>;
@@ -56,7 +67,14 @@ export class SlackRuntime {
 
   getStatus(): SlackRuntimeStatus {
     const slackConfig = this.config.slackInstances?.[this.instanceId] ?? this.config.slack;
-    return { enabled: Boolean(slackConfig?.enabled && slackConfig.botToken), started: this.started, error: this.lastError };
+    return {
+      enabled: Boolean(slackConfig?.enabled && slackConfig.botToken),
+      started: this.started,
+      error: this.lastError,
+      appId: this.botIdentity?.appId ?? slackConfig?.appId,
+      teamId: this.botIdentity?.teamId ?? slackConfig?.workspaceId,
+      botUserId: this.botIdentity?.userId ?? slackConfig?.botUserId,
+    };
   }
 
   async start(): Promise<void> {
@@ -86,6 +104,8 @@ export class SlackRuntime {
 
   async stop(): Promise<void> {
     this.started = false;
+    await this.clearThinkingReactions();
+    this.clearAllProgressStates();
     if (this.historyPollTimer) clearInterval(this.historyPollTimer);
     this.historyPollTimer = undefined;
     this.historyPollInFlight = false;
@@ -99,15 +119,20 @@ export class SlackRuntime {
       this.ownedBindingSessionKeys.add(route.sessionKey);
       this.recentBindingBySessionKey.set(route.sessionKey, binding);
     }
+    this.syncProgressDelivery(route);
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
+    await this.stopThinkingReaction(sessionKey);
+    this.clearProgressStateBySessionKey(sessionKey);
     this.routes.delete(sessionKey);
     this.ownedBindingSessionKeys.delete(sessionKey);
     if (this.routes.size === 0) await this.stop();
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
+    await this.stopThinkingReaction(route.sessionKey);
+    this.clearProgressState(route);
     if (!this.adapter) return;
     const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
       ?? this.recentBindingBySessionKey.get(route.sessionKey);
@@ -277,7 +302,9 @@ export class SlackRuntime {
     if (!routedMessage) return;
     const binding = await this.findSlackBinding(routedMessage) ?? await this.livePreseededBinding(routedMessage);
     if (!binding) {
-      await this.sendText(message, "This Slack chat is not paired with a Pi session. Run /relay connect slack locally first.");
+      await this.sendText(message, message.conversation.kind === "private"
+        ? "This Slack chat is not paired with a Pi session. Run /relay connect slack locally first."
+        : "This Slack channel/thread is not paired with a Pi session. To control Pi from this channel, enable slack.allowChannelMessages, run /relay connect slack locally, then send the highlighted `pirelay pair <pin>` command in this channel. Otherwise use the paired Slack app DM.");
       return;
     }
     const route = this.routes.get(binding.sessionKey);
@@ -325,28 +352,37 @@ export class SlackRuntime {
     if (remoteMentions.length > 0 && !hasLocalMention) return undefined;
     if (!hasLocalMention) {
       const active = await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId);
-      if (!active || active.machineId && active.machineId !== (this.config.machineId ?? "local")) return undefined;
+      if (active?.machineId && active.machineId !== (this.config.machineId ?? "local")) return undefined;
+      if (!active) {
+        const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
+        if (bindings.length === 0 || !command) return undefined;
+      }
     }
     return hasLocalMention ? { ...message, text: stripLeadingSlackMentions(message.text) } : message;
   }
 
   private async handleBoundMessage(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute): Promise<void> {
-    const activeBinding = await this.rememberThreadContext(binding, message);
     const command = parseSlackCommand(message.text);
     if (command) {
+      const activeBinding = await this.rememberThreadContext(binding, message);
       await this.handleSlackCommand(message, activeBinding, route, command);
       return;
     }
-    if (activeBinding.paused) {
-      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use /resume to re-enable prompts.");
+    if (binding.paused) {
+      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` to re-enable prompts.");
       return;
     }
     if (!route.actions.context.isIdle()) {
       const mode = this.config.busyDeliveryMode === "steer" ? "steer" : "followUp";
+      this.sendActivityBestEffort(slackAddress(message));
       route.actions.sendUserMessage(message.text, { deliverAs: mode });
-      await this.sendText(message, mode === "steer" ? "Slack steering queued for the active Pi run." : "Slack follow-up queued for after the active Pi run.");
+      await this.sendText(message, mode === "steer"
+        ? "Slack steering queued for the active Pi run."
+        : "Slack follow-up queued for after the active Pi run. The current turn may complete separately before this prompt runs.");
       return;
     }
+    await this.rememberThreadContext(binding, message);
+    await this.startThinkingReaction(route, message);
     route.actions.sendUserMessage(message.text);
     route.lastActivityAt = Date.now();
     await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, route.sessionKey);
@@ -355,7 +391,7 @@ export class SlackRuntime {
 
   private async handleSlackCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: SlackCommand): Promise<void> {
     if (binding.paused && !commandAllowsWhilePaused(command.name)) {
-      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use /resume first.");
+      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` first.");
       return;
     }
     switch (command.name) {
@@ -386,7 +422,7 @@ export class SlackRuntime {
           return;
         }
         if (!target.prompt) {
-          await this.sendText(message, "Usage: /to <session> <prompt>");
+          await this.sendText(message, "Usage: pirelay to <session> <prompt>");
           return;
         }
         const targetRoute = this.routes.get(target.result.entry.sessionKey);
@@ -394,7 +430,13 @@ export class SlackRuntime {
           await this.sendText(message, `Pi session ${target.result.entry.alias || target.result.entry.sessionLabel} is offline.`);
           return;
         }
-        targetRoute.actions.sendUserMessage(target.prompt, targetRoute.actions.context.isIdle() ? undefined : { deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp" });
+        if (targetRoute.actions.context.isIdle()) {
+          await this.startThinkingReaction(targetRoute, message);
+          targetRoute.actions.sendUserMessage(target.prompt, undefined);
+        } else {
+          this.sendActivityBestEffort(slackAddress(message));
+          targetRoute.actions.sendUserMessage(target.prompt, { deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp" });
+        }
         await this.sendText(message, `Sent to ${target.result.entry.alias || target.result.entry.sessionLabel}.`);
         return;
       }
@@ -403,7 +445,7 @@ export class SlackRuntime {
         return;
       case "images":
       case "send-image":
-        await this.sendText(message, "Slack image/file upload delivery is not available in this runtime yet. Use /summary or /full for text output, or retrieve generated files locally.");
+        await this.sendText(message, "Slack image/file upload delivery is not available in this runtime yet. Use `pirelay summary` or `pirelay full` for text output, or retrieve generated files locally.");
         return;
       case "full":
         await this.sendText(message, formatFullOutput(route));
@@ -418,7 +460,8 @@ export class SlackRuntime {
       case "notify": {
         const mode = normalizeProgressMode(command.args);
         if (!mode) {
-          await this.sendText(message, "Usage: /progress <quiet|normal|verbose|completion-only>");
+          const currentMode = displayProgressMode(progressModeFor({ progressMode: channelProgressMode(binding) }, this.config));
+          await this.sendText(message, `Progress mode: ${currentMode}\nUsage: pirelay progress <quiet|normal|verbose|completion-only>`);
           return;
         }
         const next = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, progressMode: mode }, instanceId: this.instanceId, lastSeenAt: new Date().toISOString() });
@@ -440,20 +483,23 @@ export class SlackRuntime {
         return;
       case "pause":
         await this.updateBinding(binding, { paused: true });
-        await this.sendText(message, "Slack remote delivery paused. Use /resume to re-enable it.");
+        route.actions.refreshLocalStatus?.();
+        await this.sendText(message, "Slack remote delivery paused. Use `pirelay resume` to re-enable it.");
         return;
       case "resume":
         await this.updateBinding(binding, { paused: false });
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Slack remote delivery resumed.");
         return;
       case "disconnect":
         await this.store.revokeChannelBinding(SLACK_CHANNEL, route.sessionKey, undefined, this.instanceId);
         this.ownedBindingSessionKeys.delete(route.sessionKey);
         this.recentBindingBySessionKey.delete(route.sessionKey);
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Slack binding disconnected for this Pi session.");
         return;
       default:
-        await this.sendText(message, `Unknown Slack command: /${command.name}. Send /help for available commands.`);
+        await this.sendText(message, `Unknown Slack command: ${command.name}. Send \`pirelay help\` for available commands.`);
     }
   }
 
@@ -512,8 +558,10 @@ export class SlackRuntime {
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, binding.sessionKey);
     route.lastActivityAt = Date.now();
-    route.actions.appendAudit(`Slack paired with ${binding.identity?.displayName ?? binding.userId}.`);
-    await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send /status or a prompt to control Pi.`);
+    const pairedUser = binding.identity?.displayName ?? binding.userId;
+    route.actions.appendAudit(`Slack paired with ${pairedUser}.`);
+    route.actions.notifyLocal?.(`Slack paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
+    await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send \`pirelay status\` or a prompt to control Pi.`);
   }
 
   private async livePreseededBinding(message: ChannelInboundMessage): Promise<ChannelPersistedBindingRecord | undefined> {
@@ -548,8 +596,20 @@ export class SlackRuntime {
       if (binding && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId) return binding;
     }
     const binding = await this.store.getChannelBinding(SLACK_CHANNEL, message.conversation.id, message.sender.userId, this.instanceId);
-    if (binding) this.recentBindingBySessionKey.set(binding.sessionKey, binding);
-    return binding;
+    if (binding) {
+      this.recentBindingBySessionKey.set(binding.sessionKey, binding);
+      return binding;
+    }
+    if (message.conversation.kind !== "private" && this.configForInstance()?.allowChannelMessages) {
+      const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
+      const latest = latestChannelBinding(bindings);
+      if (latest) {
+        this.recentBindingBySessionKey.set(latest.sessionKey, latest);
+        await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, latest.sessionKey);
+        return latest;
+      }
+    }
+    return undefined;
   }
 
   private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender">, text: string): Promise<void> {
@@ -576,6 +636,129 @@ export class SlackRuntime {
     const next = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, threadTs }, instanceId: this.instanceId, lastSeenAt: new Date().toISOString() });
     this.recentBindingBySessionKey.set(next.sessionKey, next);
     return next;
+  }
+
+  private progressKey(route: SessionRoute): string | undefined {
+    const binding = this.recentBindingBySessionKey.get(route.sessionKey);
+    return binding ? `${route.sessionKey}:${binding.conversationId}:${binding.userId}` : undefined;
+  }
+
+  private clearAllProgressStates(): void {
+    for (const state of this.progressStates.values()) {
+      if (state.timer) clearTimeout(state.timer);
+    }
+    this.progressStates.clear();
+  }
+
+  private clearProgressState(route: SessionRoute): void {
+    const key = this.progressKey(route);
+    if (!key) return;
+    const state = this.progressStates.get(key);
+    if (state?.timer) clearTimeout(state.timer);
+    this.progressStates.delete(key);
+  }
+
+  private clearProgressStateBySessionKey(sessionKey: string): void {
+    for (const [key, state] of this.progressStates) {
+      if (!key.startsWith(`${sessionKey}:`)) continue;
+      if (state.timer) clearTimeout(state.timer);
+      this.progressStates.delete(key);
+    }
+  }
+
+  private syncProgressDelivery(route: SessionRoute): void {
+    const event = route.notification.progressEvent;
+    const binding = this.recentBindingBySessionKey.get(route.sessionKey);
+    const key = this.progressKey(route);
+    if (!key || !event || !binding || binding.paused || route.notification.lastStatus !== "running") {
+      if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
+      return;
+    }
+    const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+    if (!shouldSendNonTerminalProgress(mode)) {
+      this.clearProgressState(route);
+      return;
+    }
+    let state = this.progressStates.get(key);
+    if (!state) {
+      state = { pending: [] };
+      this.progressStates.set(key, state);
+    }
+    if (state.lastEventId === event.id) return;
+    state.lastEventId = event.id;
+    state.pending.push(event);
+    if (state.timer) return;
+    const interval = progressIntervalMsFor(mode, this.config);
+    const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
+    const delay = Math.max(0, interval - elapsed);
+    state.timer = setTimeout(() => {
+      void this.flushProgress(route.sessionKey, binding, key).catch((error: unknown) => {
+        debugSlackRuntime(`Slack progress delivery failed: ${safeSlackRuntimeError(error)}`);
+      });
+    }, delay);
+    unrefTimer(state.timer);
+  }
+
+  private async flushProgress(sessionKey: string, expectedBinding: ChannelPersistedBindingRecord, key: string): Promise<void> {
+    const state = this.progressStates.get(key);
+    if (!state) return;
+    state.timer = undefined;
+    const route = this.routes.get(sessionKey);
+    const binding = this.recentBindingBySessionKey.get(sessionKey);
+    if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
+      if (route) this.clearProgressState(route);
+      else this.progressStates.delete(key);
+      return;
+    }
+    const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+    if (!shouldSendNonTerminalProgress(mode)) {
+      this.clearProgressState(route);
+      return;
+    }
+    const pending = state.pending.splice(0);
+    const text = formatProgressUpdate(pending, this.config);
+    if (!text || !this.adapter) return;
+    state.lastSentAt = Date.now();
+    await this.adapter.sendText(bindingAddress(binding), text);
+  }
+
+  private async startThinkingReaction(route: SessionRoute, message: ChannelInboundMessage): Promise<void> {
+    const timestamp = message.messageId;
+    if (!timestamp || !this.operations?.addReaction) {
+      this.sendActivityBestEffort(slackAddress(message));
+      return;
+    }
+    await this.stopThinkingReaction(route.sessionKey);
+    const reaction = { channel: message.conversation.id, timestamp, name: SLACK_THINKING_REACTION };
+    try {
+      await this.operations.addReaction(reaction);
+      this.thinkingReactions.set(route.sessionKey, reaction);
+    } catch (error) {
+      debugSlackRuntime(`Slack thinking reaction failed: ${safeSlackRuntimeError(error)}`);
+      this.sendActivityBestEffort(slackAddress(message));
+    }
+  }
+
+  private async stopThinkingReaction(sessionKey: string): Promise<void> {
+    const reaction = this.thinkingReactions.get(sessionKey);
+    if (!reaction) return;
+    this.thinkingReactions.delete(sessionKey);
+    if (!this.operations?.removeReaction) return;
+    try {
+      await this.operations.removeReaction(reaction);
+    } catch (error) {
+      debugSlackRuntime(`Slack thinking reaction cleanup failed: ${safeSlackRuntimeError(error)}`);
+    }
+  }
+
+  private async clearThinkingReactions(): Promise<void> {
+    await Promise.all([...this.thinkingReactions.keys()].map((sessionKey) => this.stopThinkingReaction(sessionKey)));
+  }
+
+  private sendActivityBestEffort(address: ChannelRouteAddress): void {
+    void this.adapter?.sendActivity(address, "typing").catch((error: unknown) => {
+      debugSlackRuntime(`Slack activity indicator failed: ${safeSlackRuntimeError(error)}`);
+    });
   }
 
   private async updateBinding(binding: ChannelPersistedBindingRecord, update: Partial<Pick<ChannelPersistedBindingRecord, "paused">> & { alias?: string | undefined }): Promise<ChannelPersistedBindingRecord> {
@@ -632,8 +815,16 @@ function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent |
 }
 
 function parseSlackPairingCode(text: string): string | undefined {
-  const match = text.trim().match(/^\/pirelay\s+(\S+)$/i);
-  return match?.[1];
+  const trimmed = text.trim();
+  const explicit = trimmed.match(/^pirelay\s+pair\s+(\S+)$/i);
+  if (explicit) return explicit[1];
+  const legacy = trimmed.match(/^(?:\/pirelay|pirelay)\s+(\S+)$/i);
+  const candidate = legacy?.[1];
+  return candidate && isSlackPairingCodeCandidate(candidate) ? candidate : undefined;
+}
+
+function isSlackPairingCodeCandidate(value: string): boolean {
+  return /^\d{3}-\d{3}$/.test(value) || /^[A-Za-z0-9_-]{20,}$/.test(value);
 }
 
 interface SlackCommand {
@@ -679,6 +870,10 @@ function normalizePairingApproval(decision: PairingApprovalDecision | boolean | 
   return "deny";
 }
 
+function latestChannelBinding(bindings: readonly ChannelPersistedBindingRecord[]): ChannelPersistedBindingRecord | undefined {
+  return [...bindings].sort((a, b) => Date.parse(b.lastSeenAt || b.boundAt) - Date.parse(a.lastSeenAt || a.boundAt))[0];
+}
+
 function slackAddress(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }): ChannelRouteAddress {
   const threadTs = typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined;
   return { channel: SLACK_CHANNEL, conversationId: message.conversation.id, userId: message.sender.userId, ...(threadTs ? { threadTs } : {}) } as ChannelRouteAddress;
@@ -693,6 +888,20 @@ function slackTurnNotificationText(route: SessionRoute, status: "completed" | "f
   if (status === "completed") return route.notification.lastSummary || route.notification.lastAssistantText || `Pi session ${route.sessionLabel} completed.`;
   if (status === "failed") return route.notification.lastFailure || `Pi session ${route.sessionLabel} failed.`;
   return `Pi session ${route.sessionLabel} was aborted.`;
+}
+
+function channelProgressMode(binding: ChannelPersistedBindingRecord): ProgressMode | undefined {
+  const mode = binding.metadata?.progressMode;
+  if (mode === "quiet" || mode === "normal" || mode === "verbose" || mode === "completionOnly") return mode;
+  return undefined;
+}
+
+function isTerminalStatus(status: SessionRoute["notification"]["lastStatus"]): boolean {
+  return status === "completed" || status === "failed" || status === "aborted";
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  if (typeof timer === "object" && timer && "unref" in timer && typeof timer.unref === "function") timer.unref();
 }
 
 function slackRuntimeStartError(config: TelegramTunnelConfig["slack"] | undefined): string {

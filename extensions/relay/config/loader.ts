@@ -71,6 +71,7 @@ function envBotUserId(env: NodeJS.ProcessEnv, kind: string): string | undefined 
 
 function envApplicationId(env: NodeJS.ProcessEnv, kind: string): string | undefined {
   if (kind === "discord") return env.PI_RELAY_DISCORD_APPLICATION_ID ?? env.PI_RELAY_DISCORD_CLIENT_ID;
+  if (kind === "slack") return env.PI_RELAY_SLACK_APP_ID;
   return undefined;
 }
 
@@ -145,6 +146,7 @@ function resolveMessengerInstance(input: {
     signingSecretEnv: config.signingSecretEnv,
     appToken,
     appTokenEnv: config.appTokenEnv,
+    appId: config.appId ?? config.applicationId ?? envApplicationId(env, ref.kind),
     botUserId: config.botUserId ?? envBotUserId(env, ref.kind),
     applicationId: config.applicationId ?? config.clientId ?? envApplicationId(env, ref.kind),
     clientId: config.clientId ?? config.applicationId ?? envApplicationId(env, ref.kind),
@@ -175,11 +177,12 @@ function addDefaultEnvMessengers(fileConfig: RelayConfigFile, env: NodeJS.Proces
 
   if (!messengers.telegram?.default && env.TELEGRAM_BOT_TOKEN) ensure("telegram").tokenEnv = "TELEGRAM_BOT_TOKEN";
   if (!messengers.discord?.default && env.PI_RELAY_DISCORD_BOT_TOKEN) ensure("discord").tokenEnv = "PI_RELAY_DISCORD_BOT_TOKEN";
-  if (!messengers.slack?.default && (env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET || env.PI_RELAY_SLACK_APP_TOKEN || env.PI_RELAY_SLACK_BOT_USER_ID)) {
+  if (!messengers.slack?.default && (env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET || env.PI_RELAY_SLACK_APP_TOKEN || env.PI_RELAY_SLACK_APP_ID || env.PI_RELAY_SLACK_BOT_USER_ID)) {
     const slack = ensure("slack");
     if (env.PI_RELAY_SLACK_BOT_TOKEN) slack.tokenEnv = "PI_RELAY_SLACK_BOT_TOKEN";
     if (env.PI_RELAY_SLACK_SIGNING_SECRET) slack.signingSecretEnv = "PI_RELAY_SLACK_SIGNING_SECRET";
     if (env.PI_RELAY_SLACK_APP_TOKEN) slack.appTokenEnv = "PI_RELAY_SLACK_APP_TOKEN";
+    if (env.PI_RELAY_SLACK_APP_ID) slack.appId = env.PI_RELAY_SLACK_APP_ID;
     if (env.PI_RELAY_SLACK_BOT_USER_ID) slack.botUserId = env.PI_RELAY_SLACK_BOT_USER_ID;
   }
 
@@ -201,7 +204,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
   if (env.TELEGRAM_BOT_TOKEN || env.PI_TELEGRAM_TUNNEL_STATE_DIR || env.PI_TELEGRAM_TUNNEL_CONFIG) {
     warnings.push("Using legacy Telegram tunnel environment fallback; prefer namespaced PiRelay config and tokenEnv settings.");
   }
-  if (env.PI_RELAY_DISCORD_BOT_TOKEN || env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET || env.PI_RELAY_SLACK_APP_TOKEN) {
+  if (env.PI_RELAY_DISCORD_BOT_TOKEN || env.PI_RELAY_SLACK_BOT_TOKEN || env.PI_RELAY_SLACK_SIGNING_SECRET || env.PI_RELAY_SLACK_APP_TOKEN || env.PI_RELAY_SLACK_APP_ID) {
     warnings.push("Using legacy top-level messenger environment fallback; prefer namespaced PiRelay messenger config with tokenEnv/signingSecretEnv.");
   }
 

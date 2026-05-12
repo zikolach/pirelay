@@ -1,5 +1,5 @@
 import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
-import type { RelaySetupWizardModel, RelaySetupWizardPanel } from "../config/setup-wizard.js";
+import type { RelaySetupWizardActionId, RelaySetupWizardModel, RelaySetupWizardPanel } from "../config/setup-wizard.js";
 import { renderQrLines } from "./qr.js";
 
 export interface SetupWizardTheme {
@@ -62,13 +62,19 @@ function wrapPlainText(text: string, maxWidth: number): string[] {
   return lines;
 }
 
+export interface RelaySetupWizardScreenOptions {
+  onCopyEnvSnippet?: () => void | Promise<void>;
+  onCopySlackManifest?: () => void | Promise<void>;
+}
+
 export class RelaySetupWizardScreen {
   private selectedPanel = 0;
 
   constructor(
     private readonly model: RelaySetupWizardModel,
     private readonly theme: SetupWizardTheme,
-    private readonly done: () => void,
+    private readonly done: (action?: RelaySetupWizardActionId) => void,
+    private readonly options: RelaySetupWizardScreenOptions = {},
   ) {}
 
   handleInput(data: string): void {
@@ -76,12 +82,32 @@ export class RelaySetupWizardScreen {
       this.done();
       return;
     }
-    if (matchesKey(data, "up") || data === "k" || data === "K") {
+    if (matchesKey(data, "left") || matchesKey(data, "up") || data === "h" || data === "H" || data === "k" || data === "K") {
       this.selectedPanel = Math.max(0, this.selectedPanel - 1);
       return;
     }
-    if (matchesKey(data, "down") || data === "j" || data === "J") {
+    if (matchesKey(data, "right") || matchesKey(data, "down") || matchesKey(data, "tab") || data === "l" || data === "L" || data === "j" || data === "J") {
       this.selectedPanel = Math.min(this.model.panels.length - 1, this.selectedPanel + 1);
+      return;
+    }
+    if (data === "c" || data === "C") {
+      if (this.options.onCopyEnvSnippet) {
+        this.safeFireAndForget(this.options.onCopyEnvSnippet);
+        return;
+      }
+      this.done("copy-env-snippet");
+      return;
+    }
+    if ((data === "m" || data === "M") && this.hasAction("copy-slack-manifest")) {
+      if (this.options.onCopySlackManifest) {
+        this.safeFireAndForget(this.options.onCopySlackManifest);
+        return;
+      }
+      this.done("copy-slack-manifest");
+      return;
+    }
+    if (data === "w" || data === "W") {
+      this.done("write-config-from-env");
       return;
     }
     if (matchesKey(data, "enter")) {
@@ -91,6 +117,10 @@ export class RelaySetupWizardScreen {
   }
 
   invalidate(): void {}
+
+  private safeFireAndForget(callback: () => void | Promise<void>): void {
+    void Promise.resolve().then(callback).catch(() => undefined);
+  }
 
   render(width: number): string[] {
     const outerWidth = Math.max(32, Math.min(Math.max(32, width - 2), 100));
@@ -104,26 +134,33 @@ export class RelaySetupWizardScreen {
 
     const lines: string[] = [border];
     lines.push(row(this.theme.fg("accent", `${this.model.title} — ${this.model.statusLabel}`)));
-    lines.push(row(`Messenger: ${this.model.channel}`));
-    lines.push(row());
-    lines.push(row(this.theme.fg("accent", "Panels")));
-    this.model.panels.forEach((panel, index) => {
-      const cursor = index === this.selectedPanel ? "›" : " ";
-      lines.push(row(`${cursor} ${panel.label}`));
-    });
+    lines.push(row(this.renderTabs(innerWidth)));
     lines.push(row());
     const panel = this.model.panels[this.selectedPanel] ?? this.model.panels[0];
-    lines.push(row(this.theme.fg("accent", panel?.label ?? "Details")));
     if (panel) lines.push(...this.renderPanelRows(panel, innerWidth, row));
     lines.push(row());
-    lines.push(row(this.theme.fg("accent", "Next steps")));
-    for (const step of this.model.nextSteps) {
-      for (const wrapped of wrapPlainText(step, innerWidth - 2)) lines.push(row(`• ${wrapped}`));
-    }
-    lines.push(row());
-    lines.push(row(this.theme.fg("dim", "↑/↓ or j/k select · Enter view · q/Esc close · no secrets are written")));
+    lines.push(row(this.theme.fg("dim", this.footerText())));
     lines.push(bottom);
     return lines.map((line) => visibleWidth(line) > width ? truncateVisible(line, width) : line);
+  }
+
+  private hasAction(action: RelaySetupWizardActionId): boolean {
+    return this.model.actions.some((candidate) => candidate.id === action);
+  }
+
+  private footerText(): string {
+    const actions = ["←/→ tabs", "c copy env to clipboard"];
+    if (this.hasAction("copy-slack-manifest")) actions.push("m copy manifest");
+    actions.push("w write config", "q/Esc close");
+    return actions.join(" · ");
+  }
+
+  private renderTabs(innerWidth: number): string {
+    const tabs = this.model.panels.map((panel, index) => {
+      const label = ` ${panel.label} `;
+      return index === this.selectedPanel ? this.theme.fg("accent", `[${label}]`) : this.theme.fg("dim", ` ${label} `);
+    }).join(" ");
+    return truncateVisible(tabs, innerWidth);
   }
 
   private renderPanelRows(panel: RelaySetupWizardPanel, innerWidth: number, row: (text?: string) => string): string[] {

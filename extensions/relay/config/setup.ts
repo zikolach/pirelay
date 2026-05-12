@@ -184,9 +184,10 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Create a Slack app: https://api.slack.com/apps",
         "Install it to your workspace, then set slack.botToken or PI_RELAY_SLACK_BOT_TOKEN from the Bot User OAuth Token.",
         "Set slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET from Basic Information > App Credentials.",
+        "For DMs, enable App Home > Messages Tab > Allow users to send messages to your app, add the message.im event with im:history/im:read scopes, add reactions:write for thinking indicators, then reinstall the app.",
         "Use slack.eventMode=socket for local Pi, or webhook mode with raw-body signature verification.",
         "Keep Slack DM-first; set allowUserIds before enabling live control.",
-        "Run /relay connect slack [name], then send the displayed /pirelay code to the app in a DM.",
+        "Run /relay connect slack [name], then send the displayed `pirelay pair <code>` text to the app in a DM. Do not prefix it with `/`; Slack treats leading slash text as a slash command. Set slack.appId or PI_RELAY_SLACK_APP_ID to enable an App Home QR link.",
         "Shared-room mode: use a dedicated Slack app/bot per machine in one channel with app mention or channel-message scopes, and keep user allow-lists explicit.",
       ].join("\n");
   }
@@ -210,7 +211,7 @@ export function relayPairingInstruction(channel: RelaySetupChannel, code: string
     case "discord":
       return `Send relay pair ${code} to the Discord bot in a DM before the pairing expires. /start ${code} is also accepted.`;
     case "slack":
-      return `Send /pirelay ${code} to the Slack app in a DM before the pairing expires.`;
+      return `Send pirelay pair ${code} to the Slack app in a DM before the pairing expires. Do not prefix it with /; Slack treats leading slash text as a slash command.`;
   }
 }
 
@@ -262,6 +263,7 @@ function channelDoctorChecklist(config: TelegramTunnelConfig, channel: RelaySetu
         slack?.botToken ? "  ✅ Slack bot token configured" : "  ❌ Slack bot token missing",
         slack?.signingSecret ? "  ✅ Slack signing secret configured" : "  ❌ Slack signing secret missing",
         `  ✅ Slack event mode: ${slack?.eventMode ?? "socket"}`,
+        slack?.appId ? "  ✅ Slack App ID configured for App Home QR link" : "  ⚠️ Slack App ID missing; App Home QR link is unavailable",
         slack?.workspaceId ? "  ✅ Slack workspace boundary configured" : "  ⚠️ Slack workspaceId not configured",
         slack?.allowUserIds && slack.allowUserIds.length > 0 ? "  ✅ Slack user allow-list configured" : "  ⚠️ Slack user allow-list not configured",
         slack?.allowChannelMessages ? "  ⚠️ Slack channel control enabled; DM-first is safer" : "  ✅ Slack channel control disabled (DM-first)",
@@ -321,6 +323,7 @@ function slackDiagnostics(config: SlackRelayConfig | undefined): RelaySetupFindi
   if (!config.signingSecret) findings.push({ channel: "slack", severity: "error", code: "slack-signing-secret-missing", message: "Slack is enabled but slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET is missing." });
   if ((config.eventMode ?? "socket") === "socket" && !config.appToken) findings.push({ channel: "slack", severity: "error", code: "slack-app-token-missing", message: "Slack Socket Mode requires slack.appToken/appTokenEnv or PI_RELAY_SLACK_APP_TOKEN with connections:write." });
   if (config.eventMode === "webhook" && !config.signingSecret) findings.push({ channel: "slack", severity: "error", code: "slack-webhook-secret-missing", message: "Slack webhook mode requires a signing secret for request validation." });
+  if (!config.appId) findings.push({ channel: "slack", severity: "warning", code: "slack-app-id-missing", message: "Slack App ID is missing; manual pairing still works, but /relay connect slack cannot show the App Home QR link." });
   if ((config.allowUserIds ?? []).length === 0) findings.push({ channel: "slack", severity: "warning", code: "slack-allow-list-empty", message: "Slack allowUserIds is empty; restrict Slack users before enabling live control." });
   if (config.allowChannelMessages) findings.push({ channel: "slack", severity: "warning", code: "slack-channel-control-enabled", message: "Slack channel control is enabled. DM-first mode is safer; verify workspace and user authorization before use." });
   if (config.allowChannelMessages && !config.botUserId) findings.push({ channel: "slack", severity: "warning", code: "slack-bot-user-id-unknown", message: "Slack channel/shared-room control needs a known local bot user id from auth discovery or slack.botUserId for safe mention targeting." });
@@ -346,6 +349,7 @@ function telegramGuidance(config: TelegramTunnelConfig): string {
     `Status: ${channelStatus(config, "telegram")}`,
     "Create a bot with BotFather: https://core.telegram.org/bots/features#botfather",
     "Set TELEGRAM_BOT_TOKEN or telegram.botToken in ~/.pi/agent/pirelay/config.json, or use a tokenEnv reference.",
+    "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "Run /relay setup telegram, then /relay connect telegram.",
     "Pairing uses a private Telegram chat and local confirmation unless allowUserIds is configured.",
     "Shared-room mode uses a Telegram group/supergroup with one dedicated bot per machine; ordinary unaddressed prompts require bot privacy mode/permissions that allow group messages, otherwise use mentions or replies.",
@@ -362,6 +366,7 @@ function discordGuidance(config: DiscordRelayConfig | undefined): string {
     "Developer Portal > Bot: enable Message Content Intent so DM text prompts are delivered to PiRelay.",
     "Invite scope: bot applications.commands with permissions=0 for DM-first operation.",
     "Keep Discord DM-first; set allowUserIds before enabling live control.",
+    "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "After inviting the bot to a server, DM it from the member list or server profile. If DM is unavailable, check Discord privacy settings for server member DMs.",
     "Shared-room mode uses one dedicated Discord application/bot per machine in a shared server channel; prefer `relay <command>` or @mention forms for reliable multi-bot routing.",
   ];
@@ -384,11 +389,13 @@ function slackGuidance(config: SlackRelayConfig | undefined): string {
     "Create a Slack app: https://api.slack.com/apps",
     "Install it to your workspace, then set slack.botToken or PI_RELAY_SLACK_BOT_TOKEN from the Bot User OAuth Token.",
     "Set slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET from Basic Information > App Credentials, and preferably slack.workspaceId.",
+    "For DMs, enable App Home > Messages Tab > Allow users to send messages to your app, add the message.im event with im:history/im:read scopes, add reactions:write for thinking indicators, then reinstall the app.",
     "For Socket Mode, enable Socket Mode and set slack.appToken/appTokenEnv or PI_RELAY_SLACK_APP_TOKEN from an app-level token with connections:write.",
     `Event mode: ${mode}. ${mode === "socket" ? "Socket Mode is recommended for local Pi usage." : "Webhook mode must verify Slack signatures against the raw request body."}`,
     "Keep Slack DM-first; set allowUserIds before enabling live control.",
+    "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "Shared-room mode uses one dedicated Slack app/bot per machine in a shared channel with app mention or channel-message scopes; PiRelay discovers the local bot user id at startup or can use slack.botUserId as a non-secret fallback.",
-    "Run /relay connect slack [name], then send the displayed /pirelay code to the app in a DM.",
+    "Run /relay connect slack [name], then send the displayed `pirelay pair <code>` text to the app in a DM. Do not prefix it with `/`; Slack treats leading slash text as a slash command.",
   ].join("\n");
 }
 
@@ -400,6 +407,13 @@ export function discordInviteUrl(applicationId: string): string {
 
 export function discordBotChatUrl(applicationId: string): string {
   return `https://discord.com/users/${encodeURIComponent(String(applicationId).trim())}`;
+}
+
+export function slackAppRedirectUrl(appId: string, workspaceId?: string): string {
+  const params = new URLSearchParams({ app: String(appId).trim() });
+  const normalizedWorkspaceId = workspaceId?.trim();
+  if (normalizedWorkspaceId) params.set("team", normalizedWorkspaceId);
+  return `https://slack.com/app_redirect?${params.toString()}`;
 }
 
 function isDiscordApplicationId(value: string): boolean {

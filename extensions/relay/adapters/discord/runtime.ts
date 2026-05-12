@@ -350,7 +350,9 @@ export class DiscordRuntime {
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     await this.setActiveSelection(message, binding.sessionKey);
     route.lastActivityAt = Date.now();
-    route.actions.appendAudit(`Discord paired with ${binding.identity?.displayName ?? binding.userId}.`);
+    const pairedUser = binding.identity?.displayName ?? binding.userId;
+    route.actions.appendAudit(`Discord paired with ${pairedUser}.`);
+    route.actions.notifyLocal?.(`Discord paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
     await this.sendText(message, `Discord paired with ${route.sessionLabel}. Send relay status or a prompt to control Pi.`);
   }
 
@@ -483,6 +485,7 @@ export class DiscordRuntime {
         this.recentBindingBySessionKey.delete(binding.sessionKey);
         await this.clearActiveSelection(message, binding.sessionKey);
         route.actions.appendAudit("Discord relay disconnected remotely.");
+        route.actions.refreshLocalStatus?.();
         await this.sendText(message, "Discord relay disconnected for this Pi session.");
         return;
       default:
@@ -610,6 +613,7 @@ export class DiscordRuntime {
     const updated = await this.store.upsertChannelBinding({ ...binding, paused });
     this.recentBindingBySessionKey.set(updated.sessionKey, updated);
     route.actions.appendAudit(paused ? "Discord relay paused remotely." : "Discord relay resumed remotely.");
+    route.actions.refreshLocalStatus?.();
     await this.sendText(message, paused ? "Relay paused. Remote prompts and notifications are suspended until /resume." : "Relay resumed.");
   }
 

@@ -17,7 +17,10 @@ Each app should have:
   - `chat:write`
   - `app_mentions:read`
   - `channels:read` and `channels:history` for public channels, or `groups:read` and `groups:history` for private channels
-- event subscriptions for message/app-mention delivery in the target channel
+  - `im:read`/`im:history` when testing or pairing through app DMs
+  - `reactions:write` for prompt thinking indicators
+- App Home Messages Tab enabled with read-only mode off, otherwise Slack will show “Sending messages to this app has been turned off.”
+- event subscriptions for message/app-mention delivery in the target channel and `message.im` for app DMs
 - membership in the target channel
 
 The harness also needs a driver token that can post test prompts to the channel as an authorized Slack user. The user id for that token must be listed as the authorized PiRelay user.

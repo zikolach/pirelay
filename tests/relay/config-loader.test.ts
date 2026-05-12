@@ -130,6 +130,7 @@ describe("relay config loader", () => {
       PI_RELAY_SLACK_BOT_TOKEN: "slack-token",
       PI_RELAY_SLACK_SIGNING_SECRET: "slack-secret",
       PI_RELAY_SLACK_EVENT_MODE: "webhook",
+      PI_RELAY_SLACK_APP_ID: "A1",
       PI_RELAY_SLACK_WORKSPACE_ID: "T1",
       PI_RELAY_SLACK_ALLOW_USER_IDS: "s1,s2",
     });
@@ -149,6 +150,7 @@ describe("relay config loader", () => {
       botToken: "slack-token",
       signingSecret: "slack-secret",
       eventMode: "webhook",
+      appId: "A1",
       workspaceId: "T1",
       allowUserIds: ["s1", "s2"],
     });

@@ -298,6 +298,11 @@ export class TunnelStateStore {
     return bindings.find((binding) => binding.channel === channel && (binding.instanceId ?? "default") === instanceId && binding.conversationId === conversationId && binding.userId === userId && binding.status !== "revoked");
   }
 
+  async getChannelBindingsForConversation(channel: ChannelBinding["channel"], conversationId: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord[]> {
+    const bindings = Object.values((await this.load()).channelBindings);
+    return bindings.filter((binding) => binding.channel === channel && (binding.instanceId ?? "default") === instanceId && binding.conversationId === conversationId && binding.status !== "revoked");
+  }
+
   async getChannelBindingBySessionKey(channel: ChannelBinding["channel"], sessionKey: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
     const data = await this.load();
     const binding = data.channelBindings[channelBindingStorageKey(channel, sessionKey, instanceId)]

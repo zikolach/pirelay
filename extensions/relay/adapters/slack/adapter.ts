@@ -23,9 +23,24 @@ export interface SlackApiOperations {
   authTest?(): Promise<SlackAuthTestResult>;
   postMessage(payload: SlackPostMessagePayload): Promise<void>;
   uploadFile(payload: SlackUploadFilePayload): Promise<void>;
-  postEphemeral(payload: { channel: string; user: string; text: string }): Promise<void>;
+  addReaction?(payload: SlackReactionPayload): Promise<void>;
+  removeReaction?(payload: SlackReactionPayload): Promise<void>;
+  postEphemeral(payload: SlackPostEphemeralPayload): Promise<void>;
   postResponse?(responseUrl: string, payload: { text: string; replaceOriginal?: boolean; ephemeral?: boolean }): Promise<void>;
   downloadFile?(url: string): Promise<Uint8Array>;
+}
+
+export interface SlackReactionPayload {
+  channel: string;
+  timestamp: string;
+  name: string;
+}
+
+export interface SlackPostEphemeralPayload {
+  channel: string;
+  user: string;
+  text: string;
+  threadTs?: string;
 }
 
 export interface SlackAuthTestResult {
@@ -184,7 +199,7 @@ export class SlackChannelAdapter implements ChannelAdapter {
   }
 
   async sendActivity(address: ChannelRouteAddress, _activity: "typing" | "uploading" | "recording" = "typing"): Promise<void> {
-    await this.api.postEphemeral({ channel: address.conversationId, user: address.userId, text: "Pi is working…" });
+    await this.api.postEphemeral({ channel: address.conversationId, user: address.userId, text: "Pi is working…", threadTs: slackThreadTs(address) });
   }
 
   async answerAction(actionId: string, options?: { text?: string }): Promise<void> {
@@ -287,7 +302,7 @@ export function isSlackIdentityAllowed(identity: ChannelIdentity, config: Pick<S
 }
 
 export function slackPairingCommand(code: string): string {
-  return `/pirelay ${code}`;
+  return `pirelay pair ${code}`;
 }
 
 export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
