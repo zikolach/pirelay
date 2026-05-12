@@ -114,8 +114,12 @@ async function config(): Promise<TelegramTunnelConfig> {
   };
 }
 
-function waitForSlackRuntimeTimers(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 5));
+async function waitForSlackRuntimeCondition(predicate: () => boolean, timeoutMs = 250): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) throw new Error("Timed out waiting for Slack runtime side effect.");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 function route(): SessionRoute {
@@ -383,7 +387,7 @@ describe("SlackRuntime foundations", () => {
     await runtime.start();
 
     await operations.handler!({ type: "event_callback", envelopeId: "activity-fallback-env", eventId: "activity-fallback-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "hello", ts: "35", thread_ts: "parent-35", team: "T1" } });
-    await waitForSlackRuntimeTimers();
+    await waitForSlackRuntimeCondition(() => vi.mocked(operations.postEphemeral).mock.calls.length > 0);
 
     expect(operations.postEphemeral).toHaveBeenCalled();
     expect(runtime.getStatus().error).toBeUndefined();
@@ -404,7 +408,7 @@ describe("SlackRuntime foundations", () => {
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
     await runtime.registerRoute(testRoute);
-    await waitForSlackRuntimeTimers();
+    await waitForSlackRuntimeCondition(() => vi.mocked(operations.postMessage).mock.calls.length > 0);
 
     expect(operations.postMessage).toHaveBeenCalled();
     expect(runtime.getStatus().error).toBeUndefined();
@@ -573,7 +577,7 @@ describe("SlackRuntime foundations", () => {
 
     testRoute.notification.progressEvent = { id: "progress-1", kind: "tool", text: "Running tests", at: Date.now() };
     await runtime.registerRoute(testRoute);
-    await waitForSlackRuntimeTimers();
+    await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Pi progress") });
     expect(operations.posts.at(-1)?.text).toContain("Running tests");
@@ -591,7 +595,6 @@ describe("SlackRuntime foundations", () => {
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
     await runtime.registerRoute(testRoute);
-    await waitForSlackRuntimeTimers();
 
     expect(operations.posts).toHaveLength(0);
   });

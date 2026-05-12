@@ -69,9 +69,9 @@ class PairingQrScreen {
   ) {}
 
   handleInput(data: string): void {
-    if ((data === "c" || data === "C") && this.options.command) {
+    if ((data === "c" || data === "C") && this.options.command && this.options.onCopyCommand) {
       const command = this.options.command;
-      if (this.options.onCopyCommand) this.safeFireAndForget(() => this.options.onCopyCommand?.(command));
+      this.safeFireAndForget(() => this.options.onCopyCommand?.(command));
       return;
     }
     if (matchesKey(data, "escape") || matchesKey(data, "enter") || matchesKey(data, "ctrl+c")) {
@@ -121,7 +121,7 @@ class PairingQrScreen {
     for (const instruction of this.instructions) {
       for (const wrapped of wrapPlainText(instruction, innerWidth)) lines.push(row(this.theme.fg("dim", wrapped)));
     }
-    lines.push(row(this.theme.fg("dim", this.options.command ? "c copy command · Press Esc or Enter when done." : "Press Esc or Enter when done.")));
+    lines.push(row(this.theme.fg("dim", this.options.command && this.options.onCopyCommand ? "c copy command · Press Esc or Enter when done." : "Press Esc or Enter when done.")));
     lines.push(bottomBorder);
     return lines;
   }
