@@ -145,6 +145,7 @@ function getCommandHelp(): string {
 export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let configCache: TelegramTunnelConfig | undefined;
   let runtime: TunnelRuntime | undefined;
+  let telegramRuntimeStatus: { enabled: boolean; started: boolean; error?: string } | undefined;
   const discordRuntimes = new Map<string, DiscordRuntime>();
   const slackRuntimes = new Map<string, SlackRuntime>();
   let currentRoute: SessionRoute | undefined;
@@ -242,6 +243,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       try {
         await runtime.stop();
         runtime = undefined;
+        telegramRuntimeStatus = { enabled: true, started: false };
         telegramStopped = true;
       } catch (error) {
         failures.push(error);
@@ -329,7 +331,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   async function refreshRelayStatuses(ctx: ExtensionContext): Promise<void> {
-    await refreshMessengerStatus(ctx, "telegram");
+    await refreshMessengerStatus(ctx, "telegram", telegramRuntimeStatus);
     for (const [instanceId, discord] of discordRuntimes) await refreshMessengerStatus(ctx, "discord", discord.getStatus(), instanceId);
     for (const [instanceId, slack] of slackRuntimes) await refreshMessengerStatus(ctx, "slack", slack.getStatus(), instanceId);
   }
@@ -606,8 +608,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     try {
       runtime = await ensureRuntime();
       await runtime.registerRoute(currentRoute);
+      telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: false, error: message };
       ctx.ui.setStatus("relay-sync", `telegram sync error: ${redactSecrets(message)}`);
     }
     await refreshRelayStatuses(ctx);
@@ -617,6 +621,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const tunnelRuntime = await ensureRuntime(ctx, true);
     const setup = await tunnelRuntime.ensureSetup();
     await tunnelRuntime.start();
+    telegramRuntimeStatus = { enabled: true, started: true };
     ctx.ui.notify(`Telegram bot ready: @${setup.botUsername} (${setup.botDisplayName})`, "info");
   }
 
@@ -800,6 +805,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       if (currentRoute.binding) currentRoute.binding = { ...currentRoute.binding, sessionLabel };
     }
     await tunnelRuntime.registerRoute(currentRoute);
+    telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: true };
 
     await ensureAllDiscordRuntimes(ctx, true);
     for (const [instanceId, discord] of discordRuntimes) {

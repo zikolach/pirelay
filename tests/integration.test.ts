@@ -377,6 +377,46 @@ describe("PiRelay integration behavior", () => {
     expect(notifications.filter((entry) => entry.message.includes("Telegram bot ready"))).toHaveLength(1);
   });
 
+  it("shows Telegram runtime errors instead of paired/ready state", async () => {
+    const config = await createRuntimeConfig("pi-telegram-runtime-error-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async () => {
+        throw new Error("broker unavailable");
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, statuses } = createMockContext("telegram-runtime-error");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "status", context);
+
+    expect(statuses).toContainEqual({ key: "relay-sync", value: "telegram sync error: broker unavailable" });
+    expect(statuses).toContainEqual({ key: "relay", value: "telegram error: broker unavailable" });
+    expect(statuses).not.toContainEqual({ key: "relay", value: "telegram: ready unpaired" });
+  });
+
   it("opens interactive setup wizard when UI is available", async () => {
     const config = await createRuntimeConfig("pi-setup-wizard-ui-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
