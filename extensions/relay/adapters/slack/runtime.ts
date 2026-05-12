@@ -40,6 +40,7 @@ export class SlackRuntime {
   private readonly routes = new Map<string, SessionRoute>();
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
+  private readonly activeSessionByConversationUser = new Map<string, string>();
   private historyPollTimer?: ReturnType<typeof setInterval>;
   private historyPollInFlight = false;
   private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
@@ -106,6 +107,7 @@ export class SlackRuntime {
     this.started = false;
     await this.clearThinkingReactions();
     this.clearAllProgressStates();
+    this.activeSessionByConversationUser.clear();
     if (this.historyPollTimer) clearInterval(this.historyPollTimer);
     this.historyPollTimer = undefined;
     this.historyPollInFlight = false;
@@ -125,6 +127,7 @@ export class SlackRuntime {
   async unregisterRoute(sessionKey: string): Promise<void> {
     await this.stopThinkingReaction(sessionKey);
     this.clearProgressStateBySessionKey(sessionKey);
+    this.clearActiveSelectionsForSession(sessionKey);
     this.routes.delete(sessionKey);
     this.ownedBindingSessionKeys.delete(sessionKey);
     if (this.routes.size === 0) await this.stop();
@@ -337,6 +340,9 @@ export class SlackRuntime {
       }
     }
     if (!hasLocalMention && command?.name === "to") {
+      const entries = await this.sessionEntriesForMessage(message);
+      const sessionOnlyTarget = resolveSessionTargetArgs(entries, command.args);
+      if (sessionOnlyTarget.result.kind === "matched" || sessionOnlyTarget.result.kind === "offline" || sessionOnlyTarget.result.kind === "ambiguous") return message;
       const [machineSelector, ...sessionAndPromptParts] = command.args.trim().split(/\s+/).filter(Boolean);
       if (machineSelector && sessionAndPromptParts.length > 0) {
         if (isLocalSlackMachineSelector(machineSelector, this.config, slackConfig)) {
@@ -351,7 +357,7 @@ export class SlackRuntime {
     }
     if (remoteMentions.length > 0 && !hasLocalMention) return undefined;
     if (!hasLocalMention) {
-      const active = await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId);
+      const active = await this.activeSelectionRecordForMessage(message);
       if (active?.machineId && active.machineId !== (this.config.machineId ?? "local")) return undefined;
       if (!active) {
         const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
@@ -385,7 +391,7 @@ export class SlackRuntime {
     await this.startThinkingReaction(route, message);
     route.actions.sendUserMessage(message.text);
     route.lastActivityAt = Date.now();
-    await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, route.sessionKey);
+    await this.setActiveSelection(message, route.sessionKey);
     await this.sendText(message, `Sent to ${route.sessionLabel}.`);
   }
 
@@ -411,7 +417,7 @@ export class SlackRuntime {
           await this.sendText(message, formatSessionSelectorError(result, command.args));
           return;
         }
-        await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, result.entry.sessionKey);
+        await this.setActiveSelection(message, result.entry.sessionKey);
         await this.sendText(message, `Active session set to ${result.entry.alias || result.entry.sessionLabel}.`);
         return;
       }
@@ -493,6 +499,7 @@ export class SlackRuntime {
         return;
       case "disconnect":
         await this.store.revokeChannelBinding(SLACK_CHANNEL, route.sessionKey, undefined, this.instanceId);
+        await this.clearActiveSelection(message, route.sessionKey);
         this.ownedBindingSessionKeys.delete(route.sessionKey);
         this.recentBindingBySessionKey.delete(route.sessionKey);
         route.actions.refreshLocalStatus?.();
@@ -556,7 +563,7 @@ export class SlackRuntime {
     const binding = await this.store.upsertChannelBinding({ ...result.binding, instanceId: this.instanceId });
     this.recentBindingBySessionKey.set(binding.sessionKey, binding);
     this.ownedBindingSessionKeys.add(binding.sessionKey);
-    await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, binding.sessionKey);
+    await this.setActiveSelection(message, binding.sessionKey);
     route.lastActivityAt = Date.now();
     const pairedUser = binding.identity?.displayName ?? binding.userId;
     route.actions.appendAudit(`Slack paired with ${pairedUser}.`);
@@ -585,12 +592,44 @@ export class SlackRuntime {
     });
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     this.recentBindingBySessionKey.set(binding.sessionKey, binding);
-    await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, binding.sessionKey);
+    await this.setActiveSelection(message, binding.sessionKey);
     return binding;
   }
 
+  private activeSelectionKey(message: Pick<ChannelInboundMessage, "conversation" | "sender">): string {
+    return `${message.conversation.id}:${message.sender.userId}`;
+  }
+
+  private async setActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey: string): Promise<void> {
+    this.activeSessionByConversationUser.set(this.activeSelectionKey(message), sessionKey);
+    await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, sessionKey);
+  }
+
+  private async clearActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey?: string): Promise<void> {
+    this.activeSessionByConversationUser.delete(this.activeSelectionKey(message));
+    await this.store.clearActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, sessionKey);
+  }
+
+  private clearActiveSelectionsForSession(sessionKey: string): void {
+    for (const [key, activeSessionKey] of this.activeSessionByConversationUser) {
+      if (activeSessionKey === sessionKey) this.activeSessionByConversationUser.delete(key);
+    }
+  }
+
+  private async activeSelectionRecordForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<{ sessionKey: string; machineId?: string } | undefined> {
+    const persisted = await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId);
+    if (persisted) return persisted;
+    const key = this.activeSelectionKey(message);
+    const inMemorySessionKey = this.activeSessionByConversationUser.get(key);
+    if (!inMemorySessionKey) return undefined;
+    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, inMemorySessionKey, this.instanceId);
+    if (binding && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId) return { sessionKey: inMemorySessionKey };
+    this.activeSessionByConversationUser.delete(key);
+    return undefined;
+  }
+
   private async findSlackBinding(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord | undefined> {
-    const active = await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId);
+    const active = await this.activeSelectionRecordForMessage(message);
     if (active) {
       const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, active.sessionKey, this.instanceId);
       if (binding && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId) return binding;
@@ -602,10 +641,9 @@ export class SlackRuntime {
     }
     if (message.conversation.kind !== "private" && this.configForInstance()?.allowChannelMessages) {
       const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
-      const latest = latestChannelBinding(bindings);
+      const latest = latestChannelBinding(bindings.filter((candidate) => candidate.userId === message.sender.userId));
       if (latest) {
         this.recentBindingBySessionKey.set(latest.sessionKey, latest);
-        await this.store.setActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId, latest.sessionKey);
         return latest;
       }
     }
@@ -627,7 +665,7 @@ export class SlackRuntime {
   }
 
   private async activeSelectionForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<string | undefined> {
-    return (await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId))?.sessionKey;
+    return (await this.activeSelectionRecordForMessage(message))?.sessionKey;
   }
 
   private async rememberThreadContext(binding: ChannelPersistedBindingRecord, message: ChannelInboundMessage): Promise<ChannelPersistedBindingRecord> {
