@@ -73,8 +73,10 @@ describe("relay setup wizard model", () => {
     const manifestText = model.panels.find((panel) => panel.id === "manifest")?.lines.join("\n") ?? "";
     expect(manifestText).toContain("message.im");
     expect(manifestText).toContain("reactions:write");
+    expect(manifestText).toContain("files:write");
     expect(slackAppManifestText()).toContain("messages_tab_enabled: true");
     expect(slackAppManifestText()).toContain("reactions:write");
+    expect(slackAppManifestText()).toContain("files:write");
     expect(text).not.toContain("xoxb-super-secret-token");
     expect(text).not.toContain("slack-signing-secret-super");
   });

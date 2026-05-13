@@ -20,6 +20,9 @@ import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback, slackAppMan
 import { computeRelaySetupConfigPatchFromEnv, envSnippetTextForSetupChannel, writeRelaySetupConfigFromEnv } from "../config/setup-env.js";
 import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfigMigrationPlan } from "../config/migration.js";
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
+import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
+import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
+import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 
 const BINDING_ENTRY_TYPE = "relay-binding";
 const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -147,6 +150,7 @@ function getCommandHelp(): string {
     "  setup [telegram|discord|slack]  Show channel setup guidance",
     "  connect [telegram|discord|slack] [name]  Create a channel pairing instruction",
     "  doctor      Diagnose configured relay channels",
+    "  send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]  Send a workspace file",
     "  disconnect  Revoke relay bindings for this session",
     "  status      Show current local relay state",
     "  trusted     List locally trusted relay users",
@@ -1089,6 +1093,131 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     ctx.ui.notify(removed ? `Revoked local relay trust for ${channel}:${userId}.` : `No local relay trust found for ${channel}:${userId}.`, "info");
   }
 
+  interface LocalSendFileTarget {
+    channel: RelaySetupChannel;
+    instanceId: string;
+    label: string;
+    paused?: boolean;
+    binding?: TelegramBindingMetadata | ChannelPersistedBindingRecord;
+  }
+
+  function parseSendFileTargetRef(value: string | undefined): { all: boolean; channel?: RelaySetupChannel; instanceId: string } | undefined {
+    const target = value?.trim().toLowerCase();
+    if (!target) return undefined;
+    if (target === "all") return { all: true, instanceId: "default" };
+    const [channel, instanceId = "default", extra] = target.split(":");
+    if (extra !== undefined || !supportedRelayChannels().includes(channel as RelaySetupChannel)) return undefined;
+    return { all: false, channel: channel as RelaySetupChannel, instanceId };
+  }
+
+  async function resolveLocalSendFileTargets(config: TelegramTunnelConfig, targetRef: string): Promise<LocalSendFileTarget[]> {
+    if (!currentRoute) return [];
+    const parsed = parseSendFileTargetRef(targetRef);
+    if (!parsed) return [];
+    const store = new TunnelStateStore(config.stateDir);
+    const targets: LocalSendFileTarget[] = [];
+    const includeChannel = (channel: RelaySetupChannel, instanceId = "default") => parsed.all || (parsed.channel === channel && parsed.instanceId === instanceId);
+
+    if (parsed.all || includeChannel("telegram")) {
+      const binding = currentRoute.binding ?? await store.getBindingBySessionKey(currentRoute.sessionKey);
+      if (binding && (!("status" in binding) || binding.status !== "revoked")) {
+        targets.push({ channel: "telegram", instanceId: "default", label: "Telegram", paused: binding.paused, binding });
+      } else if (!parsed.all && parsed.channel === "telegram") {
+        targets.push({ channel: "telegram", instanceId: "default", label: "Telegram" });
+      }
+    }
+
+    const state = await store.load();
+    const channelBindings = Object.values(state.channelBindings).filter((binding) => binding.sessionKey === currentRoute!.sessionKey && binding.status !== "revoked");
+    for (const binding of channelBindings) {
+      if (binding.channel !== "discord" && binding.channel !== "slack") continue;
+      const channel = binding.channel as "discord" | "slack";
+      const instanceId = binding.instanceId ?? "default";
+      if (!includeChannel(channel, instanceId)) continue;
+      targets.push({ channel, instanceId, label: instanceId === "default" ? channelLabel(channel) : `${channelLabel(channel)}:${instanceId}`, paused: binding.paused, binding });
+    }
+    if (!parsed.all && parsed.channel && !targets.some((target) => target.channel === parsed.channel && target.instanceId === parsed.instanceId)) {
+      targets.push({ channel: parsed.channel, instanceId: parsed.instanceId, label: parsed.instanceId === "default" ? channelLabel(parsed.channel) : `${channelLabel(parsed.channel)}:${parsed.instanceId}` });
+    }
+    return targets;
+  }
+
+  async function sendLocalFileToTarget(ctx: ExtensionContext, config: TelegramTunnelConfig, target: LocalSendFileTarget, file: ChannelOutboundFile, kind: RelayOutboundFileKind, caption?: string): Promise<"delivered" | "skipped"> {
+    if (!currentRoute) return "skipped";
+    if (!target.binding || target.paused) return "skipped";
+    if (target.channel === "telegram") {
+      const binding = target.binding as TelegramBindingMetadata;
+      const adapter = new TelegramChannelAdapter(config);
+      const address: ChannelRouteAddress = { channel: "telegram", conversationId: String(binding.chatId), userId: String(binding.userId) };
+      if (kind === "image") await adapter.sendImage(address, file, { caption });
+      else await adapter.sendDocument(address, file, { caption });
+      return "delivered";
+    }
+    if (target.channel === "discord") {
+      const discord = await ensureDiscordRuntime(ctx, true, target.instanceId);
+      if (!discord) throw new Error(`${target.label} runtime is not configured.`);
+      await discord.registerRoute(currentRoute);
+      await startDiscordRuntime(ctx, discord, true, target.instanceId);
+      return await discord.sendFileToBoundRoute(currentRoute, file, { kind, caption }) ? "delivered" : "skipped";
+    }
+    const slack = await ensureSlackRuntime(ctx, true, target.instanceId);
+    if (!slack) throw new Error(`${target.label} runtime is not configured.`);
+    await slack.registerRoute(currentRoute);
+    return await slack.sendFileToBoundRoute(currentRoute, file, { kind, caption }) ? "delivered" : "skipped";
+  }
+
+  async function handleSendFile(ctx: ExtensionContext, targetRef: string | undefined, relativePath: string | undefined, caption?: string): Promise<void> {
+    if (!targetRef || !relativePath) {
+      ctx.ui.notify("Usage: /relay send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]", "warning");
+      return;
+    }
+    if (!parseSendFileTargetRef(targetRef)) {
+      ctx.ui.notify(`Unsupported relay send-file target: ${targetRef}. Use telegram, discord, slack, messenger:instance, or all.`, "warning");
+      return;
+    }
+    const config = await ensureConfig(ctx, true);
+    if (!currentRoute) await syncRoute(ctx);
+    if (!currentRoute) throw new Error("Failed to initialize the current Pi session route.");
+    const loaded = await loadWorkspaceOutboundFile(relativePath, {
+      workspaceRoot: ctx.cwd,
+      maxDocumentBytes: Math.max(config.discord?.maxFileBytes ?? 0, config.slack?.maxFileBytes ?? 0) || undefined,
+      maxImageBytes: config.maxOutboundImageBytes,
+      allowedImageMimeTypes: config.allowedImageMimeTypes,
+    });
+    if (!loaded.ok) {
+      ctx.ui.notify(loaded.error, "warning");
+      return;
+    }
+
+    const targets = await resolveLocalSendFileTargets(config, targetRef);
+    if (targets.length === 0) {
+      ctx.ui.notify(`No active relay binding found for ${targetRef} in this session.`, "warning");
+      return;
+    }
+
+    const delivered: string[] = [];
+    const skipped: string[] = [];
+    const failed: string[] = [];
+    for (const target of targets) {
+      try {
+        const result = await sendLocalFileToTarget(ctx, config, target, loaded.file, loaded.kind, caption || `PiRelay file: ${loaded.relativePath}`);
+        if (result === "delivered") delivered.push(target.label);
+        else skipped.push(target.label);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failed.push(`${target.label}: ${redactSecrets(message)}`);
+      }
+    }
+
+    const lines = [
+      `File delivery for ${loaded.relativePath}`,
+      delivered.length > 0 ? `Delivered: ${delivered.join(", ")}` : undefined,
+      skipped.length > 0 ? `Skipped: ${skipped.join(", ")} (not paired or paused)` : undefined,
+      failed.length > 0 ? `Failed: ${failed.join("; ")}` : undefined,
+    ].filter(Boolean);
+    ctx.ui.notify(lines.join("\n"), failed.length > 0 && delivered.length === 0 ? "warning" : "info");
+  }
+
   async function handleDisconnect(ctx: ExtensionContext): Promise<void> {
     const config = await ensureConfig(ctx, true);
     const store = new TunnelStateStore(config.stateDir);
@@ -1163,6 +1292,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             }
             case "doctor":
               await handleRelayDoctor(ctx);
+              return;
+            case "send-file":
+              await handleSendFile(ctx, intent.sendFileTarget, intent.sendFilePath, intent.sendFileCaption);
               return;
             case "disconnect":
               await handleDisconnect(ctx);

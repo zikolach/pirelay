@@ -882,6 +882,7 @@ describe("InProcessTunnelRuntime", () => {
     };
 
     const { route } = createRoute(binding, true);
+    binding.progressMode = "quiet";
     route.notification.lastTurnId = "turn-short";
     route.notification.lastAssistantText = "Hey! Morning — ready when you are.";
     const sends: Array<{ text: string; keyboard?: unknown }> = [];

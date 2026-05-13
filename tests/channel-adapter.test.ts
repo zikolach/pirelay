@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buttonsFallbackText, canSendFile, channelTextChunks, requiresTextChunking, supportsButtons, type ChannelCapabilities } from "../extensions/relay/core/channel-adapter.js";
+import { buttonsFallbackText, canSendFile, channelTextChunks, paragraphAwareTextChunks, requiresTextChunking, supportsButtons, type ChannelCapabilities } from "../extensions/relay/core/channel-adapter.js";
 
 const baseCapabilities: ChannelCapabilities = {
   inlineButtons: true,
@@ -43,5 +43,9 @@ describe("channel adapter boundaries", () => {
 
   it("chunks text according to adapter limits", () => {
     expect(channelTextChunks({ capabilities: baseCapabilities }, "12345678901")).toEqual(["1234567890", "1"]);
+  });
+
+  it("packs text chunks by paragraph before hard splitting", () => {
+    expect(paragraphAwareTextChunks("short\n\nparagraph\n\ntail", 16)).toEqual(["short\n\nparagraph", "tail"]);
   });
 });

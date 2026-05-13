@@ -50,6 +50,7 @@ import type {
 } from "../../core/types.js";
 import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
+import { finalOutputMarkdownFile, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import {
@@ -70,7 +71,6 @@ import {
   isAllowedImageMimeType,
   modelSupportsImages,
   parseTelegramCommand,
-  safeTelegramFilename,
   summarizeTextDeterministically,
   toIsoNow,
 } from "../../core/utils.js";
@@ -808,12 +808,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending Markdown file.");
-        await this.api.sendMarkdownDocument(
-          callback.chat.id,
-          safeTelegramFilename(`pi-output-${route.sessionId}-${currentTurnId}`, "md"),
-          text,
-          "Latest assistant output",
-        );
+        const file = finalOutputMarkdownFile(route, text);
+        await this.api.sendMarkdownDocument(callback.chat.id, file.fileName, text, "Latest assistant output");
         return;
       }
       case "latest-images": {
@@ -1304,6 +1300,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.sendLatestImages(route, message.chat.id);
         return;
       }
+      case "send-file":
+      case "sendfile": {
+        await this.api.sendPlainText(message.chat.id, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use /images, /send-image <relative-image-path>, or /full for latest output.");
+        return;
+      }
       case "send-image":
       case "sendimage": {
         if (!args) {
@@ -1736,6 +1737,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const sourcePrefix = this.sourcePrefixForRoute(route);
 
       if (status === "completed" && notification.lastAssistantText) {
+        const mode = progressModeFor(binding, this.config);
+        const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
+          ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
+          : "";
+        if (shouldSendFullFinalOutput(mode)) {
+          await this.api.sendPlainTextWithKeyboard(
+            binding.chatId,
+            `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${notification.lastAssistantText}${imageHint}`,
+            this.latestImagesKeyboardForRoute(route),
+          );
+          return;
+        }
+
         const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
         notification.lastSummary = summary;
         const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
@@ -1743,9 +1757,6 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           ? undefined
           : this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
         const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
-        const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
-          ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
-          : "";
         await this.api.sendPlainTextWithKeyboard(
           binding.chatId,
           `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
@@ -1837,8 +1848,9 @@ export async function sendSessionNotification(
     );
     await runtime.registerRoute(route);
   }
+  const mode = progressModeFor(route.binding, { progressMode: undefined });
   const fallback = status === "completed"
-    ? route.notification.lastSummary ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
+    ? (shouldSendFullFinalOutput(mode) ? route.notification.lastAssistantText : route.notification.lastSummary) ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
     : route.notification.lastFailure ?? `Pi task ${status}.`;
   const imageHint = status === "completed" && !route.notification.structuredAnswer && route.notification.latestImages?.count
     ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`

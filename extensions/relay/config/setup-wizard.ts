@@ -127,7 +127,7 @@ function slackChecklist(config: SlackRelayConfig | undefined): RelaySetupWizardC
     checklistItem("Bot token", Boolean(config?.enabled && config.botToken), "Set PI_RELAY_SLACK_BOT_TOKEN or messengers.slack.default.tokenEnv."),
     checklistItem("Signing secret", Boolean(config?.signingSecret), "Set PI_RELAY_SLACK_SIGNING_SECRET or slack.signingSecretEnv."),
     checklistItem("Socket Mode app token", config?.eventMode === "webhook" || Boolean(config?.appToken), "Set PI_RELAY_SLACK_APP_TOKEN or slack.appTokenEnv to an app-level token with connections:write."),
-    { label: "App Home messages", status: "info", detail: "Manual Slack app setting: enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history, im:read, and reactions:write scopes, then reinstall." },
+    { label: "App Home messages", status: "info", detail: "Manual Slack app setting: enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history, im:read, reactions:write, and files:write scopes, then reinstall." },
     checklistItem("App ID", Boolean(config?.appId), "Optional: set PI_RELAY_SLACK_APP_ID or slack.appId to show an App Home QR link for /relay connect slack.", { warningWhenFalse: true }),
     checklistItem("Workspace boundary", Boolean(config?.workspaceId), "Set slack.workspaceId to restrict the app to the expected workspace.", { warningWhenFalse: true }),
     checklistItem("Bot user id", Boolean(config?.botUserId), "Optional fallback; runtime normally discovers bot user id via auth.test.", { warningWhenFalse: true }),
@@ -170,6 +170,7 @@ export function slackAppManifestSnippet(): string[] {
     "      - channels:read",
     "      - chat:write",
     "      - files:read",
+    "      - files:write",
     "      - groups:history",
     "      - groups:read",
     "      - im:history",
@@ -230,7 +231,7 @@ function linkPanel(channel: RelaySetupChannel, config: TelegramTunnelConfig, met
     } else {
       lines.push("", "Slack App Home QR unavailable until Slack App ID is configured. Set PI_RELAY_SLACK_APP_ID or slack.appId from Basic Information > App Credentials > App ID.");
     }
-    lines.push("Enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, and reinstall the app if Slack says sending messages is turned off.");
+    lines.push("Enable App Home > Messages Tab > Allow users to send messages to your app; add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, add files:write for `pirelay images` / `pirelay send-image`, and reinstall the app after scope changes.");
   }
   return { id: "links", label: qrUrl ? "Links / QR" : "Links", lines: lines.map(redactSecrets), qrUrl };
 }

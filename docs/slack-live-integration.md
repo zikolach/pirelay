@@ -19,6 +19,7 @@ Each app should have:
   - `channels:read` and `channels:history` for public channels, or `groups:read` and `groups:history` for private channels
   - `im:read`/`im:history` when testing or pairing through app DMs
   - `reactions:write` for prompt thinking indicators
+  - `files:write` for `pirelay images` and `pirelay send-image` delivery
 - App Home Messages Tab enabled with read-only mode off, otherwise Slack will show “Sending messages to this app has been turned off.”
 - event subscriptions for message/app-mention delivery in the target channel and `message.im` for app DMs
 - membership in the target channel
