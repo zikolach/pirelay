@@ -50,6 +50,8 @@ describe("relay setup wizard helpers", () => {
     expect(parseRelayLocalCommand("connect docs", { compatibilityCommand: true })).toEqual({ subcommand: "connect", channel: "telegram", args: "docs" });
     expect(parseRelayLocalCommand("send-file slack:work docs/proposal.md OpenSpec proposal")).toEqual({ subcommand: "send-file", sendFileTarget: "slack:work", sendFilePath: "docs/proposal.md", sendFileCaption: "OpenSpec proposal", args: "docs/proposal.md OpenSpec proposal" });
     expect(parseRelayLocalCommand("send-file all README.md")).toMatchObject({ subcommand: "send-file", sendFileTarget: "all", sendFilePath: "README.md" });
+    expect(parseRelayLocalCommand("send-file slack: README.md")).toMatchObject({ subcommand: "send-file", unsupportedChannel: "slack:" });
+    expect(parseRelayLocalCommand("connect slack:")).toMatchObject({ subcommand: "connect", unsupportedChannel: "slack:" });
     expect(parseRelayLocalCommand("setup matrix")).toMatchObject({ subcommand: "setup", unsupportedChannel: "matrix" });
     expect(parseRelayLocalCommand("doctor")).toEqual({ subcommand: "doctor", args: "" });
   });

@@ -1648,6 +1648,9 @@ describe("PiRelay integration behavior", () => {
     context.cwd = root;
     relayExtension(pi.api as any);
 
+    await pi.runCommand("relay", "send-file slack: missing.md", context);
+    expect(notifications.at(-1)?.message).toContain("Unsupported relay channel: slack:");
+
     await pi.runCommand("relay", "send-file slack missing.md", context);
 
     expect(notifications.at(-1)?.message).toContain("No active unpaused relay binding");
@@ -1686,6 +1689,43 @@ describe("PiRelay integration behavior", () => {
     relayExtension(pi.api as any);
 
     await pi.runCommand("relay", "send-file slack:ghost huge.md", context);
+
+    expect(notifications.at(-1)?.message).toContain("too large");
+  });
+
+  it("applies default Discord file limits before reading local send-file images", async () => {
+    const config = await createRuntimeConfig("pi-local-file-discord-default-large-image-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-discord-default-large-image-workspace-"));
+    tempDirs.push(root);
+    const hugeImagePath = join(root, "huge.png");
+    await writeFile(hugeImagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]));
+    await truncate(hugeImagePath, 9 * 1024 * 1024);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-discord-default-large-image");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await new TunnelStateStore(config.stateDir).upsertChannelBinding({ channel: "discord", instanceId: "ghost", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file discord:ghost huge.png", context);
 
     expect(notifications.at(-1)?.message).toContain("too large");
   });

@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { parseMessengerRef } from "../core/messenger-ref.js";
 import type { DiscordRelayConfig, SlackRelayConfig, TelegramTunnelConfig } from "../core/types.js";
 
 export type RelaySetupChannel = "telegram" | "discord" | "slack";
@@ -80,8 +81,8 @@ export function parseRelayLocalCommand(args: string, options: { compatibilityCom
     const filePath = rest[1];
     if (!target) return { subcommand, args: rest.join(" ") };
     if (target !== "all") {
-      const [kind, , extra] = target.split(":");
-      if (extra !== undefined || !isRelaySetupChannel(kind)) {
+      const ref = parseMessengerRef(target);
+      if (!ref || !isRelaySetupChannel(ref.kind)) {
         return { subcommand, args: rest.slice(1).join(" "), unsupportedChannel: target };
       }
     }
@@ -105,12 +106,11 @@ export function parseRelayLocalCommand(args: string, options: { compatibilityCom
   if (!maybeMessengerRef) {
     return { subcommand, channel: "telegram", messengerRef: "telegram:default", args: "" };
   }
-  const [kind, instanceId = "default", extra] = maybeMessengerRef.split(":");
-  const channel = extra === undefined && isRelaySetupChannel(kind) ? kind : undefined;
-  if (!channel) {
+  const ref = parseMessengerRef(maybeMessengerRef);
+  if (!ref || !isRelaySetupChannel(ref.kind)) {
     return { subcommand, args: rest.slice(1).join(" "), unsupportedChannel: maybeMessengerRef };
   }
-  return { subcommand, channel, messengerRef: `${channel}:${instanceId}`, args: rest.slice(1).join(" ") };
+  return { subcommand, channel: ref.kind, messengerRef: `${ref.kind}:${ref.instanceId}`, args: rest.slice(1).join(" ") };
 }
 
 export function relaySetupDiagnostics(config: TelegramTunnelConfig, facts: RelaySetupFacts = {}): RelaySetupFinding[] {

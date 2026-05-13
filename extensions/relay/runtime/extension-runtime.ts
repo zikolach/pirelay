@@ -21,6 +21,7 @@ import { computeRelaySetupConfigPatchFromEnv, envSnippetTextForSetupChannel, wri
 import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfigMigrationPlan } from "../config/migration.js";
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
+import { parseMessengerRef } from "../core/messenger-ref.js";
 import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
@@ -1108,9 +1109,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const target = value?.trim().toLowerCase();
     if (!target) return undefined;
     if (target === "all") return { all: true, instanceId: "default" };
-    const [channel, instanceId = "default", extra] = target.split(":");
-    if (extra !== undefined || !supportedRelayChannels().includes(channel as RelaySetupChannel)) return undefined;
-    return { all: false, channel: channel as RelaySetupChannel, instanceId };
+    const ref = parseMessengerRef(target);
+    if (!ref || !supportedRelayChannels().includes(ref.kind as RelaySetupChannel)) return undefined;
+    return { all: false, channel: ref.kind as RelaySetupChannel, instanceId: ref.instanceId };
   }
 
   async function resolveLocalSendFileTargets(config: TelegramTunnelConfig, targetRef: string): Promise<LocalSendFileTarget[]> {
@@ -1145,12 +1146,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return targets;
   }
 
-  function maxDocumentBytesForLocalTargets(config: TelegramTunnelConfig, targets: readonly LocalSendFileTarget[]): number | undefined {
+  function maxOutboundBytesForLocalTargets(config: TelegramTunnelConfig, targets: readonly LocalSendFileTarget[], kind: RelayOutboundFileKind): number | undefined {
     const limits: number[] = [];
     for (const target of targets) {
       if (!target.binding || target.paused) continue;
       if (target.channel === "telegram") {
-        limits.push(DEFAULT_TELEGRAM_LOCAL_DOCUMENT_MAX_BYTES);
+        limits.push(kind === "image" ? config.maxOutboundImageBytes : DEFAULT_TELEGRAM_LOCAL_DOCUMENT_MAX_BYTES);
         continue;
       }
       const channelConfig = target.channel === "discord"
@@ -1210,8 +1211,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     const loaded = await loadWorkspaceOutboundFile(relativePath, {
       workspaceRoot: ctx.cwd,
-      maxDocumentBytes: maxDocumentBytesForLocalTargets(config, deliverableTargets),
-      maxImageBytes: config.maxOutboundImageBytes,
+      maxDocumentBytes: maxOutboundBytesForLocalTargets(config, deliverableTargets, "document"),
+      maxImageBytes: maxOutboundBytesForLocalTargets(config, deliverableTargets, "image") ?? config.maxOutboundImageBytes,
       allowedImageMimeTypes: config.allowedImageMimeTypes,
     });
     if (!loaded.ok) {
