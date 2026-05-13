@@ -1,7 +1,8 @@
 # shared-room-machine-bots Specification
 
 ## Purpose
-TBD - created by archiving change support-shared-room-machine-bots. Update Purpose after archive.
+Shared-room machine bots define no-federation multi-machine operation where distinct Telegram, Discord, or Slack bot identities coexist in authorized shared rooms while preserving explicit targeting, active-selection routing, and safety boundaries.
+
 ## Requirements
 ### Requirement: Dedicated machine bots in shared rooms
 The system SHALL support a no-federation shared-room mode where each participating machine uses a distinct messenger bot/app identity and all machine bots are present in the same messenger group, channel, or shared room.

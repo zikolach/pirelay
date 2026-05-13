@@ -1,7 +1,8 @@
 # relay-runtime-status-line Specification
 
 ## Purpose
-TBD - created by archiving change improve-relay-status-line. Update Purpose after archive.
+Relay runtime status line defines concise messenger status semantics that distinguish adapter readiness from the current Pi session's pairing, binding, paused, and conversation-kind state without exposing raw messenger identifiers.
+
 ## Requirements
 ### Requirement: Messenger status line distinguishes readiness from pairing
 PiRelay SHALL render messenger status-line labels that distinguish adapter runtime readiness from the current Pi session's pairing or binding state.

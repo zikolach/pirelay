@@ -1,7 +1,8 @@
 # slack-live-integration-suite Specification
 
 ## Purpose
-TBD - created by archiving change slack-live-integration-suite. Update Purpose after archive.
+Slack live integration suite defines how PiRelay validates real Slack app configuration and exercises dual Pi instances in an authorized Slack channel using programmatic observation, deterministic routing checks, and secret-safe test output.
+
 ## Requirements
 ### Requirement: Slack live test preflight
 The system SHALL validate the Slack workspace, app credentials, and test channel before running live integration tests.

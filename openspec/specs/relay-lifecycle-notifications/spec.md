@@ -1,7 +1,8 @@
 # relay-lifecycle-notifications Specification
 
 ## Purpose
-TBD - created by archiving change notify-relay-lifecycle-events. Update Purpose after archive.
+Relay lifecycle notifications define best-effort remote notifications for Pi session offline, restored-online, and local-disconnect lifecycle events across active Telegram, Discord, and Slack bindings while preserving existing authorization and pairing semantics.
+
 ## Requirements
 ### Requirement: Lifecycle events are classified for remote notification
 PiRelay SHALL classify local session lifecycle events into remote-safe lifecycle notification kinds without changing pairing authorization semantics.

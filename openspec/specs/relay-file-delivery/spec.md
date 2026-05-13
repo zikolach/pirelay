@@ -1,7 +1,8 @@
 # relay-file-delivery Specification
 
 ## Purpose
-TBD - created by archiving change add-slack-file-upload-delivery. Update Purpose after archive.
+Relay file delivery defines messenger-neutral, local-user-initiated delivery of safe workspace files and final-output artifacts, including target selection, file validation, adapter size limits, upload behavior, and Markdown document fallback policy.
+
 ## Requirements
 ### Requirement: Local users can deliver explicit files to paired messengers
 PiRelay SHALL allow the local Pi user to send an explicit safe workspace-relative file to active paired messenger conversations through a messenger-neutral local command.

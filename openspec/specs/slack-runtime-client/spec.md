@@ -1,7 +1,8 @@
 # slack-runtime-client Specification
 
 ## Purpose
-TBD - created by archiving change complete-slack-adapter-support. Update Purpose after archive.
+Slack runtime client defines PiRelay's live Slack Socket Mode runtime behavior, including lifecycle management, event acknowledgement and deduplication, workspace/bot identity discovery, safe Web API operations, and secret-safe diagnostics.
+
 ## Requirements
 ### Requirement: Live Slack Socket Mode lifecycle
 The system SHALL start, monitor, reconnect, and stop a live Slack Socket Mode runtime when Slack relay is explicitly enabled and configured with the required credentials.
