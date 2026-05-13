@@ -92,9 +92,27 @@ export class SlackLiveOperations implements SlackApiOperations {
   }
 
   async uploadFile(payload: SlackUploadFilePayload): Promise<void> {
-    // files.upload v2 needs an upload URL flow. The live stub does not need file
-    // delivery, so use a clear limitation instead of pretending upload worked.
-    throw new Error(`Slack live file upload is not implemented for ${payload.fileName}.`);
+    const upload = await this.callSlackApi("files.getUploadURLExternal", this.botToken, {
+      filename: payload.fileName,
+      length: payload.data.byteLength,
+    });
+    const uploadUrl = stringField(upload, "upload_url");
+    const fileId = stringField(upload, "file_id");
+    if (!uploadUrl || !fileId) throw new Error("Slack file upload did not return an upload URL and file id.");
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "content-type": payload.mimeType || "application/octet-stream" },
+      body: Buffer.from(payload.data),
+    });
+    if (!uploadResponse.ok) throw new Error(`Slack file byte upload failed with HTTP ${uploadResponse.status}.`);
+
+    await this.callSlackApi("files.completeUploadExternal", this.botToken, {
+      channel_id: payload.channel,
+      initial_comment: payload.caption,
+      thread_ts: payload.threadTs,
+      files: [{ id: fileId, title: payload.fileName }],
+    });
   }
 
   async addReaction(payload: SlackReactionPayload): Promise<void> {
@@ -224,9 +242,8 @@ export class SlackLiveOperations implements SlackApiOperations {
 }
 
 export function createSlackLiveOperations(config: Pick<SlackRelayConfig, "botToken" | "eventMode" | "appToken">): SlackApiOperations | undefined {
-  if (!config.botToken || config.eventMode === "webhook") return undefined;
-  const appToken = config.appToken ?? process.env.PI_RELAY_SLACK_APP_TOKEN;
-  if (!appToken) return undefined;
+  if (!config.botToken) return undefined;
+  const appToken = config.eventMode === "webhook" ? undefined : config.appToken ?? process.env.PI_RELAY_SLACK_APP_TOKEN;
   return new SlackLiveOperations({ botToken: config.botToken, appToken });
 }
 

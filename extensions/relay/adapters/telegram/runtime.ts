@@ -6,6 +6,7 @@ import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { TelegramApiClient } from "./api.js";
+import { telegramCapabilities } from "./adapter.js";
 import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
@@ -50,6 +51,8 @@ import type {
 } from "../../core/types.js";
 import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
+import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, shouldSendFullFinalOutput } from "../../core/final-output.js";
+import { channelTextChunks } from "../../core/channel-adapter.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import {
@@ -70,7 +73,6 @@ import {
   isAllowedImageMimeType,
   modelSupportsImages,
   parseTelegramCommand,
-  safeTelegramFilename,
   summarizeTextDeterministically,
   toIsoNow,
 } from "../../core/utils.js";
@@ -808,12 +810,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending Markdown file.");
-        await this.api.sendMarkdownDocument(
-          callback.chat.id,
-          safeTelegramFilename(`pi-output-${route.sessionId}-${currentTurnId}`, "md"),
-          text,
-          "Latest assistant output",
-        );
+        const file = finalOutputMarkdownFile(route, text);
+        await this.api.sendMarkdownDocument(callback.chat.id, file.fileName, text, "Latest assistant output");
         return;
       }
       case "latest-images": {
@@ -1304,6 +1302,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.sendLatestImages(route, message.chat.id);
         return;
       }
+      case "send-file":
+      case "sendfile": {
+        await this.api.sendPlainText(message.chat.id, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use /images, /send-image <relative-image-path>, or /full for latest output.");
+        return;
+      }
       case "send-image":
       case "sendimage": {
         if (!args) {
@@ -1722,6 +1725,25 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return statusSnapshotForRoute(route, { online, busy: !isEffectivelyIdle(route) });
   }
 
+  private async sendCompletedFullOutput(route: SessionRoute, binding: TelegramBindingMetadata, durationLabel: string, sourcePrefix: string, imageHint: string): Promise<void> {
+    const text = route.notification.lastAssistantText;
+    if (!text) return;
+    const chunks = channelTextChunks({ capabilities: telegramCapabilities(this.config) }, text);
+    if (chunks.length <= DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS) {
+      await this.api.sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
+      for (const chunk of chunks) await this.api.sendPlainText(binding.chatId, chunk);
+      if (imageHint) await this.api.sendPlainTextWithKeyboard(binding.chatId, imageHint.trim(), this.latestImagesKeyboardForRoute(route));
+      return;
+    }
+    const file = finalOutputMarkdownFile(route, text);
+    await this.api.sendPlainTextWithKeyboard(
+      binding.chatId,
+      `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`,
+      this.latestImagesKeyboardForRoute(route),
+    );
+    await this.api.sendDocumentData(binding.chatId, file.fileName, Buffer.from(file.data), "Latest assistant output");
+  }
+
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.clearActivityIndicator(route);
     this.clearProgressState(route);
@@ -1736,6 +1758,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const sourcePrefix = this.sourcePrefixForRoute(route);
 
       if (status === "completed" && notification.lastAssistantText) {
+        const mode = progressModeFor(binding, this.config);
+        const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
+          ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
+          : "";
+        if (shouldSendFullFinalOutput(mode)) {
+          await this.sendCompletedFullOutput(route, binding, durationLabel, sourcePrefix, imageHint);
+          return;
+        }
+
         const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
         notification.lastSummary = summary;
         const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
@@ -1743,9 +1774,6 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           ? undefined
           : this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
         const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
-        const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
-          ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
-          : "";
         await this.api.sendPlainTextWithKeyboard(
           binding.chatId,
           `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
@@ -1824,6 +1852,7 @@ export async function sendSessionNotification(
   runtime: TunnelRuntime,
   route: SessionRoute,
   status: "completed" | "failed" | "aborted",
+  config: Pick<TelegramTunnelConfig, "progressMode"> = { progressMode: undefined },
 ): Promise<void> {
   if (runtime instanceof InProcessTunnelRuntime) {
     await runtime.notifyTurnCompleted(route, status);
@@ -1837,11 +1866,16 @@ export async function sendSessionNotification(
     );
     await runtime.registerRoute(route);
   }
+  const mode = progressModeFor(route.binding, config);
+  const wantsFullFinalOutput = status === "completed" && shouldSendFullFinalOutput(mode);
   const fallback = status === "completed"
     ? route.notification.lastSummary ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
     : route.notification.lastFailure ?? `Pi task ${status}.`;
+  const fullOutputHint = wantsFullFinalOutput && route.notification.lastAssistantText
+    ? "\n\nUse /full for the full assistant output."
+    : "";
   const imageHint = status === "completed" && !route.notification.structuredAnswer && route.notification.latestImages?.count
     ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
     : "";
-  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${imageHint}`);
+  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${fullOutputHint}${imageHint}`);
 }

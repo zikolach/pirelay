@@ -212,7 +212,7 @@ Slack app requirements:
 - Socket Mode enabled for local Pi usage
 - App Home → Messages Tab enabled so users can DM the app
 - `message.im` event for App Home DMs
-- bot scopes including `chat:write`, `im:history`, `im:read`, and `reactions:write`
+- bot scopes including `chat:write`, `im:history`, `im:read`, `reactions:write`, and `files:write` for image/file delivery
 - reinstall the app after scope or App Home changes
 
 Slack channel/thread control is explicit:
@@ -231,6 +231,7 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 | `/relay connect <telegram|discord|slack> [name]` | create an expiring pairing flow for the current session |
 | `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, and config/state permissions |
 | `/relay status` | show local relay status for the current session |
+| `/relay send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]` | send an explicit safe workspace file/artifact to paired messenger chat(s) |
 | `/relay trusted` | list locally trusted relay users |
 | `/relay untrust <messenger> <userId>` | revoke local relay trust |
 | `/relay disconnect` | revoke the active Telegram binding for compatibility |
@@ -261,7 +262,9 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 | resume delivery | `/resume` | `relay resume` | `pirelay resume` |
 | disconnect binding | `/disconnect` | `relay disconnect` | `pirelay disconnect` |
 
-`quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes.
+`quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
+
+Remote chats cannot request arbitrary local files by path. Use local `/relay send-file ...` for explicit artifact delivery, while remote users stay limited to safe latest-output commands such as `/full`, `/images`, and `/send-image <relative-image-path>`.
 
 ## Prompt routing behavior
 
@@ -412,12 +415,12 @@ Use `c` to copy env snippets, export real values in your shell/profile, restart 
 
 - enable App Home → Messages Tab → Allow users to send messages to your app
 - add the `message.im` event
-- add `im:history`, `im:read`, and `reactions:write` scopes
+- add `im:history`, `im:read`, `reactions:write`, and `files:write` scopes
 - reinstall the Slack app after changing settings
 
 ### Slack still shows `Pi is working…` instead of a reaction
 
-The Slack bot token likely lacks `reactions:write` or the app was not reinstalled after adding it. Add the scope, reinstall, then restart/reload PiRelay.
+The Slack bot token likely lacks `reactions:write`/`files:write` or the app was not reinstalled after adding scopes. Add the needed scope, reinstall, then restart/reload PiRelay.
 
 ### Pairing expired or points to the wrong session
 

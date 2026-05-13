@@ -1,5 +1,5 @@
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1522,6 +1522,269 @@ describe("PiRelay integration behavior", () => {
     expect(latestRegisterCall?.[0]).toMatchObject({ notification: { lastStatus: "running", progressEvent: expect.objectContaining({ text: "Pi task started" }) } });
     const pending = Object.values((await store.load()).pendingPairings)[0];
     expect(pending).toMatchObject({ channel: "slack", sessionLabel: "docs", codeKind: "pin" });
+  });
+
+  it("sends a local workspace file to a paired non-default Slack binding", async () => {
+    const config = await createRuntimeConfig("pi-local-file-slack-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-workspace-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "proposal.md"), "# Proposal\n");
+    await writeFile(config.configPath!, JSON.stringify({
+      relay: { stateDir: config.stateDir },
+      messengers: {
+        telegram: { default: { botToken: config.botToken } },
+        slack: {
+          default: { enabled: true, botToken: "xoxb-default", signingSecret: "slack-signing-secret-default", appToken: "xapp-default", maxFileBytes: 4 },
+          work: { enabled: true, botToken: "xoxb-work", signingSecret: "slack-signing-secret-work", appToken: "xapp-work", maxFileBytes: 1024 },
+        },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath);
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const sentFiles: Array<{ fileName: string; mimeType: string; caption?: string; kind: string }> = [];
+    const fakeSlackRuntime = {
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: true })),
+      sendFileToBoundRoute: vi.fn(async (_route: SessionRoute, file: { fileName: string; mimeType: string }, options: { kind: string; caption?: string }) => {
+        sentFiles.push({ fileName: file.fileName, mimeType: file.mimeType, caption: options.caption, kind: options.kind });
+        return true;
+      }),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: () => fakeSlackRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-slack");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await new TunnelStateStore(config.stateDir).upsertChannelBinding({ channel: "slack", instanceId: "work", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file slack:work proposal.md OpenSpec proposal", context);
+
+    expect(sentFiles).toEqual([{ fileName: "proposal.md", mimeType: "text/markdown", caption: "OpenSpec proposal", kind: "document" }]);
+    expect(notifications.at(-1)?.message).toContain("Delivered: Slack:work");
+  });
+
+  it("rejects oversized local Telegram send-file documents before delivery", async () => {
+    const config = await createRuntimeConfig("pi-local-file-telegram-large-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-telegram-large-workspace-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "huge.md"), "");
+    await truncate(join(root, "huge.md"), 51 * 1024 * 1024);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-telegram-large");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await new TunnelStateStore(config.stateDir).upsertBinding({ sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", chatId: 123, userId: 456, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file telegram huge.md", context);
+
+    expect(notifications.at(-1)?.message).toContain("too large");
+  });
+
+  it("short-circuits local send-file when the target has no deliverable binding", async () => {
+    const config = await createRuntimeConfig("pi-local-file-no-delivery-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-no-delivery-workspace-"));
+    tempDirs.push(root);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-no-delivery");
+    context.cwd = root;
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file slack: missing.md", context);
+    expect(notifications.at(-1)?.message).toContain("Unsupported relay channel: slack:");
+
+    await pi.runCommand("relay", "send-file slack missing.md", context);
+
+    expect(notifications.at(-1)?.message).toContain("No active unpaused relay binding");
+    expect(notifications.at(-1)?.message).not.toContain("File not found");
+  });
+
+  it("applies default Slack file limits before reading local send-file documents", async () => {
+    const config = await createRuntimeConfig("pi-local-file-slack-default-large-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-slack-default-large-workspace-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "huge.md"), "");
+    await truncate(join(root, "huge.md"), 11 * 1024 * 1024);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-slack-default-large");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await new TunnelStateStore(config.stateDir).upsertChannelBinding({ channel: "slack", instanceId: "ghost", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file slack:ghost huge.md", context);
+
+    expect(notifications.at(-1)?.message).toContain("too large");
+  });
+
+  it("applies default Discord file limits before reading local send-file images", async () => {
+    const config = await createRuntimeConfig("pi-local-file-discord-default-large-image-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-discord-default-large-image-workspace-"));
+    tempDirs.push(root);
+    const hugeImagePath = join(root, "huge.png");
+    await writeFile(hugeImagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]));
+    await truncate(hugeImagePath, 9 * 1024 * 1024);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-discord-default-large-image");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await new TunnelStateStore(config.stateDir).upsertChannelBinding({ channel: "discord", instanceId: "ghost", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file discord:ghost huge.png", context);
+
+    expect(notifications.at(-1)?.message).toContain("too large");
+  });
+
+  it("short-circuits paused bindings and rejects unsafe local send-file paths", async () => {
+    const config = await createRuntimeConfig("pi-local-file-all-configuration-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-all-workspace-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "notes.md"), "# Notes\n");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_SLACK_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_SLACK_BOT_TOKEN", "xoxb-test-token");
+    vi.stubEnv("PI_RELAY_SLACK_SIGNING_SECRET", "slack-signing-secret-test");
+    vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "xapp-test-token");
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const fakeSlackRuntime = {
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: true })),
+      sendFileToBoundRoute: vi.fn(async () => true),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: () => fakeSlackRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-all");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    const store = new TunnelStateStore(config.stateDir);
+    const slackBinding = { channel: "slack" as const, instanceId: "default", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), paused: true, metadata: { conversationKind: "private" } };
+    await store.upsertChannelBinding(slackBinding);
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file all notes.md", context);
+    expect(fakeSlackRuntime.sendFileToBoundRoute).not.toHaveBeenCalled();
+    expect(notifications.at(-1)?.message).toContain("No active unpaused relay binding");
+
+    await store.upsertChannelBinding({ ...slackBinding, paused: false });
+    await pi.runCommand("relay", "send-file slack ../secret.md", context);
+    expect(notifications.at(-1)?.message).toContain("traversal");
   });
 
   it("lists and revokes locally trusted relay users", async () => {

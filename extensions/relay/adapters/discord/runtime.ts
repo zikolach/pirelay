@@ -1,4 +1,4 @@
-import type { ChannelBinding, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import type { ChannelBinding, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
 import { completeDiscordPairing } from "../channel-pairing.js";
 import { DiscordChannelAdapter, discordMentionsSharedRoomAddressing, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
@@ -8,6 +8,7 @@ import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocati
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
+import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
@@ -115,8 +116,28 @@ export class DiscordRuntime {
     const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId)
       ?? this.recentBindingBySessionKey.get(route.sessionKey);
     if (!binding) return;
+    const address = bindingAddress(binding);
+    if (status === "completed" && route.notification.lastAssistantText) {
+      const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+      if (shouldSendFullFinalOutput(mode)) {
+        await this.adapter.sendText(address, `✅ Pi session ${route.sessionLabel} completed. Final output:`);
+        await sendFinalOutputWithFallback(this.adapter, address, route, route.notification.lastAssistantText);
+        return;
+      }
+    }
     const text = discordTurnNotificationText(route, status);
-    await this.adapter.sendText(bindingAddress(binding), text);
+    await this.adapter.sendText(address, text);
+  }
+
+  async sendFileToBoundRoute(route: SessionRoute, file: ChannelOutboundFile, options: { kind: "document" | "image"; caption?: string } = { kind: "document" }): Promise<boolean> {
+    if (!this.adapter) throw new Error("Discord file delivery is not configured for this instance.");
+    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId)
+      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    if (!binding || binding.paused) return false;
+    const address = bindingAddress(binding);
+    if (options.kind === "image") await this.adapter.sendImage(address, file, { caption: options.caption });
+    else await this.adapter.sendDocument(address, file, { caption: options.caption });
+    return true;
   }
 
   async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
@@ -473,6 +494,10 @@ export class DiscordRuntime {
         return;
       case "images":
         await this.sendLatestImages(message, route);
+        return;
+      case "send-file":
+      case "sendfile":
+        await this.sendText(message, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use relay images, relay send-image <relative-image-path>, or relay full for latest output.");
         return;
       case "send-image":
       case "sendimage":
@@ -859,7 +884,7 @@ export class DiscordRuntime {
   }
 }
 
-export type DiscordCommandName = "help" | "status" | "sessions" | "use" | "to" | "progress" | "notify" | "alias" | "forget" | "recent" | "activity" | "summary" | "full" | "images" | "send-image" | "sendimage" | "steer" | "followup" | "abort" | "compact" | "pause" | "resume" | "disconnect";
+export type DiscordCommandName = "help" | "status" | "sessions" | "use" | "to" | "progress" | "notify" | "alias" | "forget" | "recent" | "activity" | "summary" | "full" | "images" | "send-file" | "sendfile" | "send-image" | "sendimage" | "steer" | "followup" | "abort" | "compact" | "pause" | "resume" | "disconnect";
 
 type DiscordCommand = { name: DiscordCommandName; args: string };
 
@@ -878,6 +903,8 @@ export const DISCORD_SUPPORTED_COMMANDS: readonly DiscordCommandName[] = [
   "summary",
   "full",
   "images",
+  "send-file",
+  "sendfile",
   "send-image",
   "sendimage",
   "steer",

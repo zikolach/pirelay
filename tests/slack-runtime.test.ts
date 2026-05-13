@@ -69,8 +69,12 @@ class FakeSlackOperations implements SlackApiOperations {
     this.posts.push(payload);
   }
 
-  async uploadFile(_payload: SlackUploadFilePayload): Promise<void> {
-    throw new Error("not implemented");
+  readonly uploads: SlackUploadFilePayload[] = [];
+  uploadError?: Error;
+
+  async uploadFile(payload: SlackUploadFilePayload): Promise<void> {
+    if (this.uploadError) throw this.uploadError;
+    this.uploads.push(payload);
   }
 
   async postEphemeral(payload: SlackPostEphemeralPayload): Promise<void> {
@@ -184,6 +188,50 @@ describe("SlackLiveOperations", () => {
     const operations = new SlackLiveOperations({ botToken: "xoxb-secret", appToken: "xapp-secret", WebSocketCtor: FakeWebSocket, disableReconnect: true });
 
     await expect(operations.authTest()).resolves.toEqual({ teamId: "T1", userId: "U_BOT", botId: "B1", appId: "A1" });
+  });
+
+  it("uploads Slack files through the external upload flow", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("files.getUploadURLExternal")) return { ok: true, json: async () => ({ ok: true, upload_url: "https://upload.slack.test/secret", file_id: "F1" }) };
+      if (url === "https://upload.slack.test/secret") return { ok: true, text: async () => "ok" };
+      if (url.endsWith("files.completeUploadExternal")) return { ok: true, json: async () => ({ ok: true }) };
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const operations = new SlackLiveOperations({ botToken: "xoxb-secret", appToken: "xapp-secret", WebSocketCtor: FakeWebSocket, disableReconnect: true });
+
+    await operations.uploadFile({ channel: "C1", fileName: "out.png", mimeType: "image/png", data: new Uint8Array([1, 2]), caption: "Latest", threadTs: "123.45" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain("filename=out.png");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain("length=2");
+    expect(fetchMock.mock.calls[1]).toMatchObject(["https://upload.slack.test/secret", { method: "POST", headers: { "content-type": "image/png" } }]);
+    expect(fetchMock.mock.calls[2]?.[1]?.body).toContain("channel_id=C1");
+    expect(fetchMock.mock.calls[2]?.[1]?.body).toContain("thread_ts=123.45");
+    expect(decodeURIComponent(String(fetchMock.mock.calls[2]?.[1]?.body))).toContain('"id":"F1"');
+  });
+
+  it("reports Slack upload API and byte upload failures", async () => {
+    const operations = new SlackLiveOperations({ botToken: "xoxb-secret", appToken: "xapp-secret", WebSocketCtor: FakeWebSocket, disableReconnect: true });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => url.endsWith("files.getUploadURLExternal") ? { ok: false, error: "missing_scope" } : { ok: true },
+    })));
+    await expect(operations.uploadFile({ channel: "C1", fileName: "out.png", mimeType: "image/png", data: new Uint8Array([1]) })).rejects.toThrow("missing_scope");
+
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("files.getUploadURLExternal")) return { ok: true, json: async () => ({ ok: true, upload_url: "https://upload.slack.test/secret", file_id: "F1" }) };
+      if (url === "https://upload.slack.test/secret") return { ok: false, status: 503 };
+      return { ok: true, json: async () => ({ ok: true }) };
+    }));
+    await expect(operations.uploadFile({ channel: "C1", fileName: "out.png", mimeType: "image/png", data: new Uint8Array([1]) })).rejects.toThrow("HTTP 503");
+  });
+
+  it("rejects malformed Slack upload URL responses", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, upload_url: "https://upload.slack.test/secret" }) })));
+    const operations = new SlackLiveOperations({ botToken: "xoxb-secret", appToken: "xapp-secret", WebSocketCtor: FakeWebSocket, disableReconnect: true });
+
+    await expect(operations.uploadFile({ channel: "C1", fileName: "out.png", mimeType: "image/png", data: new Uint8Array([1]) })).rejects.toThrow("upload URL and file id");
   });
 });
 
@@ -553,7 +601,8 @@ describe("SlackRuntime foundations", () => {
     await send("/full", "44");
     expect(operations.posts.at(-1)?.text).toBe("full output");
     await send("/images", "44.5");
-    expect(operations.posts.at(-1)?.text).toContain("not available");
+    expect(operations.posts.at(-1)?.text).toContain("No image outputs");
+    expect(operations.posts.at(-1)?.text).toContain("pirelay send-image");
     await send("/to Docs hello there", "45");
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("hello there", undefined);
     expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "45" });
@@ -576,7 +625,8 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)).toMatchObject({ threadTs: "parent-1", text: expect.stringContaining("Sent to Docs") });
     testRoute.notification.lastSummary = "done in thread";
     await runtime.notifyTurnCompleted(testRoute, "completed");
-    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-1", text: "done in thread" });
+    expect(operations.posts.at(-2)).toMatchObject({ channel: "D1", threadTs: "parent-1", text: expect.stringContaining("Final output") });
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-1", text: "full output" });
 
     await operations.handler!({ type: "block_actions", channel: { id: "D1" }, user: { id: "U_DRIVER", team_id: "T1" }, actions: [{ value: "summary" }], response_url: "https://hooks.slack.test/response" });
     expect(operations.responses.at(-1)?.text).toBe("done in thread");
@@ -611,6 +661,59 @@ describe("SlackRuntime foundations", () => {
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Pi progress") });
     expect(operations.posts.at(-1)?.text).toContain("Running tests");
+  });
+
+  it("uploads latest and explicit Slack images", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    const testRoute = route();
+    testRoute.actions.getLatestImages = vi.fn(async () => [
+      { id: "img-1", turnId: "turn-1", fileName: "latest.png", mimeType: "image/png", data: Buffer.from([1, 2]).toString("base64"), byteSize: 2 },
+    ]);
+    testRoute.actions.getImageByPath = vi.fn(async () => ({ ok: true as const, image: { id: "img-2", turnId: "turn-1", fileName: "path.png", mimeType: "image/png", data: Buffer.from([3]).toString("base64"), byteSize: 1 } }));
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+    const send = async (text: string, ts: string, threadTs?: string) => operations.handler!({ type: "event_callback", envelopeId: `image-env-${ts}`, eventId: `image-event-${ts}`, event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text, ts, thread_ts: threadTs, team: "T1" } });
+
+    await send("pirelay images", "55", "thread-55");
+    await send("pirelay send-image outputs/path.png", "56");
+
+    expect(operations.uploads).toContainEqual(expect.objectContaining({ channel: "D1", fileName: "latest.png", mimeType: "image/png", caption: "Latest Pi image output", threadTs: "thread-55" }));
+    expect(operations.uploads).toContainEqual(expect.objectContaining({ channel: "D1", fileName: "path.png", mimeType: "image/png", caption: "Pi image file" }));
+    expect(testRoute.actions.getImageByPath).toHaveBeenCalledWith("outputs/path.png");
+  });
+
+  it("reports Slack image upload failures without marking runtime health failed", async () => {
+    const operations = new FakeSlackOperations();
+    operations.uploadError = new Error("Slack API files.getUploadURLExternal failed: missing_scope.");
+    const runtimeConfig = await config();
+    const testRoute = route();
+    testRoute.actions.getLatestImages = vi.fn(async () => [
+      { id: "img-1", turnId: "turn-1", fileName: "latest.png", mimeType: "image/png", data: Buffer.from([1]).toString("base64"), byteSize: 1 },
+    ]);
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "image-fail-env", eventId: "image-fail-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "pirelay images", ts: "57", team: "T1" } });
+
+    expect(operations.posts.at(-1)?.text).toContain("files:write");
+    expect(runtime.getStatus().error).toBeUndefined();
+  });
+
+  it("fails Slack image delivery when the adapter is unavailable", async () => {
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { enabled: true, signingSecret: "slack-signing-secret" };
+    const runtime = new SlackRuntime(runtimeConfig, { operations: new FakeSlackOperations() });
+    const latestImage = { id: "img-1", turnId: "turn-1", fileName: "latest.png", mimeType: "image/png", data: Buffer.from([1]).toString("base64"), byteSize: 1 };
+    const imageSender = runtime as unknown as { sendSlackImage(message: unknown, image: typeof latestImage, caption: string): Promise<void> };
+
+    await expect(imageSender.sendSlackImage({}, latestImage, "Latest Pi image output")).rejects.toThrow("Slack file delivery is not configured");
   });
 
   it("suppresses Slack progress updates for quiet bindings", async () => {

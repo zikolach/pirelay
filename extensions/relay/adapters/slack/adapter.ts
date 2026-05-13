@@ -102,6 +102,7 @@ export interface SlackUploadFilePayload {
   data: Uint8Array;
   mimeType: string;
   caption?: string;
+  threadTs?: string;
 }
 
 export interface SlackButtonElement {
@@ -113,7 +114,7 @@ export interface SlackButtonElement {
 
 const SLACK_CHANNEL = "slack" as const;
 const DEFAULT_SLACK_MAX_TEXT_CHARS = 3_000;
-const DEFAULT_SLACK_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_SLACK_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export class SlackChannelAdapter implements ChannelAdapter {
@@ -189,6 +190,7 @@ export class SlackChannelAdapter implements ChannelAdapter {
       data: decodeOutboundFileData(file),
       mimeType: file.mimeType,
       caption: options?.caption,
+      threadTs: slackThreadTs(address),
     });
     if (options?.buttons) await this.sendButtonPrompt(address, options.buttons);
   }
@@ -219,7 +221,7 @@ export class SlackChannelAdapter implements ChannelAdapter {
   }
 
   private async sendButtonPrompt(address: ChannelRouteAddress, buttons: ChannelButtonLayout): Promise<void> {
-    await this.api.postMessage({ channel: address.conversationId, text: "Actions:", blocks: slackBlocksForButtons(buttons) });
+    await this.api.postMessage({ channel: address.conversationId, text: "Actions:", threadTs: slackThreadTs(address), blocks: slackBlocksForButtons(buttons) });
   }
 }
 

@@ -288,18 +288,49 @@ export function requiresTextChunking(adapter: Pick<ChannelAdapterMetadata, "capa
 }
 
 export function channelTextChunks(adapter: Pick<ChannelAdapterMetadata, "capabilities">, text: string): string[] {
-  const maxChars = Math.max(1, adapter.capabilities.maxTextChars);
-  if (text.length <= maxChars) return [text];
+  return paragraphAwareTextChunks(text, adapter.capabilities.maxTextChars);
+}
+
+export function paragraphAwareTextChunks(text: string, maxChars: number): string[] {
+  const limit = Math.max(1, maxChars);
+  if (text.length <= limit) return [text];
+
   const chunks: string[] = [];
-  for (let index = 0; index < text.length; index += maxChars) {
-    chunks.push(text.slice(index, index + maxChars));
+  let remaining = text;
+  while (remaining.length > limit) {
+    const splitAt = preferredLosslessSplitIndex(remaining, limit);
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
   }
-  return chunks;
+  if (remaining) chunks.push(remaining);
+  return chunks.length > 0 ? chunks : [""];
 }
 
 export function buttonsFallbackText(buttons: ChannelButtonLayout): string {
   const labels = buttons.flat().map((button, index) => `${index + 1}. ${button.label}`);
   return ["Actions:", ...labels].join("\n");
+}
+
+function preferredLosslessSplitIndex(text: string, maxChars: number): number {
+  const paragraphBoundary = lastParagraphBoundaryBefore(text, maxChars);
+  if (paragraphBoundary > 0) return paragraphBoundary;
+
+  const newline = text.lastIndexOf("\n", maxChars);
+  if (newline > maxChars * 0.5) return newline + 1 <= maxChars ? newline + 1 : newline;
+
+  const space = text.lastIndexOf(" ", maxChars);
+  if (space > maxChars * 0.5) return space + 1 <= maxChars ? space + 1 : space;
+
+  return maxChars;
+}
+
+function lastParagraphBoundaryBefore(text: string, maxChars: number): number {
+  let boundary = -1;
+  for (const match of text.matchAll(/\n{2,}/g)) {
+    if (match.index === undefined || match.index > maxChars) break;
+    boundary = match.index;
+  }
+  return boundary;
 }
 
 function isCanonicalBase64(data: string): boolean {

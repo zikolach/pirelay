@@ -31,6 +31,7 @@ describe("clipboard helpers", () => {
 
     const result = await copyTextToClipboard("hello clipboard", {
       env: { PI_RELAY_CLIPBOARD_COMMAND: script, PI_RELAY_TEST_CLIPBOARD_OUT: output },
+      timeoutMs: 10_000,
     });
 
     expect(result).toMatchObject({ ok: true, command: script });
@@ -48,6 +49,7 @@ describe("clipboard helpers", () => {
     const result = await copyTextToClipboard("windows-ish clipboard", {
       platform: "win32",
       env: { PATH: `/missing;${dir}`, PI_RELAY_TEST_CLIPBOARD_OUT: output },
+      timeoutMs: 10_000,
     });
 
     expect(result).toMatchObject({ ok: true, command: "clip.exe" });

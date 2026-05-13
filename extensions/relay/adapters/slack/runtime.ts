@@ -1,13 +1,14 @@
 import { appendFileSync } from "node:fs";
-import type { ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelRouteAddress } from "../../core/channel-adapter.js";
-import type { ChannelPersistedBindingRecord, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
+import type { ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
-import { formatFullOutput, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
+import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
+import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
@@ -38,6 +39,7 @@ export class SlackRuntime {
   private readonly store: TunnelStateStore;
   private readonly adapter?: SlackChannelAdapter;
   private readonly operations?: SlackApiOperations;
+  private readonly operationsInjected: boolean;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
@@ -60,6 +62,7 @@ export class SlackRuntime {
   ) {
     this.store = new TunnelStateStore(config.stateDir);
     const slackConfig = config.slackInstances?.[this.instanceId] ?? config.slack;
+    this.operationsInjected = Boolean(options.operations);
     const operations = options.operations ?? (slackConfig?.enabled && slackConfig.botToken ? createSlackLiveOperations(slackConfig) : undefined);
     this.operations = operations;
     if (slackConfig?.enabled && slackConfig.botToken && operations) {
@@ -81,8 +84,13 @@ export class SlackRuntime {
 
   async start(): Promise<void> {
     if (this.started) return;
+    const startError = this.operationsInjected ? undefined : slackRuntimeStartError(this.configForInstance());
+    if (startError) {
+      this.lastError = startError;
+      throw new Error(this.lastError);
+    }
     if (!this.adapter || !this.operations?.startSocketMode) {
-      this.lastError = slackRuntimeStartError(this.configForInstance());
+      this.lastError = "Slack runtime operations are unavailable.";
       throw new Error(this.lastError);
     }
     if (this.startPromise) return this.startPromise;
@@ -142,7 +150,27 @@ export class SlackRuntime {
     const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
       ?? this.recentBindingBySessionKey.get(route.sessionKey);
     if (!binding || binding.paused && status === "completed") return;
-    await this.adapter.sendText(bindingAddress(binding), slackTurnNotificationText(route, status));
+    const address = bindingAddress(binding);
+    if (status === "completed" && route.notification.lastAssistantText) {
+      const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+      if (shouldSendFullFinalOutput(mode)) {
+        await this.adapter.sendText(address, `✅ Pi session ${route.sessionLabel} completed. Final output:`);
+        await sendFinalOutputWithFallback(this.adapter, address, route, route.notification.lastAssistantText);
+        return;
+      }
+    }
+    await this.adapter.sendText(address, slackTurnNotificationText(route, status));
+  }
+
+  async sendFileToBoundRoute(route: SessionRoute, file: ChannelOutboundFile, options: { kind: "document" | "image"; caption?: string } = { kind: "document" }): Promise<boolean> {
+    if (!this.adapter) throw new Error("Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.");
+    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
+      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    if (!binding || binding.paused) return false;
+    const address = bindingAddress(binding);
+    if (options.kind === "image") await this.adapter.sendImage(address, file, { caption: options.caption });
+    else await this.adapter.sendDocument(address, file, { caption: options.caption });
+    return true;
   }
 
   async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
@@ -476,8 +504,15 @@ export class SlackRuntime {
         await this.sendText(message, formatSummaryOutput(route));
         return;
       case "images":
+        await this.sendLatestImages(message, route);
+        return;
+      case "send-file":
+      case "sendfile":
+        await this.sendText(message, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use pirelay images, pirelay send-image <relative-image-path>, or pirelay full for latest output.");
+        return;
       case "send-image":
-        await this.sendText(message, "Slack image/file upload delivery is not available in this runtime yet. Use `pirelay summary` or `pirelay full` for text output, or retrieve generated files locally.");
+      case "sendimage":
+        await this.sendImageByPath(message, route, command.args);
         return;
       case "full":
         await this.sendText(message, formatFullOutput(route));
@@ -595,6 +630,56 @@ export class SlackRuntime {
     route.actions.appendAudit(`Slack paired with ${pairedUser}.`);
     route.actions.notifyLocal?.(`Slack paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
     await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send \`pirelay status\` or a prompt to control Pi.`);
+  }
+
+  private async sendLatestImages(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
+    const images = await route.actions.getLatestImages();
+    if (images.length === 0) {
+      await this.sendText(message, formatLatestImageEmptyMessage().replaceAll("/images", "pirelay images").replaceAll("/send-image", "pirelay send-image"));
+      return;
+    }
+    let sent = 0;
+    let skipped = 0;
+    for (const image of images) {
+      try {
+        await this.sendSlackImage(message, image, images.length === 1 ? "Latest Pi image output" : `Latest Pi image output ${sent + 1}/${images.length}`);
+        sent += 1;
+      } catch (error) {
+        skipped += 1;
+        if (sent === 0) {
+          await this.sendText(message, slackUploadFailureMessage(error));
+          return;
+        }
+      }
+    }
+    if (skipped > 0) await this.sendText(message, `Skipped ${skipped} image output(s) because Slack upload failed or the file was unsupported.`);
+  }
+
+  private async sendImageByPath(message: ChannelInboundMessage, route: SessionRoute, args: string): Promise<void> {
+    const relativePath = args.trim();
+    if (!relativePath) {
+      await this.sendText(message, "Usage: pirelay send-image <relative-image-path>");
+      return;
+    }
+    const result = await route.actions.getImageByPath(relativePath);
+    if (!result.ok) {
+      await this.sendText(message, result.error);
+      return;
+    }
+    try {
+      await this.sendSlackImage(message, result.image, "Pi image file");
+    } catch (error) {
+      await this.sendText(message, slackUploadFailureMessage(error));
+    }
+  }
+
+  private async sendSlackImage(message: ChannelInboundMessage, image: LatestTurnImage, caption: string): Promise<void> {
+    if (!this.adapter) throw new Error("Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.");
+    await this.adapter.sendImage(
+      slackAddress(message),
+      { fileName: image.fileName, mimeType: image.mimeType, data: image.data, byteSize: image.byteSize },
+      { caption },
+    );
   }
 
   private async livePreseededBinding(message: ChannelInboundMessage): Promise<ChannelPersistedBindingRecord | undefined> {
@@ -968,14 +1053,22 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   if (typeof timer === "object" && timer && "unref" in timer && typeof timer.unref === "function") timer.unref();
 }
 
-function slackRuntimeStartError(config: TelegramTunnelConfig["slack"] | undefined): string {
+function slackRuntimeStartError(config: TelegramTunnelConfig["slack"] | undefined): string | undefined {
   if (!config?.enabled) return "Slack runtime is not enabled.";
   if (!config.botToken) return "Slack runtime is missing a bot token.";
   if ((config.eventMode ?? "socket") === "socket" && !config.appToken && !process.env.PI_RELAY_SLACK_APP_TOKEN) {
     return "Slack Socket Mode requires an app-level token.";
   }
   if (config.eventMode === "webhook") return "Slack webhook runtime ingress is not available in this process.";
-  return "Slack runtime operations are unavailable.";
+  return undefined;
+}
+
+function slackUploadFailureMessage(error: unknown): string {
+  const message = safeSlackRuntimeError(error);
+  if (/missing_scope|not_allowed_token_type|file_uploads_disabled|not_in_channel|channel_not_found|permission|scope/i.test(message)) {
+    return `Slack file upload failed. Add the \`files:write\` bot scope, reinstall the Slack app, invite it to the channel if needed, then retry. (${message})`;
+  }
+  return `Slack file upload failed: ${message}`;
 }
 
 function safeSlackRuntimeError(error: unknown): string {

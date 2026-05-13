@@ -90,7 +90,7 @@ export interface DiscordButtonComponent {
 
 const DISCORD_CHANNEL = "discord" as const;
 const DEFAULT_DISCORD_MAX_TEXT_CHARS = 2_000;
-const DEFAULT_DISCORD_MAX_FILE_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_DISCORD_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export class DiscordChannelAdapter implements ChannelAdapter {

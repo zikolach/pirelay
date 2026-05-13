@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
 import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
-import { InProcessTunnelRuntime } from "../extensions/relay/adapters/telegram/runtime.js";
+import { InProcessTunnelRuntime, sendSessionNotification } from "../extensions/relay/adapters/telegram/runtime.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 
@@ -882,6 +882,7 @@ describe("InProcessTunnelRuntime", () => {
     };
 
     const { route } = createRoute(binding, true);
+    binding.progressMode = "quiet";
     route.notification.lastTurnId = "turn-short";
     route.notification.lastAssistantText = "Hey! Morning — ready when you are.";
     const sends: Array<{ text: string; keyboard?: unknown }> = [];
@@ -932,6 +933,83 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends).toHaveLength(2);
     expect(sends[0]?.keyboard).toBeUndefined();
     expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
+  });
+
+  it("falls back to a Markdown document for very large Telegram completions", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 20;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-large-output:/tmp/session-large-output.jsonl",
+      sessionId: "session-large-output",
+      sessionFile: "/tmp/session-large-output.jsonl",
+      sessionLabel: "session-large-output.jsonl",
+      chatId: 10121,
+      userId: 321,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastTurnId = "turn-large";
+    route.notification.lastAssistantText = "paragraph one\n\nparagraph two\n\nparagraph three\n\nparagraph four\n\nparagraph five\n\nparagraph six";
+    const texts: string[] = [];
+    const documents: Array<{ filename: string; data: string; caption?: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => texts.push(text),
+      sendPlainText: async (_chatId: number, text: string) => texts.push(text),
+      sendDocumentData: async (_chatId: number, filename: string, data: Uint8Array, caption?: string) => documents.push({ filename, data: Buffer.from(data).toString("utf8"), caption }),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("Full output is attached as Markdown");
+    expect(documents).toEqual([{ filename: "pi-output-session-large-output-turn-large.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
+  });
+
+  it("uses summaries for broker fallback completion notifications", async () => {
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-broker-quiet:/tmp/session-broker-quiet.jsonl",
+      sessionId: "session-broker-quiet",
+      sessionFile: "/tmp/session-broker-quiet.jsonl",
+      sessionLabel: "session-broker-quiet.jsonl",
+      chatId: 10120,
+      userId: 320,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Full final output that should not be sent through the broker fallback completion path. ".repeat(20);
+    const sent: string[] = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async (_sessionKey, text) => {
+        sent.push(text);
+      }),
+    };
+
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toBe(route.notification.lastSummary);
+    expect(sent[0]!.length).toBeLessThan(route.notification.lastAssistantText!.length);
+
+    sent.length = 0;
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "normal" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain(route.notification.lastSummary!);
+    expect(sent[0]).toContain("Use /full for the full assistant output.");
+    expect(sent[0]).not.toContain(route.notification.lastAssistantText!);
   });
 
   it("sends Telegram failure and aborted terminal notifications", async () => {
