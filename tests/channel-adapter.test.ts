@@ -46,6 +46,17 @@ describe("channel adapter boundaries", () => {
   });
 
   it("packs text chunks by paragraph before hard splitting", () => {
-    expect(paragraphAwareTextChunks("short\n\nparagraph\n\ntail", 16)).toEqual(["short\n\nparagraph", "tail"]);
+    expect(paragraphAwareTextChunks("short\n\nparagraph\n\ntail", 16)).toEqual(["short\n\nparagraph", "\n\ntail"]);
+  });
+
+  it("preserves whitespace and line endings exactly while chunking", () => {
+    const text = "one\r\n\r\n  indented code\n\n\ntrailing spaces   end";
+    const chunks = paragraphAwareTextChunks(text, 14);
+
+    expect(chunks.join("")).toBe(text);
+    expect(chunks.every((chunk) => chunk.length <= 14)).toBe(true);
+    expect(chunks.join("")).toContain("\r\n\r\n");
+    expect(chunks.join("")).toContain("  indented");
+    expect(chunks.join("")).toContain("   end");
   });
 });

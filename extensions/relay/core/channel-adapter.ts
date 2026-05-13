@@ -294,29 +294,15 @@ export function channelTextChunks(adapter: Pick<ChannelAdapterMetadata, "capabil
 export function paragraphAwareTextChunks(text: string, maxChars: number): string[] {
   const limit = Math.max(1, maxChars);
   if (text.length <= limit) return [text];
-  const normalized = text.replace(/\r\n/g, "\n");
-  const paragraphs = normalized.split(/\n{2,}/);
+
   const chunks: string[] = [];
-  let current = "";
-
-  for (const paragraph of paragraphs) {
-    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
-    if (candidate.length <= limit) {
-      current = candidate;
-      continue;
-    }
-    if (current) {
-      chunks.push(current);
-      current = "";
-    }
-    if (paragraph.length <= limit) {
-      current = paragraph;
-      continue;
-    }
-    chunks.push(...splitLongParagraph(paragraph, limit));
+  let remaining = text;
+  while (remaining.length > limit) {
+    const splitAt = preferredLosslessSplitIndex(remaining, limit);
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
   }
-
-  if (current) chunks.push(current);
+  if (remaining) chunks.push(remaining);
   return chunks.length > 0 ? chunks : [""];
 }
 
@@ -325,18 +311,26 @@ export function buttonsFallbackText(buttons: ChannelButtonLayout): string {
   return ["Actions:", ...labels].join("\n");
 }
 
-function splitLongParagraph(text: string, maxChars: number): string[] {
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > maxChars) {
-    let splitAt = remaining.lastIndexOf("\n", maxChars);
-    if (splitAt < maxChars * 0.5) splitAt = remaining.lastIndexOf(" ", maxChars);
-    if (splitAt < maxChars * 0.5) splitAt = maxChars;
-    chunks.push(remaining.slice(0, splitAt).trimEnd());
-    remaining = remaining.slice(splitAt).trimStart();
+function preferredLosslessSplitIndex(text: string, maxChars: number): number {
+  const paragraphBoundary = lastParagraphBoundaryBefore(text, maxChars);
+  if (paragraphBoundary > 0) return paragraphBoundary;
+
+  const newline = text.lastIndexOf("\n", maxChars);
+  if (newline > maxChars * 0.5) return newline + 1 <= maxChars ? newline + 1 : newline;
+
+  const space = text.lastIndexOf(" ", maxChars);
+  if (space > maxChars * 0.5) return space + 1 <= maxChars ? space + 1 : space;
+
+  return maxChars;
+}
+
+function lastParagraphBoundaryBefore(text: string, maxChars: number): number {
+  let boundary = -1;
+  for (const match of text.matchAll(/\n{2,}/g)) {
+    if (match.index === undefined || match.index > maxChars) break;
+    boundary = match.index;
   }
-  if (remaining) chunks.push(remaining);
-  return chunks;
+  return boundary;
 }
 
 function isCanonicalBase64(data: string): boolean {

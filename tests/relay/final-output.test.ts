@@ -62,7 +62,8 @@ describe("final output delivery policy", () => {
   it("sends each chunk separately when chunked output stays under the threshold", async () => {
     const { fake, sentTexts, sentDocuments } = adapter({ maxTextChars: 10 });
     await expect(sendFinalOutputWithFallback(fake, address, route(), "first part\n\nsecond", { maxMessageChunks: 2 })).resolves.toBe("messages");
-    expect(sentTexts).toEqual(["first part", "second"]);
+    expect(sentTexts).toEqual(["first part", "\n\nsecond"]);
+    expect(sentTexts.join("")).toBe("first part\n\nsecond");
     expect(sentDocuments).toEqual([]);
   });
 
