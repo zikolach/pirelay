@@ -935,6 +935,40 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
   });
 
+  it("falls back to a Markdown document for very large Telegram completions", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 20;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-large-output:/tmp/session-large-output.jsonl",
+      sessionId: "session-large-output",
+      sessionFile: "/tmp/session-large-output.jsonl",
+      sessionLabel: "session-large-output.jsonl",
+      chatId: 10121,
+      userId: 321,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastTurnId = "turn-large";
+    route.notification.lastAssistantText = "paragraph one\n\nparagraph two\n\nparagraph three\n\nparagraph four\n\nparagraph five\n\nparagraph six";
+    const texts: string[] = [];
+    const documents: Array<{ filename: string; data: string; caption?: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => texts.push(text),
+      sendPlainText: async (_chatId: number, text: string) => texts.push(text),
+      sendDocumentData: async (_chatId: number, filename: string, data: Uint8Array, caption?: string) => documents.push({ filename, data: Buffer.from(data).toString("utf8"), caption }),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("Full output is attached as Markdown");
+    expect(documents).toEqual([{ filename: "pi-output-session-large-output-turn-large.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
+  });
+
   it("uses configured quiet mode for broker fallback completion notifications", async () => {
     const binding: TelegramBindingMetadata = {
       sessionKey: "session-broker-quiet:/tmp/session-broker-quiet.jsonl",

@@ -1,5 +1,5 @@
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1583,6 +1583,42 @@ describe("PiRelay integration behavior", () => {
 
     expect(sentFiles).toEqual([{ fileName: "proposal.md", mimeType: "text/markdown", caption: "OpenSpec proposal", kind: "document" }]);
     expect(notifications.at(-1)?.message).toContain("Delivered: Slack:work");
+  });
+
+  it("rejects oversized local Telegram send-file documents before delivery", async () => {
+    const config = await createRuntimeConfig("pi-local-file-telegram-large-");
+    const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-telegram-large-workspace-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "huge.md"), "");
+    await truncate(join(root, "huge.md"), 51 * 1024 * 1024);
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("local-file-telegram-large");
+    context.cwd = root;
+    const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await new TunnelStateStore(config.stateDir).upsertBinding({ sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", chatId: 123, userId: 456, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "send-file telegram huge.md", context);
+
+    expect(notifications.at(-1)?.message).toContain("too large");
   });
 
   it("reports skipped paused bindings and rejects unsafe local send-file paths", async () => {

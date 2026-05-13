@@ -29,6 +29,7 @@ const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
 const AUDIT_MESSAGE_TYPE = "relay-audit";
 const CONNECT_WIDGET_KEY = "relay-connect";
 const LIFECYCLE_NOTIFICATION_TIMEOUT_MS = 3_000;
+const DEFAULT_TELEGRAM_LOCAL_DOCUMENT_MAX_BYTES = 50 * 1024 * 1024;
 
 function shortenMiddle(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
@@ -1146,7 +1147,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const limits: number[] = [];
     for (const target of targets) {
       if (!target.binding || target.paused) continue;
-      if (target.channel === "telegram") return undefined;
+      if (target.channel === "telegram") {
+        limits.push(DEFAULT_TELEGRAM_LOCAL_DOCUMENT_MAX_BYTES);
+        continue;
+      }
       const channelConfig = target.channel === "discord"
         ? config.discordInstances?.[target.instanceId] ?? (target.instanceId === "default" ? config.discord : undefined)
         : config.slackInstances?.[target.instanceId] ?? (target.instanceId === "default" ? config.slack : undefined);
