@@ -1,4 +1,4 @@
-import { realpath, readFile, stat } from "node:fs/promises";
+import { open, realpath, readFile, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import type { ChannelOutboundFile } from "./channel-adapter.js";
 import { isAllowedImageMimeType, safeTelegramFilename } from "./utils.js";
@@ -63,14 +63,15 @@ export async function loadWorkspaceOutboundFile(requestedPath: string, options: 
   }
   if (!info.isFile()) return { ok: false, error: "Refusing to send directories or non-file paths." };
 
-  const bytes = await readFile(realFilePath);
-  const imageMimeType = detectImageMimeType(bytes);
+  const imageMimeType = await detectImageMimeTypeFromFile(realFilePath);
   const extensionMimeType = documentMimeTypeForPath(realFilePath);
   const kind: RelayOutboundFileKind = imageMimeType ? "image" : "document";
   const limit = kind === "image" ? options.maxImageBytes : options.maxDocumentBytes;
-  if (typeof limit === "number" && bytes.byteLength > limit) {
-    return { ok: false, error: `${kind === "image" ? "Image" : "Document"} file is too large (${bytes.byteLength} bytes; limit ${limit} bytes).` };
+  if (typeof limit === "number" && info.size > limit) {
+    return { ok: false, error: `${kind === "image" ? "Image" : "Document"} file is too large (${info.size} bytes; limit ${limit} bytes).` };
   }
+
+  const bytes = await readFile(realFilePath);
 
   if (kind === "image") {
     const mimeType = imageMimeType;
@@ -137,6 +138,17 @@ function safeFileName(name: string, mimeType: string): string {
 function isPathInside(root: string, child: string): boolean {
   const rel = relative(root, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function detectImageMimeTypeFromFile(path: string): Promise<string | undefined> {
+  const handle = await open(path, "r");
+  try {
+    const header = Buffer.alloc(16);
+    const result = await handle.read(header, 0, header.length, 0);
+    return detectImageMimeType(header.subarray(0, result.bytesRead));
+  } finally {
+    await handle.close();
+  }
 }
 
 function detectImageMimeType(bytes: Buffer): string | undefined {

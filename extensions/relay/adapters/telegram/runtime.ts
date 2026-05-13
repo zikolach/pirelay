@@ -1835,6 +1835,7 @@ export async function sendSessionNotification(
   runtime: TunnelRuntime,
   route: SessionRoute,
   status: "completed" | "failed" | "aborted",
+  config: Pick<TelegramTunnelConfig, "progressMode"> = { progressMode: undefined },
 ): Promise<void> {
   if (runtime instanceof InProcessTunnelRuntime) {
     await runtime.notifyTurnCompleted(route, status);
@@ -1848,7 +1849,7 @@ export async function sendSessionNotification(
     );
     await runtime.registerRoute(route);
   }
-  const mode = progressModeFor(route.binding, { progressMode: undefined });
+  const mode = progressModeFor(route.binding, config);
   const fallback = status === "completed"
     ? (shouldSendFullFinalOutput(mode) ? route.notification.lastAssistantText : route.notification.lastSummary) ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
     : route.notification.lastFailure ?? `Pi task ${status}.`;

@@ -1142,6 +1142,20 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return targets;
   }
 
+  function maxDocumentBytesForLocalTargets(config: TelegramTunnelConfig, targets: readonly LocalSendFileTarget[]): number | undefined {
+    const limits: number[] = [];
+    for (const target of targets) {
+      if (!target.binding || target.paused) continue;
+      if (target.channel === "telegram") return undefined;
+      const channelConfig = target.channel === "discord"
+        ? config.discordInstances?.[target.instanceId] ?? (target.instanceId === "default" ? config.discord : undefined)
+        : config.slackInstances?.[target.instanceId] ?? (target.instanceId === "default" ? config.slack : undefined);
+      if (typeof channelConfig?.maxFileBytes !== "number") return undefined;
+      limits.push(channelConfig.maxFileBytes);
+    }
+    return limits.length > 0 ? Math.max(...limits) : undefined;
+  }
+
   async function sendLocalFileToTarget(ctx: ExtensionContext, config: TelegramTunnelConfig, target: LocalSendFileTarget, file: ChannelOutboundFile, kind: RelayOutboundFileKind, caption?: string): Promise<"delivered" | "skipped"> {
     if (!currentRoute) return "skipped";
     if (!target.binding || target.paused) return "skipped";
@@ -1178,20 +1192,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const config = await ensureConfig(ctx, true);
     if (!currentRoute) await syncRoute(ctx);
     if (!currentRoute) throw new Error("Failed to initialize the current Pi session route.");
+    const targets = await resolveLocalSendFileTargets(config, targetRef);
+    if (targets.length === 0) {
+      ctx.ui.notify(`No active relay binding found for ${targetRef} in this session.`, "warning");
+      return;
+    }
     const loaded = await loadWorkspaceOutboundFile(relativePath, {
       workspaceRoot: ctx.cwd,
-      maxDocumentBytes: Math.max(config.discord?.maxFileBytes ?? 0, config.slack?.maxFileBytes ?? 0) || undefined,
+      maxDocumentBytes: maxDocumentBytesForLocalTargets(config, targets),
       maxImageBytes: config.maxOutboundImageBytes,
       allowedImageMimeTypes: config.allowedImageMimeTypes,
     });
     if (!loaded.ok) {
       ctx.ui.notify(loaded.error, "warning");
-      return;
-    }
-
-    const targets = await resolveLocalSendFileTargets(config, targetRef);
-    if (targets.length === 0) {
-      ctx.ui.notify(`No active relay binding found for ${targetRef} in this session.`, "warning");
       return;
     }
 
@@ -1504,7 +1517,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     publishRouteStateSoon();
-    if (runtime) await sendSessionNotification(runtime, currentRoute, status);
+    if (runtime) await sendSessionNotification(runtime, currentRoute, status, configCache);
     for (const discord of await ensureAllDiscordRuntimes()) {
       await discord.notifyTurnCompleted(currentRoute, status);
     }

@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
 import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
-import { InProcessTunnelRuntime } from "../extensions/relay/adapters/telegram/runtime.js";
+import { InProcessTunnelRuntime, sendSessionNotification } from "../extensions/relay/adapters/telegram/runtime.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
-import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
+import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 
@@ -933,6 +933,41 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends).toHaveLength(2);
     expect(sends[0]?.keyboard).toBeUndefined();
     expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
+  });
+
+  it("uses configured quiet mode for broker fallback completion notifications", async () => {
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-broker-quiet:/tmp/session-broker-quiet.jsonl",
+      sessionId: "session-broker-quiet",
+      sessionFile: "/tmp/session-broker-quiet.jsonl",
+      sessionLabel: "session-broker-quiet.jsonl",
+      chatId: 10120,
+      userId: 320,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Full final output that should not be sent when global quiet mode is active. ".repeat(20);
+    const sent: string[] = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async (_sessionKey, text) => {
+        sent.push(text);
+      }),
+    };
+
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toBe(route.notification.lastSummary);
+    expect(sent[0]!.length).toBeLessThan(route.notification.lastAssistantText!.length);
   });
 
   it("sends Telegram failure and aborted terminal notifications", async () => {

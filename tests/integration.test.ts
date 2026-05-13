@@ -1524,17 +1524,22 @@ describe("PiRelay integration behavior", () => {
     expect(pending).toMatchObject({ channel: "slack", sessionLabel: "docs", codeKind: "pin" });
   });
 
-  it("sends a local workspace file to a paired Slack binding", async () => {
+  it("sends a local workspace file to a paired non-default Slack binding", async () => {
     const config = await createRuntimeConfig("pi-local-file-slack-");
     const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-workspace-"));
     tempDirs.push(root);
     await writeFile(join(root, "proposal.md"), "# Proposal\n");
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
-    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
-    vi.stubEnv("PI_RELAY_SLACK_ENABLED", "true");
-    vi.stubEnv("PI_RELAY_SLACK_BOT_TOKEN", "xoxb-test-token");
-    vi.stubEnv("PI_RELAY_SLACK_SIGNING_SECRET", "slack-signing-secret-test");
-    vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "xapp-test-token");
+    await writeFile(config.configPath!, JSON.stringify({
+      relay: { stateDir: config.stateDir },
+      messengers: {
+        telegram: { default: { botToken: config.botToken } },
+        slack: {
+          default: { enabled: true, botToken: "xoxb-default", signingSecret: "slack-signing-secret-default", appToken: "xapp-default", maxFileBytes: 4 },
+          work: { enabled: true, botToken: "xoxb-work", signingSecret: "slack-signing-secret-work", appToken: "xapp-work", maxFileBytes: 1024 },
+        },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath);
 
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
@@ -1571,13 +1576,13 @@ describe("PiRelay integration behavior", () => {
     const { context, notifications } = createMockContext("local-file-slack");
     context.cwd = root;
     const sessionKey = sessionKeyOf(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
-    await new TunnelStateStore(config.stateDir).upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
+    await new TunnelStateStore(config.stateDir).upsertChannelBinding({ channel: "slack", instanceId: "work", conversationId: "D1", userId: "U1", sessionKey, sessionId: context.sessionManager.getSessionId(), sessionFile: context.sessionManager.getSessionFile(), sessionLabel: "docs", boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
     relayExtension(pi.api as any);
 
-    await pi.runCommand("relay", "send-file slack proposal.md OpenSpec proposal", context);
+    await pi.runCommand("relay", "send-file slack:work proposal.md OpenSpec proposal", context);
 
     expect(sentFiles).toEqual([{ fileName: "proposal.md", mimeType: "text/markdown", caption: "OpenSpec proposal", kind: "document" }]);
-    expect(notifications.at(-1)?.message).toContain("Delivered: Slack");
+    expect(notifications.at(-1)?.message).toContain("Delivered: Slack:work");
   });
 
   it("reports skipped paused bindings and rejects unsafe local send-file paths", async () => {
