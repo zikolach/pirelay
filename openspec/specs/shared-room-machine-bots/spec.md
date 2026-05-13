@@ -121,3 +121,122 @@ The system SHALL send completion, failure, abort, progress, full-output, and med
 - **WHEN** a desktop broker observes the same room but does not own the session that accepted a prompt
 - **THEN** the desktop broker does not send completion, failure, progress, media, or guided-action output for that prompt
 
+### Requirement: Telegram Bot-to-Bot Communication Mode documentation
+The system SHALL document Telegram Bot-to-Bot Communication Mode as an optional shared-room machine-bot capability when Telegram supports bot-to-bot messages and both participating bots enable the platform setting.
+
+#### Scenario: Telegram shared-room setup describes bot-to-bot mode
+- **WHEN** setup guidance, docs, or diagnostics describe Telegram shared-room machine bots
+- **THEN** they explain that Telegram Bot-to-Bot Communication Mode is optional and must be enabled for each participating bot before bot-authored messages can reach other bots
+- **AND** they preserve `/sessions@<local-bot-username>`, `/use@<local-bot-username> <session>`, and `/to@<local-bot-username> <session> <prompt>` as reliable user-driven fallbacks when bot-to-bot mode, privacy settings, or group visibility do not permit ordinary bot-authored text
+
+#### Scenario: Telegram bot-to-bot capability is unknown
+- **WHEN** PiRelay cannot verify whether Telegram Bot-to-Bot Communication Mode is enabled for a bot
+- **THEN** setup and diagnostics report the capability as unknown or manually verified rather than claiming it is enabled
+- **AND** they provide a safe smoke-test checklist that does not print bot tokens, pairing codes, hidden prompts, tool internals, or transcripts
+
+### Requirement: Telegram bot-authored shared-room events are safe
+The system SHALL treat bot-authored Telegram shared-room events as eligible for routing only when the event is explicitly addressed to the local machine bot and the sender bot identity is authorized for the intended workflow.
+
+#### Scenario: Authorized bot targets local machine bot
+- **WHEN** Telegram delivers a group message authored by another bot that is authorized for bot-to-bot shared-room communication and the message explicitly targets the local machine bot by username, reply, or supported platform metadata
+- **THEN** the local broker applies the same shared-room command, authorization, session selection, and busy-delivery rules as an equivalent authorized user event
+- **AND** any output is delivered through the local machine bot identity according to normal shared-room output rules
+
+#### Scenario: Bot-authored event targets another machine bot
+- **WHEN** Telegram delivers a bot-authored group message that clearly targets another machine bot
+- **THEN** the local broker remains silent and does not inject prompts, mutate active selection, download media, acknowledge success, or send typing/activity indicators
+
+#### Scenario: Bot-authored event is not authorized
+- **WHEN** Telegram delivers a bot-authored group message from an untrusted or unpaired bot identity
+- **THEN** the local broker rejects the event before prompt injection, media download, callback/action execution, or session-state mutation
+
+#### Scenario: Bot feedback loop is possible
+- **WHEN** a Telegram bot-authored message originates from the local bot itself or from a bot response that would cause a bot-to-bot feedback loop
+- **THEN** PiRelay ignores the event or rejects it safely without sending another bot-authored prompt into the same loop
+
+### Requirement: Telegram bot-to-bot verification coverage
+The system SHALL provide automated or opt-in live verification for Telegram bot-to-bot shared-room behavior without requiring live credentials in normal CI.
+
+#### Scenario: Mocked integration tests run in CI
+- **WHEN** the normal unit and integration suite runs without Telegram credentials
+- **THEN** it verifies bot-authored local-target, remote-target, unauthorized, self-bot, and feedback-loop cases using mocked Telegram updates and adapter operations
+
+#### Scenario: Live Telegram E2E is configured
+- **WHEN** disposable Telegram bot tokens and an authorized test group id are supplied through documented environment variables
+- **THEN** the optional E2E test or smoke command verifies that one bot can address the other, that the addressed PiRelay bot receives and routes only authorized commands, and that non-target bots remain silent
+- **AND** the test output redacts tokens, pairing payloads, hidden prompts, tool internals, and transcripts
+
+### Requirement: Slack shared-room app mention targeting
+The system SHALL use Slack app mentions, replies, and active selections to target exactly one local machine app in shared Slack channels.
+
+#### Scenario: Slack message mentions local machine app
+- **WHEN** an authorized Slack user sends a channel message that mentions the local Slack app identity and Slack shared-room control is enabled
+- **THEN** the local Slack runtime treats the event as explicitly targeting the local machine
+- **AND** it applies normal authorization, command, prompt, media, and busy-delivery rules
+
+#### Scenario: Slack message mentions another machine app
+- **WHEN** a Slack channel message mentions only another configured or observed machine app identity
+- **THEN** the local Slack runtime remains silent
+- **AND** it does not inject a prompt, acknowledge delivery, mutate active selection, or send terminal output for that message
+
+#### Scenario: Slack message mentions multiple machine apps
+- **WHEN** a Slack channel message ambiguously mentions multiple known machine app identities
+- **THEN** a mentioned local runtime may return safe disambiguation guidance
+- **AND** non-target or unmentioned runtimes remain silent
+
+### Requirement: Slack shared-room active selection
+The system SHALL support Slack shared-room active selection scoped to Slack instance, channel id, user id, and machine identity.
+
+#### Scenario: Slack use command targets local machine
+- **WHEN** an authorized Slack user sends a machine-aware `/use <machine> <session>` command or equivalent mention-prefixed form targeting the local machine app
+- **THEN** PiRelay resolves the local session, persists the Slack channel active selection for that user, and reports the selected machine/session through the local Slack app
+
+#### Scenario: Slack use command targets another machine
+- **WHEN** an authorized Slack user sends a machine-aware use command targeting another machine app
+- **THEN** the local Slack runtime records or honors that the active selection is remote when enough non-secret target information is available
+- **AND** it remains silent for later ordinary messages unless the local machine is explicitly targeted again
+
+#### Scenario: Slack ordinary text follows local active selection
+- **WHEN** an authorized Slack user sends ordinary unaddressed text in a shared Slack channel and the active selection for that Slack channel/user points to a local online session
+- **THEN** the local Slack runtime injects the text into that selected session according to idle or busy delivery rules
+- **AND** other Slack machine apps remain silent
+
+#### Scenario: Slack ordinary text has no local selection
+- **WHEN** an authorized Slack user sends ordinary unaddressed text in a shared Slack channel and no active local selection exists
+- **THEN** the local Slack runtime remains silent or returns setup guidance only when explicitly addressed
+- **AND** it does not guess a local session
+
+### Requirement: Slack shared-room loop prevention
+The system SHALL prevent Slack shared-room bot loops and duplicate responses across multiple machine apps.
+
+#### Scenario: Local Slack app sees its own message
+- **WHEN** Slack delivers a message authored by the local Slack app identity
+- **THEN** PiRelay ignores the message and does not route it back into Pi or send another Slack response
+
+#### Scenario: Remote Slack machine app posts output
+- **WHEN** Slack delivers a message authored by another machine app in the shared room
+- **THEN** PiRelay treats the message as remote machine output and ignores it unless that bot identity is explicitly authorized for a supported bot-to-bot workflow
+- **AND** it does not create an output feedback loop
+
+#### Scenario: Slack retries shared-room event
+- **WHEN** Slack retries a shared-room event or both event delivery and diagnostic history polling observe the same event
+- **THEN** PiRelay handles the event at most once for prompt injection, command execution, active-selection mutation, and response emission
+
+### Requirement: Shared-room routing acknowledgements reflect prompt delivery
+The system SHALL NOT report successful prompt routing from shared-room commands unless the target route was resolved and the prompt was handed to that route for delivery.
+
+#### Scenario: Selection acknowledgement implies future routability
+- **WHEN** an authorized user sends a shared-room active selection command and the system responds that the active session was selected
+- **THEN** the active selection is persisted for the messenger instance, conversation id, and user id
+- **AND** a later ordinary unaddressed prompt from that same conversation/user routes to that selected local session while it remains online and unpaused
+
+#### Scenario: One-shot acknowledgement implies prompt handoff
+- **WHEN** an authorized user sends a shared-room one-shot prompt command and the system responds with successful delivery wording
+- **THEN** the target route has received the prompt handoff
+- **AND** the command has not merely updated binding metadata or returned a command response
+
+#### Scenario: Unroutable recognized command gives guidance or remains silent by target
+- **WHEN** a shared-room command is recognized by a local broker but cannot be routed because the target machine/session/prompt shape is malformed or non-local
+- **THEN** the local broker either remains silent for clearly remote targets or returns safe usage/disambiguation guidance for commands addressed to the local machine
+- **AND** it does not report successful selection or delivery
+
