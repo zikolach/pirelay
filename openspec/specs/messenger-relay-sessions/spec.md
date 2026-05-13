@@ -376,3 +376,125 @@ The system SHALL allow a Telegram shared-room group conversation to use existing
 - **THEN** immediate acknowledgements and terminal completion/failure output for that prompt are delivered to the originating group conversation according to platform limits
 - **AND** the command does not change either the group active selection or the private-chat active selection
 
+### Requirement: Slack canonical command parity
+The system SHALL treat Slack as a first-class live messenger for canonical PiRelay command semantics when Slack runtime support is enabled.
+
+#### Scenario: Slack supports canonical commands
+- **WHEN** an authorized paired Slack user invokes a canonical PiRelay command through a supported Slack text form or interaction
+- **THEN** PiRelay routes the command through the same command definitions, validation, session selection, usage, ambiguity, offline, paused, and error response classes as Telegram and Discord
+- **AND** Slack-specific wording differs only where platform invocation or capability limits require it
+
+#### Scenario: Slack help is requested
+- **WHEN** an authorized Slack user requests help
+- **THEN** the response lists the canonical PiRelay command set with Slack-specific invocation hints
+- **AND** it identifies capability-gated Slack limitations such as file upload or native slash-command registration when those limitations apply
+
+#### Scenario: Slack unsupported capability is reached
+- **WHEN** a canonical command depends on a Slack capability that is disabled, unimplemented, or missing required scopes
+- **THEN** PiRelay returns a clear Slack-specific limitation or setup message
+- **AND** it does not fall through to generic unsupported-command help
+
+### Requirement: Slack prompt source receives terminal result
+The system SHALL send terminal result notifications for accepted Slack prompts to the Slack conversation that originated the prompt.
+
+#### Scenario: Slack prompt is accepted while idle
+- **WHEN** an authorized Slack prompt is accepted while the target Pi session is idle
+- **THEN** PiRelay injects the prompt into that session
+- **AND** the same Slack conversation receives the eventual completion, failure, or abort notification for that turn
+
+#### Scenario: Slack prompt is accepted while busy
+- **WHEN** an authorized Slack prompt is accepted while the target Pi session is busy
+- **THEN** PiRelay applies the configured busy delivery mode and sends the immediate Slack busy acknowledgement
+- **AND** the accepting Slack conversation receives the eventual terminal notification for the resulting turn when Pi emits it
+
+#### Scenario: Slack prompt is rejected
+- **WHEN** a Slack prompt cannot be routed because no session is selected, multiple sessions are ambiguous, the target is paused, the target is offline, or authorization fails
+- **THEN** PiRelay returns the same class of safe routing guidance as other messengers
+- **AND** it does not inject the prompt into any Pi session
+
+### Requirement: Slack active selection parity
+The system SHALL persist and honor Slack active session selections with the same messenger-neutral state semantics as other live messengers.
+
+#### Scenario: Slack user selects a session
+- **WHEN** an authorized Slack user invokes `/use <session>` or an equivalent Slack command form
+- **THEN** PiRelay resolves the selector using shared session-selection rules
+- **AND** it persists the active selection scoped to Slack instance, Slack conversation id, Slack user id, and machine identity when relevant
+
+#### Scenario: Slack one-shot target is used
+- **WHEN** an authorized Slack user invokes `/to <session> <prompt>` or an equivalent Slack command form
+- **THEN** PiRelay resolves the target using shared selector rules and injects the prompt only when the target is unambiguous and online
+- **AND** it does not change the active session pointer
+
+#### Scenario: Duplicate Slack ingress is single-target
+- **WHEN** the same Slack event is observed by multiple local runtimes, stale processes, retries, or channel history diagnostics
+- **THEN** PiRelay resolves the event to at most one selected or explicitly targeted local route
+- **AND** non-selected runtimes remain silent, do not inject prompts, and do not mutate unrelated session state
+
+### Requirement: Paired sessions expose lifecycle presence
+The system SHALL expose local Pi session lifecycle presence to paired messenger conversations as part of the shared messenger-neutral session semantics.
+
+#### Scenario: Offline lifecycle preserves authorization boundary
+- **WHEN** a paired Pi session goes temporarily offline during normal local shutdown
+- **THEN** the messenger binding remains authorized for future restored-session use
+- **AND** inbound messenger events while the session is offline are not injected into Pi until a live route is registered again
+
+#### Scenario: Restored lifecycle resumes existing binding
+- **WHEN** a Pi session restarts and restores an active persisted messenger binding
+- **THEN** the paired messenger conversation can control the session again without a new pairing code
+- **AND** PiRelay may notify the conversation that the session is back online according to lifecycle notification rules
+
+#### Scenario: Local disconnect lifecycle revokes future control
+- **WHEN** the local Pi user disconnects relay for a paired session
+- **THEN** the system revokes that messenger binding
+- **AND** future messenger events for that binding are rejected until a new pairing is completed
+- **AND** PiRelay may notify the conversation that it was disconnected locally before revocation according to lifecycle notification rules
+
+### Requirement: Slack latest-image retrieval participates in shared media semantics
+The system SHALL expose latest-image retrieval and explicit safe image delivery through Slack when the Slack adapter declares and provides live outbound file upload capability.
+
+#### Scenario: Latest image retrieval works through Slack
+- **WHEN** an authorized Slack user requests latest images for a session with valid latest-turn image outputs
+- **THEN** PiRelay sends those images through Slack's file transport using the same bounded latest-image set as other messengers
+- **AND** skips invalid images with safe explanatory text instead of failing the whole command when at least one valid image can be sent
+
+#### Scenario: Slack image retrieval has no images
+- **WHEN** an authorized Slack user requests latest images and no latest-turn image outputs or safe workspace image references are available
+- **THEN** PiRelay returns the shared no-images guidance adapted to Slack command wording
+
+#### Scenario: Slack upload capability is unavailable
+- **WHEN** the active Slack runtime cannot upload files because live operations or app scopes are unavailable
+- **THEN** PiRelay returns a capability-specific limitation or setup guidance
+- **AND** it does not fall through to unknown-command help
+
+#### Scenario: Slack upload preserves authorization boundary
+- **WHEN** an unauthorized Slack user sends `pirelay images`, `pirelay send-image <path>`, or an equivalent action
+- **THEN** PiRelay rejects the event before loading workspace files or calling Slack upload APIs
+
+### Requirement: Messenger final output follows shared mode-aware policy
+The system SHALL apply the same terminal assistant-output delivery policy across Telegram, Discord, Slack, and future live messengers, with only platform-specific rendering and capability fallbacks differing.
+
+#### Scenario: Quiet binding receives concise completion
+- **WHEN** a Pi turn completes for a messenger binding whose progress mode is quiet
+- **THEN** PiRelay sends a concise completion message or summary
+- **AND** it offers `/full`, an equivalent command, or a downloadable Markdown action where supported for retrieving the full output
+
+#### Scenario: Normal binding receives full final output
+- **WHEN** a Pi turn completes for a messenger binding whose progress mode is normal
+- **THEN** PiRelay sends the latest assistant output as paragraph-aware message chunks when it fits safe platform limits
+- **AND** it uses a document fallback when chunking would be excessive and the adapter supports documents
+
+#### Scenario: Verbose binding receives progress and full final output
+- **WHEN** a Pi turn completes for a messenger binding whose progress mode is verbose
+- **THEN** PiRelay sends non-terminal progress updates according to verbose policy
+- **AND** sends the latest assistant output using the same chunk-or-document rules as normal mode
+
+#### Scenario: Completion-only binding receives full final output without progress
+- **WHEN** a Pi turn completes for a messenger binding whose progress mode is completion-only
+- **THEN** PiRelay suppresses non-terminal progress updates
+- **AND** sends the latest assistant output using the same chunk-or-document rules as normal mode
+
+#### Scenario: Full output is never silently truncated
+- **WHEN** a final assistant output exceeds platform text limits and document delivery is unavailable
+- **THEN** PiRelay reports an explicit capability limitation or retrieval fallback
+- **AND** does not silently drop critical trailing content
+

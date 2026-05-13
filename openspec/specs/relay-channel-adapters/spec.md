@@ -128,3 +128,64 @@ The system SHALL prevent adapter-specific shared-room behavior from causing dupl
 - **WHEN** a platform may reserve, intercept, or route slash commands to only one application in a room
 - **THEN** the adapter documents a reliable shared-room fallback such as text-prefix commands, mentions, or replies and does not rely on collision-prone top-level slash commands for correctness
 
+### Requirement: Shared-room platform parity inventory
+The system SHALL maintain a tested inventory of shared-room capabilities and known limitations for each first-class messenger adapter.
+
+#### Scenario: Capability inventory is generated or documented
+- **WHEN** developers inspect shared-room adapter support
+- **THEN** PiRelay provides a checked-in document, test fixture, or diagnostic source of truth that lists Telegram, Discord, and Slack support for private chats, group/channel messages, ordinary text visibility, bot/app mentions, replies, platform commands, media attachments, inline buttons/actions, activity indicators, command fallback, authorization model, and optional E2E status
+
+#### Scenario: Adapter declarations disagree with documentation
+- **WHEN** an adapter declares shared-room capabilities that are stronger or weaker than the documented inventory
+- **THEN** tests fail or diagnostics report the discrepancy so users are not promised unsupported shared-room behavior
+
+#### Scenario: Platform command surface is unreliable
+- **WHEN** a platform may reserve, intercept, or route command syntax in a way that prevents reliable delivery to PiRelay
+- **THEN** the inventory and setup guidance name the reliable fallback first, such as Telegram `/command@bot`, Discord `relay <command>` or mentions, and Slack app mentions or documented channel command forms
+
+### Requirement: Shared-room parity tests
+The system SHALL test shared-room behavior consistently across Telegram, Discord, and Slack according to each adapter's declared capabilities and safe defaults.
+
+#### Scenario: Shared-room test matrix runs
+- **WHEN** adapter shared-room tests run
+- **THEN** they cover local target routing, remote target silence, ambiguous target handling, active selection scoping, unauthorized rejection, channel/guild disabled rejection, media gating, and safe output rendering for each adapter that declares the corresponding capability
+
+#### Scenario: Capability is intentionally unsupported
+- **WHEN** a messenger adapter intentionally does not support a shared-room behavior
+- **THEN** tests assert the explicit unsupported diagnostic or fallback text rather than silently omitting coverage
+
+### Requirement: Messenger adapters expose document delivery consistently
+Telegram, Discord, Slack, and future first-class messenger adapters SHALL either provide normalized outbound document/file delivery or report explicit capability-gated limitations.
+
+#### Scenario: Normalized document payload is sent
+- **WHEN** the relay core emits a normalized outbound document payload for a bound messenger conversation
+- **THEN** the active adapter sends the equivalent platform file/document upload with filename, bytes, MIME type, caption, and conversation/thread metadata where supported
+
+#### Scenario: Adapter cannot send documents
+- **WHEN** an adapter cannot send outbound documents because the platform, runtime operations, or scopes do not support it
+- **THEN** the adapter reports a clear limitation instead of pretending delivery succeeded
+- **AND** shared relay behavior falls back to text chunks or local guidance when possible
+
+#### Scenario: Adapter applies file limits before upload
+- **WHEN** an outbound file exceeds the adapter's declared document or image size limit
+- **THEN** the adapter rejects the payload before calling the platform upload API
+
+#### Scenario: Adapter tests can mock file upload
+- **WHEN** tests exercise adapter or runtime file delivery
+- **THEN** they can inject mocked messenger operations without opening a network connection
+
+### Requirement: Slack live file upload operations are capability-aligned
+The Slack live adapter operations SHALL implement outbound file upload when the Slack adapter declares document or image delivery support, and SHALL expose clear limitations when upload cannot be performed.
+
+#### Scenario: Slack outbound payload uses live upload operation
+- **WHEN** the Slack channel adapter receives a normalized outbound document or image payload
+- **THEN** it calls the Slack live upload operation with bounded file bytes, filename, MIME type, target channel, caption, and thread metadata
+
+#### Scenario: Slack live upload completes through external upload flow
+- **WHEN** Slack live operations upload a file
+- **THEN** they request an external upload URL, upload the bytes to that URL, and complete the file upload with the target channel and optional initial comment/thread timestamp
+
+#### Scenario: Slack upload response is malformed
+- **WHEN** Slack's upload URL or completion response is missing required fields or reports an error
+- **THEN** PiRelay treats the upload as failed and returns a safe diagnostic instead of claiming delivery succeeded
+
