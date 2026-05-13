@@ -706,6 +706,16 @@ describe("SlackRuntime foundations", () => {
     expect(runtime.getStatus().error).toBeUndefined();
   });
 
+  it("fails Slack image delivery when the adapter is unavailable", async () => {
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { enabled: true, signingSecret: "slack-signing-secret" };
+    const runtime = new SlackRuntime(runtimeConfig, { operations: new FakeSlackOperations() });
+    const latestImage = { id: "img-1", turnId: "turn-1", fileName: "latest.png", mimeType: "image/png", data: Buffer.from([1]).toString("base64"), byteSize: 1 };
+    const imageSender = runtime as unknown as { sendSlackImage(message: unknown, image: typeof latestImage, caption: string): Promise<void> };
+
+    await expect(imageSender.sendSlackImage({}, latestImage, "Latest Pi image output")).rejects.toThrow("Slack file delivery is not configured");
+  });
+
   it("suppresses Slack progress updates for quiet bindings", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();

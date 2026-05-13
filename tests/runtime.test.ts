@@ -969,7 +969,7 @@ describe("InProcessTunnelRuntime", () => {
     expect(documents).toEqual([{ filename: "pi-output-session-large-output-turn-large.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
   });
 
-  it("uses configured quiet mode for broker fallback completion notifications", async () => {
+  it("uses summaries for broker fallback completion notifications", async () => {
     const binding: TelegramBindingMetadata = {
       sessionKey: "session-broker-quiet:/tmp/session-broker-quiet.jsonl",
       sessionId: "session-broker-quiet",
@@ -982,7 +982,7 @@ describe("InProcessTunnelRuntime", () => {
       lastSeenAt: new Date().toISOString(),
     };
     const { route } = createRoute(binding, true);
-    route.notification.lastAssistantText = "Full final output that should not be sent when global quiet mode is active. ".repeat(20);
+    route.notification.lastAssistantText = "Full final output that should not be sent through the broker fallback completion path. ".repeat(20);
     const sent: string[] = [];
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
@@ -1002,6 +1002,14 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toBe(route.notification.lastSummary);
     expect(sent[0]!.length).toBeLessThan(route.notification.lastAssistantText!.length);
+
+    sent.length = 0;
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "normal" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain(route.notification.lastSummary!);
+    expect(sent[0]).toContain("Use /full for the full assistant output.");
+    expect(sent[0]).not.toContain(route.notification.lastAssistantText!);
   });
 
   it("sends Telegram failure and aborted terminal notifications", async () => {

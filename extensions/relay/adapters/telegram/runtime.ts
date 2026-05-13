@@ -1867,11 +1867,15 @@ export async function sendSessionNotification(
     await runtime.registerRoute(route);
   }
   const mode = progressModeFor(route.binding, config);
+  const wantsFullFinalOutput = status === "completed" && shouldSendFullFinalOutput(mode);
   const fallback = status === "completed"
-    ? (shouldSendFullFinalOutput(mode) ? route.notification.lastAssistantText : route.notification.lastSummary) ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
+    ? route.notification.lastSummary ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
     : route.notification.lastFailure ?? `Pi task ${status}.`;
+  const fullOutputHint = wantsFullFinalOutput && route.notification.lastAssistantText
+    ? "\n\nUse /full for the full assistant output."
+    : "";
   const imageHint = status === "completed" && !route.notification.structuredAnswer && route.notification.latestImages?.count
     ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
     : "";
-  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${imageHint}`);
+  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${fullOutputHint}${imageHint}`);
 }

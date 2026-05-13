@@ -674,7 +674,8 @@ export class SlackRuntime {
   }
 
   private async sendSlackImage(message: ChannelInboundMessage, image: LatestTurnImage, caption: string): Promise<void> {
-    await this.adapter?.sendImage(
+    if (!this.adapter) throw new Error("Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.");
+    await this.adapter.sendImage(
       slackAddress(message),
       { fileName: image.fileName, mimeType: image.mimeType, data: image.data, byteSize: image.byteSize },
       { caption },
