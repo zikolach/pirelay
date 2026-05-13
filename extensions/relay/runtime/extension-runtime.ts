@@ -23,6 +23,8 @@ import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractIma
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
 import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
+import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
+import { DEFAULT_SLACK_MAX_FILE_BYTES } from "../adapters/slack/adapter.js";
 
 const BINDING_ENTRY_TYPE = "relay-binding";
 const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -1154,8 +1156,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const channelConfig = target.channel === "discord"
         ? config.discordInstances?.[target.instanceId] ?? (target.instanceId === "default" ? config.discord : undefined)
         : config.slackInstances?.[target.instanceId] ?? (target.instanceId === "default" ? config.slack : undefined);
-      if (typeof channelConfig?.maxFileBytes !== "number") return undefined;
-      limits.push(channelConfig.maxFileBytes);
+      const defaultMaxFileBytes = target.channel === "discord" ? DEFAULT_DISCORD_MAX_FILE_BYTES : DEFAULT_SLACK_MAX_FILE_BYTES;
+      limits.push(channelConfig?.maxFileBytes ?? defaultMaxFileBytes);
     }
     return limits.length > 0 ? Math.max(...limits) : undefined;
   }
@@ -1198,12 +1200,17 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) throw new Error("Failed to initialize the current Pi session route.");
     const targets = await resolveLocalSendFileTargets(config, targetRef);
     if (targets.length === 0) {
-      ctx.ui.notify(`No active relay binding found for ${targetRef} in this session.`, "warning");
+      ctx.ui.notify(`No relay binding found for ${targetRef} in this session.`, "warning");
+      return;
+    }
+    const deliverableTargets = targets.filter((target) => target.binding && !target.paused);
+    if (deliverableTargets.length === 0) {
+      ctx.ui.notify(`No active unpaused relay binding found for ${targetRef} in this session.`, "warning");
       return;
     }
     const loaded = await loadWorkspaceOutboundFile(relativePath, {
       workspaceRoot: ctx.cwd,
-      maxDocumentBytes: maxDocumentBytesForLocalTargets(config, targets),
+      maxDocumentBytes: maxDocumentBytesForLocalTargets(config, deliverableTargets),
       maxImageBytes: config.maxOutboundImageBytes,
       allowedImageMimeTypes: config.allowedImageMimeTypes,
     });

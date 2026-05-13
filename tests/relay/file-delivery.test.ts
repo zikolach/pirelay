@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -105,5 +105,26 @@ describe("relay local file delivery helpers", () => {
     });
     expect(unsupported).toMatchObject({ ok: false });
     if (!unsupported.ok) expect(unsupported.error).toContain("Unsupported file type");
+  });
+
+  it("returns a safe error when the file cannot be read", async () => {
+    const root = await workspace();
+    const path = join(root, "private.md");
+    await writeFile(path, "# Private\n");
+    await chmod(path, 0o000);
+
+    const result = await loadWorkspaceOutboundFile("private.md", {
+      workspaceRoot: root,
+      maxDocumentBytes: 1024,
+      maxImageBytes: 1024,
+      allowedImageMimeTypes: ["image/png"],
+    });
+    await chmod(path, 0o600);
+
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) {
+      expect(result.error).toContain("Unable to read file");
+      expect(result.error).not.toContain(root);
+    }
   });
 });

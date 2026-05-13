@@ -43,7 +43,12 @@ export async function loadWorkspaceOutboundFile(requestedPath: string, options: 
   const rejected = validateRelativeWorkspaceFilePath(normalizedRequest);
   if (rejected) return { ok: false, error: rejected };
 
-  const workspaceRoot = await realpath(options.workspaceRoot);
+  let workspaceRoot: string;
+  try {
+    workspaceRoot = await realpath(options.workspaceRoot);
+  } catch {
+    return { ok: false, error: "Unable to read the current workspace." };
+  }
   const absolutePath = resolve(workspaceRoot, normalizedRequest);
   let realFilePath: string;
   try {
@@ -63,7 +68,12 @@ export async function loadWorkspaceOutboundFile(requestedPath: string, options: 
   }
   if (!info.isFile()) return { ok: false, error: "Refusing to send directories or non-file paths." };
 
-  const imageMimeType = await detectImageMimeTypeFromFile(realFilePath);
+  let imageMimeType: string | undefined;
+  try {
+    imageMimeType = await detectImageMimeTypeFromFile(realFilePath);
+  } catch {
+    return { ok: false, error: `Unable to read file: ${normalizedRequest}` };
+  }
   const extensionMimeType = documentMimeTypeForPath(realFilePath);
   const kind: RelayOutboundFileKind = imageMimeType ? "image" : "document";
   const limit = kind === "image" ? options.maxImageBytes : options.maxDocumentBytes;
@@ -71,7 +81,12 @@ export async function loadWorkspaceOutboundFile(requestedPath: string, options: 
     return { ok: false, error: `${kind === "image" ? "Image" : "Document"} file is too large (${info.size} bytes; limit ${limit} bytes).` };
   }
 
-  const bytes = await readFile(realFilePath);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(realFilePath);
+  } catch {
+    return { ok: false, error: `Unable to read file: ${normalizedRequest}` };
+  }
 
   if (kind === "image") {
     const mimeType = imageMimeType;

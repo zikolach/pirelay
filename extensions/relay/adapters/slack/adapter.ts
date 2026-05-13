@@ -114,7 +114,7 @@ export interface SlackButtonElement {
 
 const SLACK_CHANNEL = "slack" as const;
 const DEFAULT_SLACK_MAX_TEXT_CHARS = 3_000;
-const DEFAULT_SLACK_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_SLACK_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export class SlackChannelAdapter implements ChannelAdapter {
