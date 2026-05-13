@@ -39,6 +39,7 @@ export class SlackRuntime {
   private readonly store: TunnelStateStore;
   private readonly adapter?: SlackChannelAdapter;
   private readonly operations?: SlackApiOperations;
+  private readonly operationsInjected: boolean;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
@@ -61,6 +62,7 @@ export class SlackRuntime {
   ) {
     this.store = new TunnelStateStore(config.stateDir);
     const slackConfig = config.slackInstances?.[this.instanceId] ?? config.slack;
+    this.operationsInjected = Boolean(options.operations);
     const operations = options.operations ?? (slackConfig?.enabled && slackConfig.botToken ? createSlackLiveOperations(slackConfig) : undefined);
     this.operations = operations;
     if (slackConfig?.enabled && slackConfig.botToken && operations) {
@@ -82,7 +84,7 @@ export class SlackRuntime {
 
   async start(): Promise<void> {
     if (this.started) return;
-    const startError = slackRuntimeStartError(this.configForInstance());
+    const startError = this.operationsInjected ? undefined : slackRuntimeStartError(this.configForInstance());
     if (startError) {
       this.lastError = startError;
       throw new Error(this.lastError);
