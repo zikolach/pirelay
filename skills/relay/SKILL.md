@@ -39,6 +39,7 @@ Use the extension command for all runtime actions:
 - `/full`
 - `/images`
 - `/send-image <relative-path>`
+- `/send-file <relative-path> [caption]`
 - `/steer <text>`
 - `/followup <text>`
 - `/abort`
@@ -79,7 +80,7 @@ Completion or decision messages also expose full-output buttons when the latest 
 
 Markdown tables shown in chat are reformatted into mobile-friendly code-style blocks because Telegram does not render Markdown tables. The downloaded `.md` keeps the original Markdown table format aside from configured redaction.
 
-If the latest completed turn produced image outputs from tools or mentioned a safe workspace image path such as `outputs/result.png`, use `/images` or the inline image button to download those outputs as Telegram documents. Use `/send-image <relative-path>` to explicitly send a validated workspace PNG/JPEG/WebP file. PiRelay does not automatically echo input images back to Telegram or browse arbitrary workspace files.
+If the latest completed turn produced image outputs from tools or mentioned a safe workspace image path such as `outputs/result.png`, use `/images` or the inline image button to download those outputs as Telegram documents. Use `/send-image <relative-path>` to explicitly send a validated workspace PNG/JPEG/WebP file. For a remote user's natural-language request to receive a safe workspace artifact, use the assistant tool `relay_send_file` with a workspace-relative path and optional caption when it is available; it only delivers to the current authorized requester conversation/thread. PiRelay does not automatically echo input images back to Telegram or browse arbitrary workspace files.
 
 This helps when the important decision prompt appears near the end of a long assistant response.
 

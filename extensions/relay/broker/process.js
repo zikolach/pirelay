@@ -14,6 +14,7 @@ const [
   relayMiddlewareModule,
   progressModule,
   commandsModule,
+  requesterFileDeliveryModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -24,6 +25,7 @@ const [
   jiti.import('../middleware/pipeline.ts'),
   jiti.import('../notifications/progress.ts'),
   jiti.import('../commands/remote.ts'),
+  jiti.import('../core/requester-file-delivery.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -96,6 +98,7 @@ const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progre
 const HELP_TEXT = requiredString(commandsModule, './commands.ts', 'BROKER_HELP_TEXT');
 const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts', 'commandAllowsWhilePaused');
 const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
+const parseRemoteSendFileArgs = requiredFunction(requesterFileDeliveryModule, './requester-file-delivery.ts', 'parseRemoteSendFileArgs');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
@@ -679,6 +682,7 @@ async function deliverAnswerInjection(route, message, text) {
     text,
     deliverAs,
     auditMessage: `Telegram ${getUserLabel(message.user)} answered a guided Telegram question flow.`,
+    requester: requesterForMessage(route, message),
   });
 }
 
@@ -1131,6 +1135,20 @@ function hasImageAttachments(message) {
   return messageImages(message).length > 0;
 }
 
+function requesterForMessage(route, message) {
+  return {
+    channel: 'telegram',
+    instanceId: 'default',
+    conversationId: String(message.chat.id),
+    userId: String(message.user.id),
+    sessionKey: route.sessionKey,
+    safeLabel: `Telegram ${getUserLabel(message.user)}`,
+    messageId: String(message.messageId || ''),
+    conversationKind: message.chat.type,
+    createdAt: Date.now(),
+  };
+}
+
 function promptTextForMessage(message, fallback) {
   const text = String(message.text || '').trim();
   if (text) return text;
@@ -1172,6 +1190,7 @@ async function deliverAuthorizedPrompt(message, route, text, { deliverAs, auditM
     ...payload,
     deliverAs,
     auditMessage,
+    requester: requesterForMessage(route, message),
   });
   if (busyAck) {
     await sendPlainText(message.chat.id, busyAck);
@@ -1404,6 +1423,21 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'images': {
       await sendLatestImages(message, route);
+      return;
+    }
+    case 'send-file':
+    case 'sendfile': {
+      const request = parseRemoteSendFileArgs(args || '');
+      if (!request) {
+        await sendPlainText(message.chat.id, 'Usage: /send-file <relative-path> [caption]');
+        return;
+      }
+      const result = await requestClient(route, 'sendRequesterFile', {
+        requester: requesterForMessage(route, message),
+        relativePath: request.relativePath,
+        caption: request.caption,
+      });
+      if (typeof result === 'string' && !result.startsWith('Delivered ')) await sendPlainText(message.chat.id, result);
       return;
     }
     case 'send-image':

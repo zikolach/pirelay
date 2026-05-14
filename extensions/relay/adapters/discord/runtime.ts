@@ -13,6 +13,7 @@ import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
+import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
 
 const DISCORD_CHANNEL = "discord" as const;
@@ -497,7 +498,7 @@ export class DiscordRuntime {
         return;
       case "send-file":
       case "sendfile":
-        await this.sendText(message, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use relay images, relay send-image <relative-image-path>, or relay full for latest output.");
+        await this.sendFileByPath(message, route, command.args);
         return;
       case "send-image":
       case "sendimage":
@@ -546,6 +547,70 @@ export class DiscordRuntime {
     }
   }
 
+  private discordRequester(route: SessionRoute, message: ChannelInboundMessage): RelayFileDeliveryRequester {
+    return {
+      channel: DISCORD_CHANNEL,
+      instanceId: this.instanceId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      sessionKey: route.sessionKey,
+      safeLabel: `Discord ${message.sender.displayName ?? message.sender.username ?? message.sender.userId}`,
+      messageId: message.messageId,
+      conversationKind: message.conversation.kind,
+      createdAt: Date.now(),
+    };
+  }
+
+  private async sendFileByPath(message: ChannelInboundMessage, route: SessionRoute, args: string, source: "remote-command" | "assistant-tool" = "remote-command"): Promise<string | undefined> {
+    const request = parseRemoteSendFileArgs(args);
+    if (!request) {
+      const usage = "Usage: relay send-file <relative-path> [caption]";
+      if (source === "remote-command") await this.sendText(message, usage);
+      return usage;
+    }
+    if (!this.adapter) {
+      const error = "Discord file delivery is not configured for this instance.";
+      if (source === "remote-command") await this.sendText(message, error);
+      return error;
+    }
+    const requester = this.discordRequester(route, message);
+    route.remoteRequester = requester;
+    const result = await deliverWorkspaceFileToRequester({
+      route,
+      requester,
+      adapter: this.adapter,
+      workspaceRoot: route.actions.context.cwd,
+      relativePath: request.relativePath,
+      caption: request.caption,
+      source,
+      maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
+      maxImageBytes: this.adapter.capabilities.maxImageBytes,
+      allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+    });
+    route.actions.appendAudit(`Discord send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+    const text = formatRequesterFileDeliveryResult(result);
+    if (!result.ok && source === "remote-command") await this.sendText(message, text);
+    return text;
+  }
+
+  async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
+    if (!this.adapter) return "Discord file delivery is not configured for this instance.";
+    const result = await deliverWorkspaceFileToRequester({
+      route,
+      requester,
+      adapter: this.adapter,
+      workspaceRoot: route.actions.context.cwd,
+      relativePath,
+      caption,
+      source: "assistant-tool",
+      maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
+      maxImageBytes: this.adapter.capabilities.maxImageBytes,
+      allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+    });
+    route.actions.appendAudit(`Discord assistant send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+    return formatRequesterFileDeliveryResult(result);
+  }
+
   private async deliverDiscordPrompt(
     message: ChannelInboundMessage,
     binding: ChannelPersistedBindingRecord,
@@ -558,6 +623,7 @@ export class DiscordRuntime {
     const wasIdle = route.actions.context.isIdle();
     const deliverAs = wasIdle ? undefined : options.deliverAs ?? this.config.busyDeliveryMode;
     try {
+      route.remoteRequester = this.discordRequester(route, message);
       route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
     } catch (error) {
       this.stopTypingActivity(route.sessionKey);

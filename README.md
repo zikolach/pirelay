@@ -254,6 +254,7 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 | full output | `/full` | `relay full` | `pirelay full` |
 | latest images | `/images` | `relay images` | `pirelay images` |
 | send workspace image | `/send-image <path>` | `relay send-image <path>` | `pirelay send-image <path>` |
+| send safe workspace file to requester | `/send-file <path> [caption]` | `relay send-file <path> [caption]` | `pirelay send-file <path> [caption]` |
 | steer active run | `/steer <text>` | `relay steer <text>` | `pirelay steer <text>` |
 | queue follow-up | `/followup <text>` | `relay followup <text>` | `pirelay followup <text>` |
 | abort current run | `/abort` | `relay abort` | `pirelay abort` |
@@ -264,7 +265,7 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 
-Remote chats cannot request arbitrary local files by path. Use local `/relay send-file ...` for explicit artifact delivery, while remote users stay limited to safe latest-output commands such as `/full`, `/images`, and `/send-image <relative-image-path>`.
+Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
 
 ## Prompt routing behavior
 

@@ -22,6 +22,8 @@ export const CANONICAL_REMOTE_COMMANDS = [
   { command: "summary", usage: "/summary", description: "latest summary/excerpt" },
   { command: "full", usage: "/full", description: "latest full assistant output" },
   { command: "images", usage: "/images", description: "download latest image outputs or generated image files" },
+  { command: "send-file", usage: "/send-file <path> [caption]", description: "send a validated workspace file to this chat" },
+  { command: "sendfile", usage: "/sendfile <path> [caption]", description: "alias for /send-file", aliasOf: "send-file" },
   { command: "send-image", usage: "/send-image <path>", description: "send a validated workspace image file" },
   { command: "steer", usage: "/steer <text>", description: "steer the active run" },
   { command: "followup", usage: "/followup <text>", description: "queue a follow-up" },

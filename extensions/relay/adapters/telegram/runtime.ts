@@ -6,7 +6,7 @@ import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { TelegramApiClient } from "./api.js";
-import { telegramCapabilities } from "./adapter.js";
+import { TelegramChannelAdapter, telegramCapabilities } from "./adapter.js";
 import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
@@ -53,6 +53,7 @@ import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteComm
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
 import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { channelTextChunks } from "../../core/channel-adapter.js";
+import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import {
@@ -1115,6 +1116,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       ? buildImagePromptContent(text || "Please inspect the attached image.", downloadedImages.map((image) => image.image))
       : text;
     const activityStarted = await this.startActivityIndicator(route);
+    route.remoteRequester = this.telegramRequester(route, message);
     route.actions.sendUserMessage(content, options.deliverAs ? { deliverAs: options.deliverAs } : undefined);
     route.actions.appendAudit(options.auditMessage);
     if (options.busyAck) {
@@ -1135,6 +1137,54 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return "The latest Pi output mentioned image-like file paths, but none could be sent. They may be missing, outside the workspace, hidden, unsupported, or too large. Try /send-image <relative-path> for a specific workspace PNG/JPEG/WebP file, or ask Pi to regenerate the image.";
     }
     return "No image outputs are available for the latest completed Pi turn. /images can send captured image outputs or safe workspace image files mentioned in the latest Pi reply. If Pi saved an image file, use /send-image <relative-path>.";
+  }
+
+  private telegramRequester(route: SessionRoute, message: TelegramInboundMessage): RelayFileDeliveryRequester {
+    return {
+      channel: "telegram",
+      instanceId: "default",
+      conversationId: String(message.chat.id),
+      userId: String(message.user.id),
+      sessionKey: route.sessionKey,
+      safeLabel: `Telegram ${getTelegramUserLabel(message.user)}`,
+      messageId: String(message.messageId),
+      conversationKind: message.chat.type,
+      createdAt: Date.now(),
+    };
+  }
+
+  private telegramFileAdapter(): TelegramChannelAdapter {
+    return new TelegramChannelAdapter(this.config, {
+      getUpdates: async () => [],
+      sendPlainTextWithKeyboard: (chatId, text, keyboard) => this.api.sendPlainTextWithKeyboard(chatId, text, keyboard),
+      sendDocumentData: (chatId, filename, data, caption) => this.api.sendDocumentData(chatId, filename, data, caption),
+      answerCallbackQuery: (callbackQueryId, text, alert) => this.api.answerCallbackQuery(callbackQueryId, text, alert),
+      sendChatAction: (chatId, action) => this.api.sendChatAction(chatId, action),
+    });
+  }
+
+  private async sendFileByPath(route: SessionRoute, message: TelegramInboundMessage, args: string): Promise<void> {
+    const request = parseRemoteSendFileArgs(args);
+    if (!request) {
+      await this.api.sendPlainText(message.chat.id, "Usage: /send-file <relative-path> [caption]");
+      return;
+    }
+    const requester = this.telegramRequester(route, message);
+    route.remoteRequester = requester;
+    const result = await deliverWorkspaceFileToRequester({
+      route,
+      requester,
+      adapter: this.telegramFileAdapter(),
+      workspaceRoot: route.actions.context.cwd,
+      relativePath: request.relativePath,
+      caption: request.caption,
+      source: "remote-command",
+      maxDocumentBytes: 50 * 1024 * 1024,
+      maxImageBytes: this.config.maxOutboundImageBytes,
+      allowedImageMimeTypes: this.config.allowedImageMimeTypes,
+    });
+    route.actions.appendAudit(`Telegram remote send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+    if (!result.ok) await this.api.sendPlainText(message.chat.id, formatRequesterFileDeliveryResult(result));
   }
 
   private async sendImageByPath(route: SessionRoute, chatId: number, relativePath: string): Promise<void> {
@@ -1304,7 +1354,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       case "send-file":
       case "sendfile": {
-        await this.api.sendPlainText(message.chat.id, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use /images, /send-image <relative-image-path>, or /full for latest output.");
+        await this.sendFileByPath(route, message, args);
         return;
       }
       case "send-image":
@@ -1399,6 +1449,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const idle = isEffectivelyIdle(route);
     const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
     const activityStarted = await this.startActivityIndicator(route);
+    route.remoteRequester = this.telegramRequester(route, message);
     route.actions.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
     route.actions.appendAudit(
       idle
@@ -1448,6 +1499,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
     this.clearAnswerStateForRoute(route);
     await this.startActivityIndicator(route);
+    route.remoteRequester = this.telegramRequester(route, message);
     route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
     route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
     await this.api.sendPlainText(message.chat.id, result.responseText);

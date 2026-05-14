@@ -9,6 +9,7 @@ import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActiv
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
+import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
@@ -435,6 +436,7 @@ export class SlackRuntime {
     if (!route.actions.context.isIdle()) {
       const mode = this.config.busyDeliveryMode === "steer" ? "steer" : "followUp";
       this.sendActivityBestEffort(slackAddress(message));
+      route.remoteRequester = this.slackRequester(route, message);
       route.actions.sendUserMessage(message.text, { deliverAs: mode });
       await this.sendText(message, mode === "steer"
         ? "Slack steering queued for the active Pi run."
@@ -443,6 +445,7 @@ export class SlackRuntime {
     }
     await this.rememberThreadContext(binding, message);
     await this.startThinkingReaction(route, message);
+    route.remoteRequester = this.slackRequester(route, message);
     route.actions.sendUserMessage(message.text);
     route.lastActivityAt = Date.now();
     await this.setActiveSelection(message, route.sessionKey);
@@ -490,6 +493,7 @@ export class SlackRuntime {
           await this.sendText(message, `Pi session ${target.result.entry.alias || target.result.entry.sessionLabel} is offline.`);
           return;
         }
+        targetRoute.remoteRequester = this.slackRequester(targetRoute, message);
         if (targetRoute.actions.context.isIdle()) {
           await this.startThinkingReaction(targetRoute, message);
           targetRoute.actions.sendUserMessage(target.prompt, undefined);
@@ -508,7 +512,7 @@ export class SlackRuntime {
         return;
       case "send-file":
       case "sendfile":
-        await this.sendText(message, "Remote arbitrary file download is disabled. Ask the local Pi user to run /relay send-file, or use pirelay images, pirelay send-image <relative-image-path>, or pirelay full for latest output.");
+        await this.sendFileByPath(message, route, command.args);
         return;
       case "send-image":
       case "sendimage":
@@ -630,6 +634,72 @@ export class SlackRuntime {
     route.actions.appendAudit(`Slack paired with ${pairedUser}.`);
     route.actions.notifyLocal?.(`Slack paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
     await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send \`pirelay status\` or a prompt to control Pi.`);
+  }
+
+  private slackRequester(route: SessionRoute, message: ChannelInboundMessage): RelayFileDeliveryRequester {
+    const threadId = typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined;
+    return {
+      channel: SLACK_CHANNEL,
+      instanceId: this.instanceId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      sessionKey: route.sessionKey,
+      safeLabel: `Slack ${message.sender.displayName ?? message.sender.username ?? message.sender.userId}`,
+      threadId,
+      messageId: message.messageId,
+      conversationKind: message.conversation.kind,
+      createdAt: Date.now(),
+    };
+  }
+
+  private async sendFileByPath(message: ChannelInboundMessage, route: SessionRoute, args: string, source: "remote-command" | "assistant-tool" = "remote-command"): Promise<string | undefined> {
+    const request = parseRemoteSendFileArgs(args);
+    if (!request) {
+      const usage = "Usage: pirelay send-file <relative-path> [caption]";
+      if (source === "remote-command") await this.sendText(message, usage);
+      return usage;
+    }
+    if (!this.adapter) {
+      const error = "Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.";
+      if (source === "remote-command") await this.sendText(message, error);
+      return error;
+    }
+    const requester = this.slackRequester(route, message);
+    route.remoteRequester = requester;
+    const result = await deliverWorkspaceFileToRequester({
+      route,
+      requester,
+      adapter: this.adapter,
+      workspaceRoot: route.actions.context.cwd,
+      relativePath: request.relativePath,
+      caption: request.caption,
+      source,
+      maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
+      maxImageBytes: this.adapter.capabilities.maxImageBytes,
+      allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+    });
+    route.actions.appendAudit(`Slack send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+    const text = formatRequesterFileDeliveryResult(result);
+    if (!result.ok && source === "remote-command") await this.sendText(message, text);
+    return text;
+  }
+
+  async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
+    if (!this.adapter) return "Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.";
+    const result = await deliverWorkspaceFileToRequester({
+      route,
+      requester,
+      adapter: this.adapter,
+      workspaceRoot: route.actions.context.cwd,
+      relativePath,
+      caption,
+      source: "assistant-tool",
+      maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
+      maxImageBytes: this.adapter.capabilities.maxImageBytes,
+      allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+    });
+    route.actions.appendAudit(`Slack assistant send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+    return formatRequesterFileDeliveryResult(result);
   }
 
   private async sendLatestImages(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {

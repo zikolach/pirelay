@@ -5,6 +5,8 @@ import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageFileLoadResult, LatestTurnImage, SessionRoute, SessionStatusSnapshot, SetupCache, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../core/types.js";
+import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
+import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
@@ -253,11 +255,36 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             ? request.content as TelegramPromptContent
             : String(request.text ?? "");
           const deliverAs = request.deliverAs as "steer" | "followUp" | undefined;
+          if (isRecord(request.requester)) route.remoteRequester = request.requester as unknown as RelayFileDeliveryRequester;
           route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }
           await respond({ ok: true });
+          return;
+        }
+        case "sendRequesterFile": {
+          if (!isRecord(request.requester)) {
+            await respond({ ok: false, error: "Missing requester context." });
+            return;
+          }
+          const requester = request.requester as unknown as RelayFileDeliveryRequester;
+          route.remoteRequester = requester;
+          const adapter = new TelegramChannelAdapter(this.config);
+          const result = await deliverWorkspaceFileToRequester({
+            route,
+            requester,
+            adapter,
+            workspaceRoot: route.actions.context.cwd,
+            relativePath: String(request.relativePath ?? ""),
+            caption: typeof request.caption === "string" ? request.caption : undefined,
+            source: "remote-command",
+            maxDocumentBytes: 50 * 1024 * 1024,
+            maxImageBytes: this.config.maxOutboundImageBytes,
+            allowedImageMimeTypes: this.config.allowedImageMimeTypes,
+          });
+          route.actions.appendAudit(`Telegram broker send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+          await respond({ ok: true, result: formatRequesterFileDeliveryResult(result) });
           return;
         }
         case "getLatestImages": {

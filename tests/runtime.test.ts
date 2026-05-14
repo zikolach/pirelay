@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1840,6 +1840,58 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     expect(sent).toEqual([]);
+  });
+
+  it("sends requester-scoped workspace files from Telegram remote commands", async () => {
+    const config = await createRuntimeConfig();
+    const root = await mkdtemp(join(tmpdir(), "pirelay-telegram-remote-file-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "report.md"), "# Report\n");
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-send-file:/tmp/session-send-file.jsonl",
+      sessionId: "session-send-file",
+      sessionFile: "/tmp/session-send-file.jsonl",
+      sessionLabel: "session-send-file.jsonl",
+      chatId: 1007,
+      userId: 27,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    (route.actions.context as { cwd: string }).cwd = root;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    const documents: Array<{ filename: string; caption?: string; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendDocumentData: async (_chatId: number, filename: string, data: Uint8Array, caption?: string) => documents.push({ filename, caption, text: Buffer.from(data).toString("utf8") }),
+      answerCallbackQuery: async () => undefined,
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 25,
+      messageId: 25,
+      text: "/send-file report.md Monthly report",
+      chat: { id: 1007, type: "private" },
+      user: { id: 27, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 26,
+      messageId: 26,
+      text: "/send-file ../secret.md",
+      chat: { id: 1007, type: "private" },
+      user: { id: 27, username: "owner" },
+    });
+
+    expect(documents).toEqual([{ filename: "report.md", caption: "Monthly report", text: "# Report\n" }]);
+    expect(sent.at(-1)).toContain("traversal");
+    expect(route.remoteRequester).toMatchObject({ channel: "telegram", conversationId: "1007", userId: "27", sessionKey: route.sessionKey });
   });
 
   it("sends explicit workspace image paths and explains empty latest image states", async () => {
