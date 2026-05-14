@@ -889,11 +889,16 @@ export class SlackRuntime {
     this.progressStates.delete(key);
   }
 
+  private clearProgressStateByKey(key: string): void {
+    const state = this.progressStates.get(key);
+    if (state?.timer) clearTimeout(state.timer);
+    this.progressStates.delete(key);
+  }
+
   private clearProgressStateBySessionKey(sessionKey: string): void {
-    for (const [key, state] of this.progressStates) {
+    for (const [key] of this.progressStates) {
       if (!key.startsWith(`${sessionKey}:`)) continue;
-      if (state.timer) clearTimeout(state.timer);
-      this.progressStates.delete(key);
+      this.clearProgressStateByKey(key);
     }
   }
 
@@ -937,8 +942,7 @@ export class SlackRuntime {
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeBindingForRoute(route, { includePaused: true }) : undefined;
     if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
-      if (route) this.clearProgressState(route);
-      else this.progressStates.delete(key);
+      this.clearProgressStateByKey(key);
       return;
     }
     const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);

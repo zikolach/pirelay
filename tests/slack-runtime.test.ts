@@ -11,6 +11,7 @@ import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -741,7 +742,29 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts).toHaveLength(0);
   });
 
+  it("clears pending Slack progress when the binding is revoked before flush", async () => {
+    vi.useFakeTimers();
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 50;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const baseBinding = { channel: "slack" as const, instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "verbose" } };
+    await store.upsertChannelBinding(baseBinding);
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-before-revoke", kind: "tool", text: "Should not send", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await store.revokeChannelBinding("slack", testRoute.sessionKey);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(operations.posts).toHaveLength(0);
+    await vi.waitFor(() => expect((runtime as unknown as { progressStates: Map<string, unknown> }).progressStates.size).toBe(0));
+  });
+
   it("cancels pending Slack progress when mode changes to quiet", async () => {
+    vi.useFakeTimers();
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
     runtimeConfig.verboseProgressIntervalMs = 50;
@@ -754,14 +777,14 @@ describe("SlackRuntime foundations", () => {
 
     testRoute.notification.progressEvent = { id: "progress-before-quiet", kind: "tool", text: "First update", at: Date.now() };
     await runtime.registerRoute(testRoute);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(operations.posts).toHaveLength(1);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(operations.posts).toHaveLength(1));
 
     testRoute.notification.progressEvent = { id: "progress-after-quiet", kind: "tool", text: "Should not send", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await store.upsertChannelBinding({ ...baseBinding, metadata: { progressMode: "quiet" } });
     await runtime.registerRoute(testRoute);
-    await new Promise((resolve) => setTimeout(resolve, 70));
+    await vi.advanceTimersByTimeAsync(70);
 
     expect(operations.posts).toHaveLength(1);
   });
