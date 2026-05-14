@@ -54,6 +54,12 @@ describe("route action lifetime helpers", () => {
     expect(routeWorkspaceRoot(session)).toBe("/safe");
   });
 
+  it("treats undefined from narrow helpers as unavailable", () => {
+    const session = route({ isIdle: () => undefined, getWorkspaceRoot: () => undefined });
+    expect(routeIdleState(session)).toBeUndefined();
+    expect(routeWorkspaceRoot(session)).toBeUndefined();
+  });
+
   it("contains stale raw context failures", () => {
     const session = route();
     session.actions.context = {

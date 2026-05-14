@@ -608,7 +608,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         if (!this.started) break;
         const text = error instanceof Error ? error.message : String(error);
         for (const route of this.routes.values()) {
-          route.actions.notifyLocal?.(`Telegram poll error: ${text}`, "warning");
+          route.actions.setLocalStatus?.("relay-runtime", `telegram poll error: ${text}`);
         }
         await new Promise((resolve) => setTimeout(resolve, 1500));
       }

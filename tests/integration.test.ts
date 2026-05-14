@@ -1728,14 +1728,20 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", {}, context);
     const route = registeredRoutes.at(-1)!;
 
+    route.remoteRequester = { channel: "telegram", instanceId: "default", conversationId: "1", userId: "1", sessionKey: route.sessionKey, safeLabel: "Telegram", createdAt: Date.now() };
     pi.api.sendUserMessage.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => route.actions.sendUserMessage("hello")).toThrow("The Pi session is unavailable");
+    expect(route.remoteRequester).toBeUndefined();
+    expect(route.remoteRequesterPendingTurn).toBe(false);
 
     pi.api.sendMessage.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => route.actions.appendAudit("audit")).not.toThrow();
 
     pi.api.appendEntry.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => route.actions.persistBinding(null, true)).not.toThrow();
+
+    context.ui.confirm = vi.fn(async () => { throw new Error(STALE_EXTENSION_ERROR); });
+    await expect(route.actions.promptLocalConfirmation({ channel: "telegram", id: 1, userId: "1" })).resolves.toBe("deny");
   });
 
   it("refuses workspace image lookup when the live context is stale", async () => {

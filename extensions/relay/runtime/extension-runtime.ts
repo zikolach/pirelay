@@ -651,13 +651,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         summarizeText: async (text, mode) => summarizeForTelegram(text, mode, liveContextForRoute(route)),
         sendUserMessage: (text, options) => {
           if (!liveContextForRoute(route)) throw new Error(unavailableRouteMessage());
-          if (route.remoteRequester) route.remoteRequesterPendingTurn = true;
+          const requester = route.remoteRequester;
           try {
             pi.sendUserMessage(text, options);
           } catch (error) {
+            route.remoteRequesterPendingTurn = false;
+            if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
             if (isStaleExtensionReferenceError(error)) throw new Error(unavailableRouteMessage());
             throw error;
           }
+          if (requester) route.remoteRequesterPendingTurn = true;
         },
         getLatestImages: getLatestImagesForTelegram,
         getImageByPath: async (relativePath) => {
@@ -673,11 +676,18 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           safeNotifyLocal(message, level, route);
           refreshRelayStatusesSoon(liveContextForRoute(route));
         },
+        setLocalStatus: (key, value) => safeSetStatus(key, value, liveContextForRoute(route)),
         refreshLocalStatus: () => refreshRelayStatusesSoon(liveContextForRoute(route)),
         persistBinding,
         promptLocalConfirmation: async (identity) => {
           const live = liveContextForRoute(route);
-          return live ? promptPairingApproval(live, identity, route.sessionLabel) : "deny";
+          if (!live) return "deny";
+          try {
+            return await promptPairingApproval(live, identity, route.sessionLabel);
+          } catch (error) {
+            if (isStaleExtensionReferenceError(error)) return "deny";
+            throw error;
+          }
         },
         abort: () => {
           const live = liveContextForRoute(route);

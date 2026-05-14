@@ -475,6 +475,7 @@ export class SlackRuntime {
       route.actions.sendUserMessage(message.text);
     } catch (error) {
       if (error instanceof Error && error.message === unavailableRouteMessage()) {
+        await this.stopThinkingReaction(route.sessionKey);
         await this.sendText(message, error.message);
         return;
       }
@@ -538,6 +539,7 @@ export class SlackRuntime {
             targetRoute.actions.sendUserMessage(target.prompt, undefined);
           } catch (error) {
             if (error instanceof Error && error.message === unavailableRouteMessage()) {
+              await this.stopThinkingReaction(targetRoute.sessionKey);
               await this.sendText(message, error.message);
               return;
             }

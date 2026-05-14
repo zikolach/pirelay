@@ -646,12 +646,12 @@ export class DiscordRuntime {
     options: { deliverAs?: "followUp" | "steer"; idleAck?: string; busyAck?: string; auditAction?: string } = {},
   ): Promise<void> {
     const content = buildImagePromptContent(promptText, []);
-    this.startTypingActivity(route, bindingAddress(binding));
     const wasIdle = routeIdleState(route);
     if (wasIdle === undefined) {
       await this.sendText(message, unavailableRouteMessage());
       return;
     }
+    this.startTypingActivity(route, bindingAddress(binding));
     const deliverAs = wasIdle ? undefined : options.deliverAs ?? this.config.busyDeliveryMode;
     try {
       route.remoteRequester = this.discordRequester(route, message);

@@ -15,8 +15,7 @@ export function isStaleExtensionReferenceError(error: unknown): boolean {
 
 export function routeIdleState(route: SessionRoute): boolean | undefined {
   try {
-    const fromAction = route.actions.isIdle?.();
-    if (fromAction !== undefined) return fromAction;
+    if (route.actions.isIdle) return route.actions.isIdle();
     return route.actions.context.isIdle();
   } catch (error) {
     if (isStaleExtensionReferenceError(error)) return undefined;
@@ -30,8 +29,7 @@ export function routeIsBusy(route: SessionRoute): boolean {
 
 export function routeWorkspaceRoot(route: SessionRoute): string | undefined {
   try {
-    const fromAction = route.actions.getWorkspaceRoot?.();
-    if (fromAction !== undefined) return fromAction;
+    if (route.actions.getWorkspaceRoot) return route.actions.getWorkspaceRoot();
     return route.actions.context.cwd;
   } catch (error) {
     if (isStaleExtensionReferenceError(error)) return undefined;
