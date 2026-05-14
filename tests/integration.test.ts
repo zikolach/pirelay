@@ -63,7 +63,7 @@ afterEach(async () => {
   vi.doUnmock("../extensions/relay/adapters/discord/live-client.js");
   vi.doUnmock("../extensions/relay/ui/clipboard.js");
   vi.resetModules();
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 })));
 });
 
 function createBinding(id: string, chatId = 555, userId = 42): TelegramBindingMetadata {
