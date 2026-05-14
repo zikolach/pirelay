@@ -813,7 +813,7 @@ describe("DiscordRuntime", () => {
 
     session.notification.lastStatus = "running";
     await vi.advanceTimersByTimeAsync(7_000);
-    expect(ops.typing).toEqual(["dm1", "dm1"]);
+    await vi.waitFor(() => expect(ops.typing).toEqual(["dm1", "dm1"]));
 
     session.notification.lastAssistantText = "done";
     await runtime.notifyTurnCompleted(session, "completed");
@@ -883,7 +883,7 @@ describe("DiscordRuntime", () => {
 
     await ops.handler?.(discordMessage("relay followup keep typing"));
     await vi.advanceTimersByTimeAsync(7_000);
-    expect(ops.typing).toEqual(["dm1", "dm1"]);
+    await vi.waitFor(() => expect(ops.typing).toEqual(["dm1", "dm1"]));
 
     await ops.handler?.(discordMessage("relay pause"));
     await vi.advanceTimersByTimeAsync(14_000);

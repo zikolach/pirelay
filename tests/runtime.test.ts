@@ -611,7 +611,7 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(actions).toEqual(["typing"]);
     await vi.advanceTimersByTimeAsync(4000);
-    expect(actions).toEqual(["typing", "typing"]);
+    await vi.waitFor(() => expect(actions).toEqual(["typing", "typing"]));
 
     await runtime.unregisterRoute(route.sessionKey);
     await vi.advanceTimersByTimeAsync(4000);
@@ -1830,7 +1830,7 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
 
-    expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Running shared prompt") });
+    await vi.waitFor(() => expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Running shared prompt") }));
 
     sent.length = 0;
     route.notification.lastStatus = "completed";
@@ -1901,7 +1901,7 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
 
-    expect(sent[0]).toContain("Running tests (2×)");
+    await vi.waitFor(() => expect(sent[0]).toContain("Running tests (2×)"));
     expect(route.notification.recentActivity).toHaveLength(2);
 
     sent.length = 0;

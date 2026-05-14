@@ -438,8 +438,9 @@ function getLiveRoutesForChat(chatId, userId) {
 
 async function getActiveLiveRoutesForChat(chatId, userId) {
   const active = [];
+  const state = await loadState();
   for (const route of routes.values()) {
-    const binding = await activeBindingForRoute(route, { includePaused: true });
+    const binding = await activeBindingForRoute(route, { includePaused: true, state });
     if (!binding) {
       if (route.binding?.chatId === chatId && route.binding?.userId === userId) route.binding = undefined;
       continue;
@@ -459,7 +460,7 @@ async function getPersistedBindingsForChat(chatId, userId) {
 async function activeBindingForRoute(route, options = {}) {
   const binding = route?.binding;
   if (!binding) return undefined;
-  const state = await loadState();
+  const state = options.state ?? await loadState();
   const persisted = state.bindings[route.sessionKey];
   if (!persisted || persisted.status === 'revoked') return undefined;
   if (!options.includePaused && persisted.paused) return undefined;

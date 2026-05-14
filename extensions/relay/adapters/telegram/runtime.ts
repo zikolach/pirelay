@@ -290,22 +290,6 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       : route.binding;
   }
 
-  private activeOutputBindingSnapshotForRoute(route: SessionRoute): TelegramBindingMetadata | undefined {
-    const binding = this.outputBindingForRoute(route);
-    if (!binding) return undefined;
-    const baseBinding = route.binding;
-    if (baseBinding && (binding.chatId !== baseBinding.chatId || binding.userId !== baseBinding.userId)) {
-      const activeBase = this.store.getActiveBindingForSessionSync(route.sessionKey, { chatId: baseBinding.chatId, userId: baseBinding.userId, includePaused: true });
-      if (activeBase) return { ...activeBase, chatId: binding.chatId, userId: binding.userId };
-      const stored = this.store.getBindingBySessionKeySync(route.sessionKey);
-      return stored ? undefined : binding;
-    }
-    const active = this.store.getActiveBindingForSessionSync(route.sessionKey, { chatId: binding.chatId, userId: binding.userId, includePaused: true });
-    if (active) return active;
-    const stored = this.store.getBindingBySessionKeySync(route.sessionKey);
-    return stored ? undefined : binding;
-  }
-
   private async activeOutputBindingForRoute(route: SessionRoute): Promise<TelegramBindingMetadata | undefined> {
     const binding = this.outputBindingForRoute(route);
     if (!binding) return undefined;
@@ -514,7 +498,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async refreshActivityIndicator(sessionKey: string, chatId: number, key: string): Promise<void> {
     const route = this.routes.get(sessionKey);
-    const binding = route ? this.activeOutputBindingSnapshotForRoute(route) : undefined;
+    const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
     if (!route || !binding || binding.chatId !== chatId || binding.paused || !this.shouldContinueActivityIndicator(route)) {
       this.clearActivityIndicatorByKey(key);
       return;
@@ -590,7 +574,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!state) return;
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
-    const binding = route ? this.activeOutputBindingSnapshotForRoute(route) : undefined;
+    const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
     if (!route || !binding || binding.chatId !== chatId || binding.paused || route.notification.lastStatus !== "running") {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);

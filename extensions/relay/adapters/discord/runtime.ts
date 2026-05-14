@@ -936,18 +936,22 @@ export class DiscordRuntime {
   private scheduleTypingRefresh(sessionKey: string): void {
     const state = this.typingStates.get(sessionKey);
     if (!state) return;
-    state.timer = setTimeout(() => this.refreshTypingActivity(sessionKey), DISCORD_TYPING_REFRESH_MS);
+    state.timer = setTimeout(() => {
+      void this.refreshTypingActivity(sessionKey).catch((error: unknown) => {
+        this.lastError = safeDiscordRuntimeError(error);
+        this.stopTypingActivity(sessionKey);
+      });
+    }, DISCORD_TYPING_REFRESH_MS);
     unrefTimer(state.timer);
   }
 
-  private refreshTypingActivity(sessionKey: string): void {
+  private async refreshTypingActivity(sessionKey: string): Promise<void> {
     const current = this.typingStates.get(sessionKey);
     const route = this.routes.get(sessionKey);
-    const raw = this.store.getChannelBindingRecordBySessionKeySync(DISCORD_CHANNEL, sessionKey, this.instanceId);
-    const expected = current ? { instanceId: this.instanceId, conversationId: current.address.conversationId, userId: current.address.userId, includePaused: true } : { instanceId: this.instanceId, includePaused: true };
+    const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, sessionKey, this.instanceId);
     const binding = raw?.status === "revoked"
       ? undefined
-      : this.store.getActiveChannelBindingForSessionSync(DISCORD_CHANNEL, sessionKey, expected) ?? (!raw && current ? matchingRecentBinding(this.recentBindingBySessionKey.get(sessionKey), current.address) : undefined);
+      : matchingRecentBinding(raw, current?.address) ?? (!raw ? matchingRecentBinding(this.recentBindingBySessionKey.get(sessionKey), current?.address) : undefined);
     if (!current || !route || !binding || binding.paused || isTerminalStatus(route.notification.lastStatus)) {
       this.stopTypingActivity(sessionKey);
       return;
@@ -1088,8 +1092,8 @@ function bindingAddress(binding: ChannelBinding): ChannelRouteAddress {
   return { channel: DISCORD_CHANNEL, conversationId: binding.conversationId, userId: binding.userId };
 }
 
-function matchingRecentBinding(binding: ChannelBinding | undefined, address: ChannelRouteAddress): ChannelBinding | undefined {
-  return binding?.conversationId === address.conversationId && binding.userId === address.userId ? binding : undefined;
+function matchingRecentBinding(binding: ChannelBinding | undefined, address: ChannelRouteAddress | undefined): ChannelBinding | undefined {
+  return binding && address && binding.conversationId === address.conversationId && binding.userId === address.userId ? binding : undefined;
 }
 
 function channelAlias(binding: ChannelBinding): string | undefined {
