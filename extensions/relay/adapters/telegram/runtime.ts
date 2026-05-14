@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
 import { summarizeForTelegram } from "./summary.js";
+import { routeIdleState, routeIsBusy, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
@@ -124,7 +125,7 @@ function isTerminalStatus(status: SessionRoute["notification"]["lastStatus"]): b
 
 function isEffectivelyIdle(route: SessionRoute): boolean {
   if (isTerminalStatus(route.notification.lastStatus)) return true;
-  return route.actions.context.isIdle();
+  return routeIdleState(route) !== false;
 }
 
 function hasAnswerableLatestOutput(route: SessionRoute): boolean {
@@ -466,7 +467,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const binding = this.outputBindingForRoute(route);
     if (!binding || binding.paused) return false;
     if (isTerminalStatus(route.notification.lastStatus)) return false;
-    return !route.actions.context.isIdle() || route.notification.lastStatus === "running";
+    return routeIsBusy(route) || route.notification.lastStatus === "running";
   }
 
   private syncActivityIndicator(route: SessionRoute): void {
@@ -607,7 +608,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         if (!this.started) break;
         const text = error instanceof Error ? error.message : String(error);
         for (const route of this.routes.values()) {
-          route.actions.context.ui.setStatus("relay-runtime", `telegram poll error: ${text}`);
+          route.actions.notifyLocal?.(`Telegram poll error: ${text}`, "warning");
         }
         await new Promise((resolve) => setTimeout(resolve, 1500));
       }
@@ -1138,6 +1139,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     text: string,
     options: { deliverAs?: "followUp" | "steer"; auditMessage: string; busyAck?: string; idleAck?: string },
   ): Promise<void> {
+    if (routeIdleState(route) === undefined) {
+      await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+      return;
+    }
     const downloadedImages = await this.downloadAuthorizedImages(route, message);
     if (!downloadedImages) return;
     const hasImages = downloadedImages.length > 0;
@@ -1146,7 +1151,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       : text;
     const activityStarted = await this.startActivityIndicator(route);
     route.remoteRequester = this.telegramRequester(route, message);
-    route.actions.sendUserMessage(content, options.deliverAs ? { deliverAs: options.deliverAs } : undefined);
+    try {
+      route.actions.sendUserMessage(content, options.deliverAs ? { deliverAs: options.deliverAs } : undefined);
+    } catch (error) {
+      await this.api.sendPlainText(message.chat.id, error instanceof Error ? error.message : unavailableRouteMessage());
+      return;
+    }
     route.actions.appendAudit(options.auditMessage);
     if (options.busyAck) {
       await this.api.sendPlainText(message.chat.id, options.busyAck);
@@ -1198,13 +1208,18 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.api.sendPlainText(message.chat.id, "Usage: /send-file <relative-path> [caption]");
       return;
     }
+    const workspaceRoot = routeWorkspaceRoot(route);
+    if (!workspaceRoot) {
+      await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+      return;
+    }
     const requester = this.telegramRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
       adapter: this.telegramFileAdapter(),
-      workspaceRoot: route.actions.context.cwd,
+      workspaceRoot,
       relativePath: request.relativePath,
       caption: request.caption,
       source: "remote-command",
@@ -1424,7 +1439,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "abort": {
-        if (route.actions.context.isIdle()) {
+        const idle = routeIdleState(route);
+        if (idle === undefined) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return;
+        }
+        if (idle) {
           await this.api.sendPlainText(message.chat.id, "The Pi session is already idle.");
           return;
         }
@@ -1856,7 +1876,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
 
-        const summary = await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, route.actions.context);
+        const summary = route.actions.summarizeText
+          ? await route.actions.summarizeText(notification.lastAssistantText, this.config.summaryMode)
+          : await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, undefined);
         notification.lastSummary = summary;
         const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
         const actionKeyboard = route.notification.structuredAnswer

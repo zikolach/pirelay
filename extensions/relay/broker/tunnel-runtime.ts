@@ -9,6 +9,7 @@ import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
+import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { normalizeBrokerNamespace } from "./supervisor.js";
@@ -111,7 +112,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   getStatus(sessionKey: string): SessionStatusSnapshot | undefined {
     const route = this.routes.get(sessionKey);
     if (!route) return undefined;
-    return statusSnapshotForRoute(route, { online: true, busy: !route.actions.context.isIdle() });
+    return statusSnapshotForRoute(route, { online: true });
   }
 
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
@@ -119,7 +120,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private serializeRoute(route: SessionRoute): BrokerRouteState {
-    return relayRouteStateForRoute(route, { channel: BROKER_CHANNEL, busy: !route.actions.context.isIdle() });
+    return relayRouteStateForRoute(route, { channel: BROKER_CHANNEL });
   }
 
   private async ensureConnected(): Promise<void> {
@@ -255,6 +256,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             ? request.content as TelegramPromptContent
             : String(request.text ?? "");
           const deliverAs = request.deliverAs as "steer" | "followUp" | undefined;
+          if (routeIdleState(route) === undefined) {
+            await respond({ ok: false, error: unavailableRouteMessage() });
+            return;
+          }
           if (isRecord(request.requester)) route.remoteRequester = request.requester as unknown as RelayFileDeliveryRequester;
           route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
           if (typeof request.auditMessage === "string" && request.auditMessage) {
@@ -268,6 +273,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             await respond({ ok: false, error: "Missing requester context." });
             return;
           }
+          const workspaceRoot = routeWorkspaceRoot(route);
+          if (!workspaceRoot) {
+            await respond({ ok: false, error: unavailableRouteMessage() });
+            return;
+          }
           const requester = request.requester as unknown as RelayFileDeliveryRequester;
           route.remoteRequester = requester;
           const adapter = new TelegramChannelAdapter(this.config);
@@ -275,7 +285,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             route,
             requester,
             adapter,
-            workspaceRoot: route.actions.context.cwd,
+            workspaceRoot: workspaceRoot,
             relativePath: String(request.relativePath ?? ""),
             caption: typeof request.caption === "string" ? request.caption : undefined,
             source: "remote-command",
@@ -298,6 +308,15 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "abort": {
+          const idle = routeIdleState(route);
+          if (idle === undefined) {
+            await respond({ ok: false, error: unavailableRouteMessage() });
+            return;
+          }
+          if (idle) {
+            await respond({ ok: false, error: "The Pi session is already idle." });
+            return;
+          }
           route.notification.abortRequested = true;
           route.actions.abort();
           if (typeof request.auditMessage === "string" && request.auditMessage) {
@@ -307,6 +326,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "compact": {
+          if (routeIdleState(route) === undefined) {
+            await respond({ ok: false, error: unavailableRouteMessage() });
+            return;
+          }
           await route.actions.compact();
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);

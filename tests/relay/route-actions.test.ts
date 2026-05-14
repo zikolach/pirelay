@@ -1,0 +1,67 @@
+import { describe, expect, it, vi } from "vitest";
+import { isStaleExtensionReferenceError, routeIdleState, routeWorkspaceRoot } from "../../extensions/relay/core/route-actions.js";
+import type { SessionRoute, TelegramBindingMetadata } from "../../extensions/relay/core/types.js";
+
+const STALE_EXTENSION_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
+
+function route(overrides: Partial<SessionRoute["actions"]> = {}): SessionRoute {
+  const binding: TelegramBindingMetadata = {
+    sessionKey: "session:/tmp/session.jsonl",
+    sessionId: "session",
+    sessionFile: "/tmp/session.jsonl",
+    sessionLabel: "Session",
+    chatId: 1,
+    userId: 2,
+    boundAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+  };
+  return {
+    sessionKey: binding.sessionKey,
+    sessionId: binding.sessionId,
+    sessionFile: binding.sessionFile,
+    sessionLabel: binding.sessionLabel,
+    binding,
+    notification: {},
+    actions: {
+      context: {
+        cwd: "/workspace",
+        isIdle: vi.fn(() => true),
+      } as never,
+      getModel: () => undefined,
+      sendUserMessage: () => undefined,
+      getLatestImages: async () => [],
+      getImageByPath: async () => ({ ok: false, error: "missing" }),
+      appendAudit: () => undefined,
+      persistBinding: () => undefined,
+      promptLocalConfirmation: async () => true,
+      abort: () => undefined,
+      compact: async () => undefined,
+      ...overrides,
+    },
+  };
+}
+
+describe("route action lifetime helpers", () => {
+  it("detects stale extension reference errors", () => {
+    expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
+    expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
+    expect(isStaleExtensionReferenceError(new Error("network down"))).toBe(false);
+  });
+
+  it("prefers narrow action helpers over raw context", () => {
+    const session = route({ isIdle: () => false, getWorkspaceRoot: () => "/safe" });
+    expect(routeIdleState(session)).toBe(false);
+    expect(routeWorkspaceRoot(session)).toBe("/safe");
+  });
+
+  it("contains stale raw context failures", () => {
+    const session = route();
+    session.actions.context = {
+      get cwd(): string { throw new Error(STALE_EXTENSION_ERROR); },
+      isIdle: () => { throw new Error(STALE_EXTENSION_ERROR); },
+    } as never;
+
+    expect(routeIdleState(session)).toBeUndefined();
+    expect(routeWorkspaceRoot(session)).toBeUndefined();
+  });
+});

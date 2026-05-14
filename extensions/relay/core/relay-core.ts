@@ -1,4 +1,5 @@
 import type { ChannelAdapterKind } from "./channel-adapter.js";
+import { routeIsBusy } from "./route-actions.js";
 import type { SessionRoute, SessionStatusSnapshot } from "./types.js";
 import { formatModelId } from "./utils.js";
 
@@ -16,7 +17,7 @@ export interface RelayRouteState {
   notification: SessionRoute["notification"];
 }
 
-export function statusSnapshotForRoute(route: SessionRoute, options: { online: boolean; busy: boolean }): SessionStatusSnapshot {
+export function statusSnapshotForRoute(route: SessionRoute, options: { online: boolean; busy?: boolean }): SessionStatusSnapshot {
   const model = route.actions.getModel();
   return {
     sessionKey: route.sessionKey,
@@ -24,7 +25,7 @@ export function statusSnapshotForRoute(route: SessionRoute, options: { online: b
     sessionId: route.sessionId,
     sessionFile: route.sessionFile,
     online: options.online,
-    busy: options.busy,
+    busy: options.busy ?? routeIsBusy(route),
     modelId: formatModelId(model),
     lastActivityAt: route.lastActivityAt,
     binding: route.binding,
@@ -32,7 +33,7 @@ export function statusSnapshotForRoute(route: SessionRoute, options: { online: b
   };
 }
 
-export function relayRouteStateForRoute(route: SessionRoute, options: { channel: ChannelAdapterKind; busy: boolean }): RelayRouteState {
+export function relayRouteStateForRoute(route: SessionRoute, options: { channel: ChannelAdapterKind; busy?: boolean }): RelayRouteState {
   const model = route.actions.getModel();
   return {
     channel: options.channel,
@@ -41,7 +42,7 @@ export function relayRouteStateForRoute(route: SessionRoute, options: { channel:
     sessionFile: route.sessionFile,
     sessionLabel: route.sessionLabel,
     binding: route.binding,
-    busy: options.busy,
+    busy: options.busy ?? routeIsBusy(route),
     modelId: formatModelId(model),
     imageInputSupported: Boolean(model?.input?.includes("image")),
     lastActivityAt: route.lastActivityAt,

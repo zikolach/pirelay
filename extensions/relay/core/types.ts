@@ -258,8 +258,12 @@ export interface LatestTurnImageMetadata {
 }
 
 export interface SessionRouteActions {
+  /** @deprecated Prefer narrow lifetime-safe helpers on this object. */
   context: ExtensionContext;
+  isIdle?(): boolean | undefined;
+  getWorkspaceRoot?(): string | undefined;
   getModel(): Model<any> | undefined;
+  summarizeText?(text: string, mode: SummaryMode): Promise<string>;
   sendUserMessage(content: TelegramPromptContent, options?: { deliverAs?: DeliveryMode }): void;
   getLatestImages(): Promise<LatestTurnImage[]>;
   getImageByPath(relativePath: string): Promise<ImageFileLoadResult>;

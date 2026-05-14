@@ -13,14 +13,20 @@ const SUMMARY_PROMPT = [
 export async function summarizeForTelegram(
   text: string,
   mode: SummaryMode,
-  ctx: ExtensionContext,
+  ctx: ExtensionContext | undefined,
 ): Promise<string> {
-  if (mode !== "llm" || !ctx.model) {
+  let model: ExtensionContext["model"] | undefined;
+  try {
+    model = ctx?.model;
+  } catch {
+    return summarizeTextDeterministically(text);
+  }
+  if (mode !== "llm" || !ctx || !model) {
     return summarizeTextDeterministically(text);
   }
 
   try {
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) {
       return summarizeTextDeterministically(text);
     }
@@ -30,7 +36,7 @@ export async function summarizeForTelegram(
       timestamp: Date.now(),
     };
     const response = await complete(
-      ctx.model,
+      model,
       {
         systemPrompt: SUMMARY_PROMPT,
         messages: [userMessage],

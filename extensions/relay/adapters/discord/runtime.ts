@@ -10,6 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
+import { routeIdleState, routeIsBusy, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -521,7 +522,12 @@ export class DiscordRuntime {
         await this.handlePromptCommand(message, binding, route, command.args, "followUp");
         return;
       case "abort":
-        if (route.actions.context.isIdle()) {
+        const idle = routeIdleState(route);
+        if (idle === undefined) {
+          await this.sendText(message, unavailableRouteMessage());
+          return;
+        }
+        if (idle) {
           await this.sendText(message, "The Pi session is already idle.");
           return;
         }
@@ -532,6 +538,10 @@ export class DiscordRuntime {
         await this.sendText(message, "Abort requested.");
         return;
       case "compact":
+        if (routeIdleState(route) === undefined) {
+          await this.sendText(message, unavailableRouteMessage());
+          return;
+        }
         route.actions.appendAudit("Discord requested compaction.");
         await route.actions.compact();
         await this.sendText(message, "Compaction requested.");
@@ -583,13 +593,18 @@ export class DiscordRuntime {
       if (source === "remote-command") await this.sendText(message, error);
       return error;
     }
+    const workspaceRoot = routeWorkspaceRoot(route);
+    if (!workspaceRoot) {
+      if (source === "remote-command") await this.sendText(message, unavailableRouteMessage());
+      return unavailableRouteMessage();
+    }
     const requester = this.discordRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
       adapter: this.adapter,
-      workspaceRoot: route.actions.context.cwd,
+      workspaceRoot: workspaceRoot,
       relativePath: request.relativePath,
       caption: request.caption,
       source,
@@ -605,11 +620,13 @@ export class DiscordRuntime {
 
   async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
     if (!this.adapter) return "Discord file delivery is not configured for this instance.";
+    const workspaceRoot = routeWorkspaceRoot(route);
+    if (!workspaceRoot) return unavailableRouteMessage();
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
       adapter: this.adapter,
-      workspaceRoot: route.actions.context.cwd,
+      workspaceRoot: workspaceRoot,
       relativePath,
       caption,
       source: "assistant-tool",
@@ -630,7 +647,11 @@ export class DiscordRuntime {
   ): Promise<void> {
     const content = buildImagePromptContent(promptText, []);
     this.startTypingActivity(route, bindingAddress(binding));
-    const wasIdle = route.actions.context.isIdle();
+    const wasIdle = routeIdleState(route);
+    if (wasIdle === undefined) {
+      await this.sendText(message, unavailableRouteMessage());
+      return;
+    }
     const deliverAs = wasIdle ? undefined : options.deliverAs ?? this.config.busyDeliveryMode;
     try {
       route.remoteRequester = this.discordRequester(route, message);
@@ -665,7 +686,11 @@ export class DiscordRuntime {
       await this.sendText(message, `Usage: /${deliverAs === "steer" ? "steer" : "followup"} <text>`);
       return;
     }
-    const idle = route.actions.context.isIdle();
+    const idle = routeIdleState(route);
+    if (idle === undefined) {
+      await this.sendText(message, unavailableRouteMessage());
+      return;
+    }
     await this.deliverDiscordPrompt(message, binding, route, args, {
       deliverAs: idle ? undefined : deliverAs,
       auditAction: deliverAs === "steer" ? "steering instruction" : "follow-up",
@@ -787,7 +812,7 @@ export class DiscordRuntime {
     for (const binding of bindings) {
       const route = this.routes.get(binding.sessionKey);
       if (route) {
-        const busy = !route.actions.context.isIdle();
+        const busy = routeIsBusy(route);
         byKey.set(binding.sessionKey, {
           sessionKey: route.sessionKey,
           sessionId: route.sessionId,
@@ -848,7 +873,7 @@ export class DiscordRuntime {
   }
 
   private statusTextForRoute(route: SessionRoute, binding: ChannelPersistedBindingRecord, online: boolean): string {
-    const busy = !route.actions.context.isIdle();
+    const busy = routeIsBusy(route);
     return formatRelayStatusForRoute(route, {
       online,
       busy,
