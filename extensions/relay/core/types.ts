@@ -288,6 +288,7 @@ export interface SessionRoute {
   notification: SessionNotificationState;
   lastActivityAt?: number;
   remoteRequester?: RelayFileDeliveryRequester;
+  remoteRequesterPendingTurn?: boolean;
 }
 
 export interface SessionStatusSnapshot {

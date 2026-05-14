@@ -99,6 +99,11 @@ describe("requester-scoped file delivery", () => {
     const req = requester();
     const { fake, sent } = adapter();
 
+    const missingContextRoute = route(req);
+    missingContextRoute.remoteRequester = undefined;
+    const missingContext = await deliverWorkspaceFileToRequester({ route: missingContextRoute, requester: req, adapter: fake, workspaceRoot: root, relativePath: "report.md", source: "assistant-tool" });
+    expect(missingContext).toMatchObject({ ok: false, code: "stale-requester" });
+
     const stale = await deliverWorkspaceFileToRequester({ route: route(requester({ userId: "U2" })), requester: req, adapter: fake, workspaceRoot: root, relativePath: "report.md", source: "assistant-tool" });
     expect(stale).toMatchObject({ ok: false, code: "stale-requester" });
 
@@ -123,13 +128,15 @@ describe("requester-scoped file delivery", () => {
     await writeFile(join(root, "report.md"), "# Report\n");
     const req = requester();
     const { fake } = adapter();
-    fake.sendDocument = vi.fn(async () => { throw new Error("upload failed for xoxb-secret https://hooks.slack.com/actions/T/B/secret"); });
+    fake.sendDocument = vi.fn(async () => { throw new Error("upload failed for xoxb-secret 123456:ABCdefGhIJKlmNoPQRstuVWXYz https://discord.com/api/webhooks/1/secret https://hooks.slack.com/actions/T/B/secret"); });
 
     const result = await deliverWorkspaceFileToRequester({ route: route(req), requester: req, adapter: fake, workspaceRoot: root, relativePath: "report.md", source: "remote-command" });
 
     expect(result).toMatchObject({ ok: false, code: "upload-failed" });
     if (!result.ok) {
       expect(result.error).not.toContain("xoxb-secret");
+      expect(result.error).not.toContain("ABCdefGhIJKlmNoPQRstuVWXYz");
+      expect(result.error).not.toContain("discord.com/api/webhooks");
       expect(result.error).not.toContain("hooks.slack.com");
     }
   });

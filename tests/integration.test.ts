@@ -1650,10 +1650,17 @@ describe("PiRelay integration behavior", () => {
       threadId: "thread-1",
       createdAt: Date.now(),
     };
+    capturedRoute!.remoteRequesterPendingTurn = true;
+    await pi.emit("agent_start", {}, context);
 
     const delivered = await tool!.execute("tool-2", { relativePath: "report.md", caption: "Report" });
     expect(delivered.content[0].text).toContain("Delivered report.md");
     expect(fakeSlackRuntime.sendFileToRequester).toHaveBeenCalledWith(capturedRoute, capturedRoute!.remoteRequester, "report.md", "Report");
+
+    await pi.emit("agent_start", {}, context);
+    const staleLocal = await tool!.execute("tool-local-stale", { relativePath: "report.md" });
+    expect(staleLocal.content[0].text).toContain("No authorized remote requester");
+    expect(fakeSlackRuntime.sendFileToRequester).toHaveBeenCalledTimes(1);
   });
 
   it("rejects oversized local Telegram send-file documents before delivery", async () => {

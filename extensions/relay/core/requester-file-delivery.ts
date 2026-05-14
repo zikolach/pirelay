@@ -1,4 +1,5 @@
 import type { ChannelAdapter, ChannelAdapterKind, ChannelOutboundFile, ChannelRouteAddress } from "./channel-adapter.js";
+import { redactSecrets } from "../config/setup.js";
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "./file-delivery.js";
 import type { SessionRoute } from "./types.js";
 
@@ -62,7 +63,7 @@ export function requesterAddress(requester: RelayFileDeliveryRequester): Channel
 export function requesterContextIsCurrent(route: SessionRoute, requester: RelayFileDeliveryRequester): boolean {
   if (requester.sessionKey !== route.sessionKey) return false;
   const current = route.remoteRequester;
-  if (!current) return true;
+  if (!current) return false;
   return current.sessionKey === requester.sessionKey
     && current.channel === requester.channel
     && current.instanceId === requester.instanceId
@@ -131,10 +132,12 @@ async function sendLoadedFile(adapter: ChannelAdapter, requester: RelayFileDeliv
 }
 
 function safeDeliveryError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
+  const raw = redactSecrets(error instanceof Error ? error.message : String(error));
   return raw
     .replace(/xox[baprs]-[A-Za-z0-9-]+/g, "[redacted]")
     .replace(/xapp-[A-Za-z0-9-]+/g, "[redacted]")
     .replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/[^\s"']+/g, "[redacted]")
-    .replace(/https:\/\/[^\s"']*slack[^\s"']*/gi, "[redacted]");
+    .replace(/https:\/\/[^\s"']*slack[^\s"']*/gi, "[redacted]")
+    .replace(/https:\/\/[^\s"']*discord(?:app)?\.com\/[^\s"']*/gi, "[redacted]")
+    .replace(/https:\/\/api\.telegram\.org\/bot[^\s"']*/gi, "[redacted]");
 }

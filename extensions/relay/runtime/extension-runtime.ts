@@ -536,7 +536,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       actions: {
         context: ctx,
         getModel: () => latestContext?.model,
-        sendUserMessage: (text, options) => pi.sendUserMessage(text, options),
+        sendUserMessage: (text, options) => {
+          if (currentRoute?.remoteRequester) currentRoute.remoteRequesterPendingTurn = true;
+          pi.sendUserMessage(text, options);
+        },
         getLatestImages: getLatestImagesForTelegram,
         getImageByPath: async (relativePath) => {
           const turnId = currentRoute?.notification.lastTurnId ?? createTurnId();
@@ -1200,7 +1203,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         route: currentRoute,
         requester,
         adapter,
-        workspaceRoot: ctx.cwd,
+        workspaceRoot: currentRoute.actions.context.cwd,
         relativePath,
         caption,
         source: "assistant-tool",
@@ -1460,6 +1463,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestTurnImages = [];
     latestTurnImageFileCandidates = [];
     currentRoute.actions.context = ctx;
+    if (!currentRoute.remoteRequesterPendingTurn) currentRoute.remoteRequester = undefined;
+    currentRoute.remoteRequesterPendingTurn = false;
     currentRoute.notification.startedAt = Date.now();
     currentRoute.notification.lastTurnId = undefined;
     currentRoute.notification.lastAssistantText = undefined;
