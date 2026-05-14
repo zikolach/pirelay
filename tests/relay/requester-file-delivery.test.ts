@@ -107,6 +107,9 @@ describe("requester-scoped file delivery", () => {
     const stale = await deliverWorkspaceFileToRequester({ route: route(requester({ userId: "U2" })), requester: req, adapter: fake, workspaceRoot: root, relativePath: "report.md", source: "assistant-tool" });
     expect(stale).toMatchObject({ ok: false, code: "stale-requester" });
 
+    const empty = await deliverWorkspaceFileToRequester({ route: route(req), requester: req, adapter: fake, workspaceRoot: root, relativePath: "   ", source: "assistant-tool" });
+    expect(empty).toMatchObject({ ok: false, code: "validation-failed", error: "Usage: send-file <relative-path> [caption]" });
+
     const unsafe = await deliverWorkspaceFileToRequester({ route: route(req), requester: req, adapter: fake, workspaceRoot: root, relativePath: "../secret.md", source: "remote-command" });
     expect(unsafe).toMatchObject({ ok: false, code: "validation-failed" });
 

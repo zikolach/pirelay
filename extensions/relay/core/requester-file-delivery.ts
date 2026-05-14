@@ -84,7 +84,12 @@ export async function deliverWorkspaceFileToRequester(options: RelayRequesterFil
     };
   }
 
-  const loaded = await loadWorkspaceOutboundFile(options.relativePath, {
+  const requestedPath = options.relativePath.trim();
+  if (!requestedPath) {
+    return { ok: false, code: "validation-failed", error: "Usage: send-file <relative-path> [caption]", targetLabel, source: options.source };
+  }
+
+  const loaded = await loadWorkspaceOutboundFile(requestedPath, {
     workspaceRoot: options.workspaceRoot,
     maxDocumentBytes: options.maxDocumentBytes ?? options.adapter.capabilities.maxDocumentBytes,
     maxImageBytes: options.maxImageBytes ?? options.adapter.capabilities.maxImageBytes ?? Number.MAX_SAFE_INTEGER,
