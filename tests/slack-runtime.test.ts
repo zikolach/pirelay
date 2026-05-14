@@ -844,6 +844,14 @@ describe("SlackRuntime foundations", () => {
     expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith("session-only prompt", undefined);
     await expect(store.getActiveChannelSelection("slack", "C1", "U_DRIVER")).resolves.toBeUndefined();
 
+    testRoute.remoteRequester = undefined;
+    testRoute.actions.isIdle = () => undefined;
+    const callsBeforeUnavailableTarget = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
+    await sendChannelMessage("pirelay to Docs unavailable target", "75.5");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(callsBeforeUnavailableTarget);
+    expect(testRoute.remoteRequester).toBeUndefined();
+    expect(operations.posts.at(-1)?.text).toContain("The Pi session is unavailable");
+
     const callsBeforeRemoteTarget = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
     await sendChannelMessage("pirelay to remote Docs should not route", "76");
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(callsBeforeRemoteTarget);

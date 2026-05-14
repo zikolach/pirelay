@@ -1548,6 +1548,31 @@ describe("InProcessTunnelRuntime", () => {
     expect((await store.getBindingBySessionKey(offlineBinding.sessionKey))?.status).toBe("revoked");
   });
 
+  it("marks unavailable in-memory Telegram routes offline in session entries", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-list:/tmp/session-unavailable-list.jsonl",
+      sessionId: "session-unavailable-list",
+      sessionFile: "/tmp/session-unavailable-list.jsonl",
+      sessionLabel: "unavailable-list.jsonl",
+      chatId: 1013,
+      userId: 33,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.actions.isIdle = () => undefined;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const entries = await (runtime as any).sessionEntriesFromBindings([binding], () => true);
+
+    expect(entries).toContainEqual(expect.objectContaining({ sessionKey: route.sessionKey, online: false, busy: false }));
+  });
+
   it("includes persisted offline sessions in the in-process session list", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);

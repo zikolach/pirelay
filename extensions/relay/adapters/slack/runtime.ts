@@ -527,12 +527,12 @@ export class SlackRuntime {
           await this.sendText(message, `Pi session ${target.result.entry.alias || target.result.entry.sessionLabel} is offline.`);
           return;
         }
-        targetRoute.remoteRequester = this.slackRequester(targetRoute, message);
         const idle = routeIdleState(targetRoute);
         if (idle === undefined) {
           await this.sendText(message, unavailableRouteMessage());
           return;
         }
+        targetRoute.remoteRequester = this.slackRequester(targetRoute, message);
         if (idle) {
           await this.startThinkingReaction(targetRoute, message);
           try {
