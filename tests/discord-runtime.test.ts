@@ -821,6 +821,45 @@ describe("DiscordRuntime", () => {
     expect(ops.typing).toEqual(["dm1", "dm1"]);
   });
 
+  it("stops Discord typing refresh when the active binding moves conversations", async () => {
+    vi.useFakeTimers();
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session } = route();
+    session.notification.lastStatus = "running";
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("relay followup keep typing"));
+    expect(ops.typing).toEqual(["dm1"]);
+
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm2",
+      userId: "u2",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    await vi.advanceTimersByTimeAsync(14_000);
+
+    expect(ops.typing).toEqual(["dm1"]);
+  });
+
   it("stops Discord typing refresh on pause, disconnect, route unregister, and runtime stop", async () => {
     vi.useFakeTimers();
     const cfg = await config();

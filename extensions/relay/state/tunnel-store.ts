@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getStateFilePath } from "./paths.js";
 import type { ChannelBinding } from "../core/channel-adapter.js";
@@ -19,6 +19,19 @@ function emptyStore(): TunnelStoreData {
   };
 }
 
+function parseStoreData(raw: string): TunnelStoreData {
+  const parsed = JSON.parse(raw) as Partial<TunnelStoreData>;
+  return {
+    setup: parsed.setup,
+    pendingPairings: parsed.pendingPairings ?? {},
+    bindings: parsed.bindings ?? {},
+    channelBindings: parsed.channelBindings ?? {},
+    activeChannelSelections: parsed.activeChannelSelections ?? {},
+    trustedRelayUsers: parsed.trustedRelayUsers ?? {},
+    lifecycleNotifications: parsed.lifecycleNotifications ?? {},
+  };
+}
+
 export type PendingPairingInspection =
   | { status: "active"; pairing: PendingPairingRecord }
   | { status: "missing" | "wrong-channel" | "consumed" | "expired"; pairing?: PendingPairingRecord };
@@ -34,22 +47,16 @@ export class TunnelStateStore {
 
   async load(): Promise<TunnelStoreData> {
     await ensureStateDir(this.stateDir);
-    return this.loadExistingSync();
+    try {
+      return parseStoreData(await readFile(this.filePath, "utf8"));
+    } catch {
+      return emptyStore();
+    }
   }
 
   private loadExistingSync(): TunnelStoreData {
     try {
-      const raw = readFileSync(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<TunnelStoreData>;
-      return {
-        setup: parsed.setup,
-        pendingPairings: parsed.pendingPairings ?? {},
-        bindings: parsed.bindings ?? {},
-        channelBindings: parsed.channelBindings ?? {},
-        activeChannelSelections: parsed.activeChannelSelections ?? {},
-        trustedRelayUsers: parsed.trustedRelayUsers ?? {},
-        lifecycleNotifications: parsed.lifecycleNotifications ?? {},
-      };
+      return parseStoreData(readFileSync(this.filePath, "utf8"));
     } catch {
       return emptyStore();
     }

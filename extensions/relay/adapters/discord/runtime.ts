@@ -944,9 +944,10 @@ export class DiscordRuntime {
     const current = this.typingStates.get(sessionKey);
     const route = this.routes.get(sessionKey);
     const raw = this.store.getChannelBindingRecordBySessionKeySync(DISCORD_CHANNEL, sessionKey, this.instanceId);
+    const expected = current ? { instanceId: this.instanceId, conversationId: current.address.conversationId, userId: current.address.userId, includePaused: true } : { instanceId: this.instanceId, includePaused: true };
     const binding = raw?.status === "revoked"
       ? undefined
-      : this.store.getActiveChannelBindingForSessionSync(DISCORD_CHANNEL, sessionKey, { instanceId: this.instanceId, includePaused: true }) ?? (!raw ? this.recentBindingBySessionKey.get(sessionKey) : undefined);
+      : this.store.getActiveChannelBindingForSessionSync(DISCORD_CHANNEL, sessionKey, expected) ?? (!raw && current ? matchingRecentBinding(this.recentBindingBySessionKey.get(sessionKey), current.address) : undefined);
     if (!current || !route || !binding || binding.paused || isTerminalStatus(route.notification.lastStatus)) {
       this.stopTypingActivity(sessionKey);
       return;
@@ -1085,6 +1086,10 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
 
 function bindingAddress(binding: ChannelBinding): ChannelRouteAddress {
   return { channel: DISCORD_CHANNEL, conversationId: binding.conversationId, userId: binding.userId };
+}
+
+function matchingRecentBinding(binding: ChannelBinding | undefined, address: ChannelRouteAddress): ChannelBinding | undefined {
+  return binding?.conversationId === address.conversationId && binding.userId === address.userId ? binding : undefined;
 }
 
 function channelAlias(binding: ChannelBinding): string | undefined {
