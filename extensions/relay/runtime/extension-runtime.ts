@@ -525,7 +525,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       sessionFile,
       sessionId,
     });
-    return {
+    const route: SessionRoute = {
       sessionKey: sessionKeyOf(sessionId, sessionFile),
       sessionId,
       sessionFile,
@@ -537,12 +537,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         context: ctx,
         getModel: () => latestContext?.model,
         sendUserMessage: (text, options) => {
-          if (currentRoute?.remoteRequester) currentRoute.remoteRequesterPendingTurn = true;
+          if (route.remoteRequester) route.remoteRequesterPendingTurn = true;
           pi.sendUserMessage(text, options);
         },
         getLatestImages: getLatestImagesForTelegram,
         getImageByPath: async (relativePath) => {
-          const turnId = currentRoute?.notification.lastTurnId ?? createTurnId();
+          const turnId = route.notification.lastTurnId ?? createTurnId();
           return loadImagePathForTelegram(latestContext ?? ctx, relativePath, turnId, 0);
         },
         appendAudit,
@@ -555,7 +555,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         },
         refreshLocalStatus: () => refreshRelayStatusesSoon(latestContext ?? ctx),
         persistBinding,
-        promptLocalConfirmation: async (identity) => promptPairingApproval(latestContext ?? ctx, identity, currentRoute?.sessionLabel ?? sessionLabel),
+        promptLocalConfirmation: async (identity) => promptPairingApproval(latestContext ?? ctx, identity, route.sessionLabel),
         abort: () => latestContext?.abort(),
         compact: () =>
           new Promise<void>((resolve, reject) => {
@@ -570,6 +570,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           }),
       },
     };
+    return route;
   }
 
   async function publishRouteState(): Promise<void> {

@@ -1663,6 +1663,44 @@ describe("PiRelay integration behavior", () => {
     expect(fakeSlackRuntime.sendFileToRequester).toHaveBeenCalledTimes(1);
   });
 
+  it("marks requester turns on the route instance that delivered the prompt", async () => {
+    const config = await createRuntimeConfig("pi-route-instance-pending-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const registeredRoutes: SessionRoute[] = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route: SessionRoute) => { registeredRoutes.push(route); }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const first = createMockContext("route-instance-first").context;
+    const second = createMockContext("route-instance-second").context;
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", {}, first);
+    const oldRoute = registeredRoutes.at(-1)!;
+    await pi.emit("session_start", {}, second);
+    const newRoute = registeredRoutes.at(-1)!;
+    oldRoute.remoteRequester = { channel: "telegram", instanceId: "default", conversationId: "1", userId: "1", sessionKey: oldRoute.sessionKey, safeLabel: "Telegram old", createdAt: Date.now() };
+    newRoute.remoteRequester = { channel: "telegram", instanceId: "default", conversationId: "2", userId: "2", sessionKey: newRoute.sessionKey, safeLabel: "Telegram new", createdAt: Date.now() };
+
+    oldRoute.actions.sendUserMessage("from old route");
+
+    expect(oldRoute.remoteRequesterPendingTurn).toBe(true);
+    expect(newRoute.remoteRequesterPendingTurn).toBeUndefined();
+  });
+
   it("rejects oversized local Telegram send-file documents before delivery", async () => {
     const config = await createRuntimeConfig("pi-local-file-telegram-large-");
     const root = await mkdtemp(join(tmpdir(), "pirelay-local-file-telegram-large-workspace-"));
