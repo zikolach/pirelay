@@ -832,12 +832,16 @@ function clearAllProgressStates() {
   progressStates.clear();
 }
 
-function clearProgressState(route) {
-  const key = getProgressKey(route);
-  if (!key) return;
+function clearProgressStateByKey(key) {
   const state = progressStates.get(key);
   if (state?.timer) clearTimeout(state.timer);
   progressStates.delete(key);
+}
+
+function clearProgressState(route) {
+  const key = getProgressKey(route);
+  if (!key) return;
+  clearProgressStateByKey(key);
 }
 
 function syncProgressDelivery(route) {
@@ -875,8 +879,7 @@ async function flushProgress(sessionKey, chatId, key) {
   const route = routes.get(sessionKey);
   const binding = await activeBindingForRoute(route, { includePaused: true });
   if (!route || !binding || binding.chatId !== chatId || binding.paused || route.notification?.lastStatus !== 'running') {
-    if (route) clearProgressState(route);
-    else progressStates.delete(key);
+    clearProgressStateByKey(key);
     return;
   }
   route.binding = binding;
