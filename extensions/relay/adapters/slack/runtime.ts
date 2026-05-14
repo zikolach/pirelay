@@ -145,10 +145,9 @@ export class SlackRuntime {
   }
 
   private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
-    const stored = await this.store.getActiveChannelBindingForSession(SLACK_CHANNEL, route.sessionKey, { instanceId: this.instanceId, includePaused: options.includePaused });
-    if (stored) return stored;
     const raw = await this.store.getChannelBindingRecordBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId);
     if (raw) {
+      if (raw.status !== "revoked" && (options.includePaused || !raw.paused)) return raw;
       this.ownedBindingSessionKeys.delete(route.sessionKey);
       this.recentBindingBySessionKey.delete(route.sessionKey);
       return undefined;

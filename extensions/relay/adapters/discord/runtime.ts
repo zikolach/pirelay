@@ -112,10 +112,9 @@ export class DiscordRuntime {
   }
 
   private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
-    const stored = await this.store.getActiveChannelBindingForSession(DISCORD_CHANNEL, route.sessionKey, { instanceId: this.instanceId, includePaused: options.includePaused });
-    if (stored) return stored;
     const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId);
     if (raw) {
+      if (raw.status !== "revoked" && (options.includePaused || !raw.paused)) return raw;
       this.recentBindingBySessionKey.delete(route.sessionKey);
       return undefined;
     }
@@ -827,13 +826,16 @@ export class DiscordRuntime {
   }
 
   private async discordBindingsForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord[]> {
-    const persisted = Object.values((await this.store.load()).channelBindings)
+    const channelBindings = Object.values((await this.store.load()).channelBindings);
+    const persisted = channelBindings
       .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
+    const persistedSessionKeys = new Set(channelBindings
+      .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId)
+      .map((binding) => binding.sessionKey));
     const recent: ChannelPersistedBindingRecord[] = [];
     for (const binding of this.recentBindingBySessionKey.values()) {
       if (binding.channel !== DISCORD_CHANNEL || (binding.instanceId ?? "default") !== this.instanceId || binding.userId !== message.sender.userId || binding.status === "revoked") continue;
-      const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, binding.sessionKey, this.instanceId);
-      if (raw) continue;
+      if (persistedSessionKeys.has(binding.sessionKey)) continue;
       recent.push(binding);
     }
     const bindings = [...new Map([...persisted, ...recent].map((binding) => [binding.sessionKey, binding])).values()];
