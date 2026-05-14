@@ -813,12 +813,51 @@ describe("DiscordRuntime", () => {
 
     session.notification.lastStatus = "running";
     await vi.advanceTimersByTimeAsync(7_000);
-    expect(ops.typing).toEqual(["dm1", "dm1"]);
+    await vi.waitFor(() => expect(ops.typing).toEqual(["dm1", "dm1"]));
 
     session.notification.lastAssistantText = "done";
     await runtime.notifyTurnCompleted(session, "completed");
     await vi.advanceTimersByTimeAsync(14_000);
     expect(ops.typing).toEqual(["dm1", "dm1"]);
+  });
+
+  it("stops Discord typing refresh when the active binding moves conversations", async () => {
+    vi.useFakeTimers();
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session } = route();
+    session.notification.lastStatus = "running";
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("relay followup keep typing"));
+    expect(ops.typing).toEqual(["dm1"]);
+
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm2",
+      userId: "u2",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    await vi.advanceTimersByTimeAsync(14_000);
+
+    expect(ops.typing).toEqual(["dm1"]);
   });
 
   it("stops Discord typing refresh on pause, disconnect, route unregister, and runtime stop", async () => {
@@ -844,7 +883,7 @@ describe("DiscordRuntime", () => {
 
     await ops.handler?.(discordMessage("relay followup keep typing"));
     await vi.advanceTimersByTimeAsync(7_000);
-    expect(ops.typing).toEqual(["dm1", "dm1"]);
+    await vi.waitFor(() => expect(ops.typing).toEqual(["dm1", "dm1"]));
 
     await ops.handler?.(discordMessage("relay pause"));
     await vi.advanceTimersByTimeAsync(14_000);
@@ -960,7 +999,7 @@ describe("DiscordRuntime", () => {
     expect(ops.messages.at(-1)).toMatchObject({ channelId: "dm1", content: expect.stringContaining("The answer is ready") });
   });
 
-  it("uses the recently active Discord binding for completion fan-out if persisted lookup misses", async () => {
+  it("suppresses Discord completion fan-out after persisted revocation", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
     const runtime = new DiscordRuntime(cfg, { operations: ops });
@@ -986,10 +1025,10 @@ describe("DiscordRuntime", () => {
     await runtime.notifyTurnCompleted(session, "completed");
 
     expect(ops.messages.some((message) => message.content.includes("Prompt delivered to Pi."))).toBe(true);
-    expect(ops.messages.at(-1)).toMatchObject({ channelId: "dm1", content: expect.stringContaining("Completion after Discord prompt") });
+    expect(ops.messages.some((message) => message.content.includes("Completion after Discord prompt"))).toBe(false);
   });
 
-  it("keeps accepting a recently active Discord chat if persisted state is overwritten", async () => {
+  it("does not keep accepting a recently active Discord chat after persisted revocation", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
     const runtime = new DiscordRuntime(cfg, { operations: ops });
@@ -1012,9 +1051,8 @@ describe("DiscordRuntime", () => {
     await store.revokeChannelBinding("discord", session.sessionKey);
     await ops.handler?.(discordMessage("second discord prompt"));
 
-    expect(sendUserMessage.mock.calls.map(([content]) => content)).toEqual(["first discord prompt", "second discord prompt"]);
-    expect(ops.messages.at(-1)?.content).toContain("Prompt delivered to Pi.");
-    expect(ops.messages.at(-1)?.content).not.toContain("not paired");
+    expect(sendUserMessage.mock.calls.map(([content]) => content)).toEqual(["first discord prompt"]);
+    expect(ops.messages.at(-1)?.content).toContain("not paired");
   });
 
   it("supports canonical Discord commands without falling through to generic unsupported help", async () => {

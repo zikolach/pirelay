@@ -111,11 +111,22 @@ export class DiscordRuntime {
     if (this.routes.size === 0) await this.stop();
   }
 
+  private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
+    const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId);
+    if (raw) {
+      if (raw.status !== "revoked" && (options.includePaused || !raw.paused)) return raw;
+      this.recentBindingBySessionKey.delete(route.sessionKey);
+      return undefined;
+    }
+    const recent = this.recentBindingBySessionKey.get(route.sessionKey);
+    if (!recent || recent.status === "revoked" || (!options.includePaused && recent.paused)) return undefined;
+    return recent;
+  }
+
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.stopTypingActivity(route.sessionKey);
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId)
-      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding) return;
     const address = bindingAddress(binding);
     if (status === "completed" && route.notification.lastAssistantText) {
@@ -132,8 +143,7 @@ export class DiscordRuntime {
 
   async sendFileToBoundRoute(route: SessionRoute, file: ChannelOutboundFile, options: { kind: "document" | "image"; caption?: string } = { kind: "document" }): Promise<boolean> {
     if (!this.adapter) throw new Error("Discord file delivery is not configured for this instance.");
-    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId)
-      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused) return false;
     const address = bindingAddress(binding);
     if (options.kind === "image") await this.adapter.sendImage(address, file, { caption: options.caption });
@@ -143,7 +153,7 @@ export class DiscordRuntime {
 
   async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId);
+    const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused) return;
     const decision = await this.store.recordLifecycleNotification({
       channel: DISCORD_CHANNEL,
@@ -816,10 +826,18 @@ export class DiscordRuntime {
   }
 
   private async discordBindingsForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord[]> {
-    const persisted = Object.values((await this.store.load()).channelBindings)
+    const channelBindings = Object.values((await this.store.load()).channelBindings);
+    const persisted = channelBindings
       .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
-    const recent = [...this.recentBindingBySessionKey.values()]
-      .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
+    const persistedSessionKeys = new Set(channelBindings
+      .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId)
+      .map((binding) => binding.sessionKey));
+    const recent: ChannelPersistedBindingRecord[] = [];
+    for (const binding of this.recentBindingBySessionKey.values()) {
+      if (binding.channel !== DISCORD_CHANNEL || (binding.instanceId ?? "default") !== this.instanceId || binding.userId !== message.sender.userId || binding.status === "revoked") continue;
+      if (persistedSessionKeys.has(binding.sessionKey)) continue;
+      recent.push(binding);
+    }
     const bindings = [...new Map([...persisted, ...recent].map((binding) => [binding.sessionKey, binding])).values()];
     const exactConversation = bindings.filter((binding) => binding.conversationId === message.conversation.id);
     return exactConversation.length > 0 ? exactConversation : bindings;
@@ -921,16 +939,27 @@ export class DiscordRuntime {
     const state = this.typingStates.get(sessionKey);
     if (!state) return;
     state.timer = setTimeout(() => {
-      const current = this.typingStates.get(sessionKey);
-      const route = this.routes.get(sessionKey);
-      if (!current || !route || isTerminalStatus(route.notification.lastStatus)) {
+      void this.refreshTypingActivity(sessionKey).catch((error: unknown) => {
+        this.lastError = safeDiscordRuntimeError(error);
         this.stopTypingActivity(sessionKey);
-        return;
-      }
-      this.sendActivityBestEffort(current.address);
-      this.scheduleTypingRefresh(sessionKey);
+      });
     }, DISCORD_TYPING_REFRESH_MS);
     unrefTimer(state.timer);
+  }
+
+  private async refreshTypingActivity(sessionKey: string): Promise<void> {
+    const current = this.typingStates.get(sessionKey);
+    const route = this.routes.get(sessionKey);
+    const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, sessionKey, this.instanceId);
+    const binding = raw?.status === "revoked"
+      ? undefined
+      : matchingRecentBinding(raw, current?.address) ?? (!raw ? matchingRecentBinding(this.recentBindingBySessionKey.get(sessionKey), current?.address) : undefined);
+    if (!current || !route || !binding || binding.paused || isTerminalStatus(route.notification.lastStatus)) {
+      this.stopTypingActivity(sessionKey);
+      return;
+    }
+    this.sendActivityBestEffort(bindingAddress(binding));
+    this.scheduleTypingRefresh(sessionKey);
   }
 
   private stopTypingActivity(sessionKey: string): void {
@@ -1063,6 +1092,10 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
 
 function bindingAddress(binding: ChannelBinding): ChannelRouteAddress {
   return { channel: DISCORD_CHANNEL, conversationId: binding.conversationId, userId: binding.userId };
+}
+
+function matchingRecentBinding(binding: ChannelBinding | undefined, address: ChannelRouteAddress | undefined): ChannelBinding | undefined {
+  return binding && address && binding.conversationId === address.conversationId && binding.userId === address.userId ? binding : undefined;
 }
 
 function channelAlias(binding: ChannelBinding): string | undefined {

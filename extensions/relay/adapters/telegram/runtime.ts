@@ -203,8 +203,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   async registerRoute(route: SessionRoute): Promise<void> {
     const previousRoute = this.routes.get(route.sessionKey);
+    if (route.binding) {
+      const active = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true });
+      if (active) route.binding = active;
+      else if (await this.store.getBindingBySessionKey(route.sessionKey)) route.binding = undefined;
+    }
     if (previousRoute?.binding?.chatId !== route.binding?.chatId && previousRoute?.binding) {
       this.clearActivityIndicator(previousRoute);
+      this.clearProgressState(previousRoute);
     }
     if (previousRoute && this.currentTurnId(previousRoute) !== this.currentTurnId(route)) {
       this.clearAnswerStateForRoute(previousRoute);
@@ -244,7 +250,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
-    const binding = this.outputBindingForRoute(route);
+    const binding = await this.activeOutputBindingForRoute(route);
     if (!binding || binding.paused) return;
     const sourcePrefix = this.sourcePrefixForRoute(route);
     await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}${text}`, this.completionActionKeyboardForRoute(route));
@@ -282,6 +288,22 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return sharedRoomDestination
       ? { ...route.binding, chatId: sharedRoomDestination.chatId, userId: sharedRoomDestination.userId }
       : route.binding;
+  }
+
+  private async activeOutputBindingForRoute(route: SessionRoute): Promise<TelegramBindingMetadata | undefined> {
+    const binding = this.outputBindingForRoute(route);
+    if (!binding) return undefined;
+    const baseBinding = route.binding;
+    if (baseBinding && (binding.chatId !== baseBinding.chatId || binding.userId !== baseBinding.userId)) {
+      const activeBase = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: baseBinding.chatId, userId: baseBinding.userId, includePaused: true });
+      if (activeBase) return { ...activeBase, chatId: binding.chatId, userId: binding.userId };
+      const stored = await this.store.getBindingBySessionKey(route.sessionKey);
+      return stored ? undefined : binding;
+    }
+    const active = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: binding.chatId, userId: binding.userId, includePaused: true });
+    if (active) return active;
+    const stored = await this.store.getBindingBySessionKey(route.sessionKey);
+    return stored ? undefined : binding;
   }
 
   private ambiguityKey(sessionKey: string, chatId: number, userId: number, token: string): string {
@@ -469,16 +491,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private scheduleActivityRefresh(sessionKey: string, chatId: number, key: string, delayMs = TELEGRAM_ACTIVITY_REFRESH_MS): void {
-    const timer = setTimeout(() => {
-      void this.refreshActivityIndicator(sessionKey, chatId, key);
-    }, delayMs);
+    const timer = setTimeout(() => this.refreshActivityIndicator(sessionKey, chatId, key), delayMs);
     unrefTimer(timer);
     this.activityIndicators.set(key, timer);
   }
 
   private async refreshActivityIndicator(sessionKey: string, chatId: number, key: string): Promise<void> {
     const route = this.routes.get(sessionKey);
-    if (!route || this.outputBindingForRoute(route)?.chatId !== chatId || !this.shouldContinueActivityIndicator(route)) {
+    const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
+    if (!route || !binding || binding.chatId !== chatId || binding.paused || !this.shouldContinueActivityIndicator(route)) {
       this.clearActivityIndicatorByKey(key);
       return;
     }
@@ -544,9 +565,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const interval = progressIntervalMsFor(mode, this.config);
     const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
     const delay = Math.max(0, interval - elapsed);
-    state.timer = setTimeout(() => {
-      void this.flushProgress(route.sessionKey, binding.chatId, key);
-    }, delay);
+    state.timer = setTimeout(() => this.flushProgress(route.sessionKey, binding.chatId, key), delay);
     unrefTimer(state.timer);
   }
 
@@ -555,7 +574,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!state) return;
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
-    const binding = route ? this.outputBindingForRoute(route) : undefined;
+    const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
     if (!route || !binding || binding.chatId !== chatId || binding.paused || route.notification.lastStatus !== "running") {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);
@@ -614,6 +633,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     if (isTelegramGroupConversation(message.chat.type) && await this.handleTelegramGroupSharedRoomCommand(message, parseTelegramGroupCommandTarget(message.text))) {
+      return;
+    }
+
+    if (command?.command === "sessions") {
+      await this.handleAuthorizedCommand(undefined, message, command.command, command.args);
       return;
     }
 
@@ -1047,7 +1071,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!binding) return false;
     if (binding.userId !== user.id) return false;
     if (this.config.allowUserIds.length > 0 && !this.config.allowUserIds.includes(user.id)) return false;
-    return true;
+    const active = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: binding.chatId, userId: user.id, includePaused: true });
+    if (active) {
+      route.binding = active;
+      return true;
+    }
+    return !(await this.store.getBindingBySessionKey(route.sessionKey));
   }
 
   private acceptedImageFormatsText(): string {
@@ -1237,13 +1266,45 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async handleAuthorizedCommand(
-    route: SessionRoute,
+    route: SessionRoute | undefined,
     message: TelegramInboundMessage,
     command: string,
     args: string,
   ): Promise<void> {
-    const binding = route.binding;
-    if (!binding) {
+    if (command === "help") {
+      await this.api.sendPlainText(message.chat.id, HELP_TEXT);
+      return;
+    }
+    if (command === "sessions") {
+      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+      await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, this.activeSessionByChatUser.get(this.activeSessionKey(message.chat.id, message.user.id)) ?? route?.sessionKey), buildSessionListDashboardKeyboard(entries));
+      return;
+    }
+    if (command === "use") {
+      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+      const result = resolveSessionSelector(entries, args);
+      if (result.kind !== "matched") {
+        await this.api.sendPlainText(message.chat.id, formatSessionSelectorError(result, args));
+        return;
+      }
+      this.activeSessionByChatUser.set(this.activeSessionKey(message.chat.id, message.user.id), result.entry.sessionKey);
+      const selectedRoute = this.routes.get(result.entry.sessionKey);
+      await this.sendTextWithKeyboard(message.chat.id, selectedRoute ? this.statusTextForRoute(selectedRoute, true) : `Active session selected: ${result.entry.sessionLabel}`, selectedRoute ? this.dashboardKeyboardForRoute(selectedRoute) : buildSessionListDashboardKeyboard(entries));
+      return;
+    }
+    if (command === "forget") {
+      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+      const result = resolveSessionSelector(entries, args);
+      if (result.kind !== "offline") {
+        await this.api.sendPlainText(message.chat.id, result.kind === "matched" ? "Use /disconnect for an online active session. /forget only removes offline sessions." : formatSessionSelectorError(result, args));
+        return;
+      }
+      await this.store.revokeBinding(result.entry.sessionKey);
+      await this.api.sendPlainText(message.chat.id, `Forgot offline session ${result.entry.alias || result.entry.sessionLabel}.`);
+      return;
+    }
+    const binding = route?.binding;
+    if (!route || !binding) {
       await this.api.sendPlainText(message.chat.id, "This session is no longer paired.");
       return;
     }
@@ -1254,40 +1315,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     switch (command) {
-      case "help": {
-        await this.api.sendPlainText(message.chat.id, HELP_TEXT);
-        return;
-      }
       case "status": {
         await this.sendTextWithKeyboard(message.chat.id, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
-        return;
-      }
-      case "sessions": {
-        const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
-        await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, this.activeSessionByChatUser.get(this.activeSessionKey(message.chat.id, message.user.id)) ?? route.sessionKey), buildSessionListDashboardKeyboard(entries));
-        return;
-      }
-      case "use": {
-        const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
-        const result = resolveSessionSelector(entries, args);
-        if (result.kind !== "matched") {
-          await this.api.sendPlainText(message.chat.id, formatSessionSelectorError(result, args));
-          return;
-        }
-        this.activeSessionByChatUser.set(this.activeSessionKey(message.chat.id, message.user.id), result.entry.sessionKey);
-        const selectedRoute = this.routes.get(result.entry.sessionKey);
-        await this.sendTextWithKeyboard(message.chat.id, selectedRoute ? this.statusTextForRoute(selectedRoute, true) : `Active session selected: ${result.entry.sessionLabel}`, selectedRoute ? this.dashboardKeyboardForRoute(selectedRoute) : buildSessionListDashboardKeyboard(entries));
-        return;
-      }
-      case "forget": {
-        const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
-        const result = resolveSessionSelector(entries, args);
-        if (result.kind !== "offline") {
-          await this.api.sendPlainText(message.chat.id, result.kind === "matched" ? "Use /disconnect for an online active session. /forget only removes offline sessions." : formatSessionSelectorError(result, args));
-          return;
-        }
-        await this.store.revokeBinding(result.entry.sessionKey);
-        await this.api.sendPlainText(message.chat.id, `Forgot offline session ${result.entry.alias || result.entry.sessionLabel}.`);
         return;
       }
       case "to": {
@@ -1433,6 +1462,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         this.clearAnswerStateForRoute(route);
         this.clearActivityIndicator(route);
         this.clearProgressState(route);
+        this.sharedRoomOutputDestinations.delete(route.sessionKey);
         await this.revokeBinding(route, `Telegram ${getTelegramUserLabel(message.user)} disconnected the tunnel.`);
         route.actions.refreshLocalStatus?.();
         await this.api.sendPlainText(message.chat.id, "Disconnected. Future messages from this chat will be ignored until a new pairing is created.");
@@ -1674,19 +1704,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
     const persisted = (await this.store.getBindingsByChatId(chatId))
       .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
-    return this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId);
+    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId);
   }
 
   private async sessionEntriesForTelegramUser(userId: number): Promise<SessionListEntry[]> {
     const persisted = (await this.store.getTelegramBindingsByUserId(userId))
       .filter((binding) => binding.status !== "revoked");
-    return this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId);
+    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId);
   }
 
-  private sessionEntriesFromBindings(
+  private async sessionEntriesFromBindings(
     persisted: Array<TelegramBindingMetadata & { status?: string }>,
     includeUnpersistedRoute: (route: SessionRoute) => boolean,
-  ): SessionListEntry[] {
+  ): Promise<SessionListEntry[]> {
     const byKey = new Map<string, SessionListEntry>();
     for (const binding of persisted) {
       const route = this.routes.get(binding.sessionKey);
@@ -1719,6 +1749,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     for (const route of this.routes.values()) {
+      const routeBinding = route.binding;
+      const active = routeBinding
+        ? await this.store.getActiveBindingForSession(route.sessionKey, { chatId: routeBinding.chatId, userId: routeBinding.userId, includePaused: true })
+        : undefined;
+      const stored = routeBinding ? await this.store.getBindingBySessionKey(route.sessionKey) : undefined;
+      if (stored && !active) continue;
+      if (active) route.binding = active;
       if (!includeUnpersistedRoute(route) || byKey.has(route.sessionKey)) continue;
       byKey.set(route.sessionKey, {
         sessionKey: route.sessionKey,
@@ -1800,7 +1837,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     this.clearActivityIndicator(route);
     this.clearProgressState(route);
     this.clearAnswerStateForRoute(route);
-    const binding = this.outputBindingForRoute(route);
+    const binding = await this.activeOutputBindingForRoute(route);
     try {
       if (!binding || binding.paused) return;
       const notification = route.notification;

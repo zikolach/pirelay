@@ -234,7 +234,7 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 | `/relay send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]` | send an explicit safe workspace file/artifact to paired messenger chat(s) |
 | `/relay trusted` | list locally trusted relay users |
 | `/relay untrust <messenger> <userId>` | revoke local relay trust |
-| `/relay disconnect` | revoke the active Telegram binding for compatibility |
+| `/relay disconnect` | locally disconnect the current Pi session from all paired messenger bindings |
 
 ## Remote messenger commands
 
@@ -264,6 +264,8 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 | disconnect binding | `/disconnect` | `relay disconnect` | `pirelay disconnect` |
 
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
+
+Remote `/disconnect` is scoped to the requesting chat/conversation only: it revokes that Telegram, Discord, or Slack binding and suppresses future session output/buttons there, without disconnecting other messengers that remain paired to the same Pi session. Local `/relay disconnect` is broader and disconnects the current session from all paired messenger bindings.
 
 Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
 
