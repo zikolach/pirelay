@@ -2,6 +2,7 @@ import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { StructuredAnswerMetadata } from "./guided-answer.js";
 import type { ChannelBinding } from "./channel-adapter.js";
+import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
 import type { RelayLifecycleNotificationRecord } from "../notifications/lifecycle.js";
 
 export type DeliveryMode = "followUp" | "steer";
@@ -286,6 +287,7 @@ export interface SessionRoute {
   actions: SessionRouteActions;
   notification: SessionNotificationState;
   lastActivityAt?: number;
+  remoteRequester?: RelayFileDeliveryRequester;
 }
 
 export interface SessionStatusSnapshot {

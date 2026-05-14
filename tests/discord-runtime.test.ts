@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1021,7 +1021,11 @@ describe("DiscordRuntime", () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
     const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const root = await mkdtemp(join(tmpdir(), "pirelay-discord-remote-file-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "report.md"), "# Report\n");
     const { route: session, sendUserMessage } = route();
+    (session.actions.context as { cwd: string }).cwd = root;
     session.sessionKey = "session-id:/Users/example/.pi/agent/sessions/raw.jsonl";
     session.sessionFile = "/Users/example/.pi/agent/sessions/raw.jsonl";
     session.notification.lastAssistantText = "Full assistant output from Pi.";
@@ -1048,7 +1052,7 @@ describe("DiscordRuntime", () => {
       identity: { displayName: "zikolach" },
     });
 
-    for (const command of ["relay help", "relay status", "relay sessions", "relay full", "relay summary", "relay recent", "relay progress", "relay alias phone", "relay progress verbose", "relay images", "relay send-image outputs/render.png", "relay steer go", "relay followup next", "relay to phone one shot", "relay use phone", "relay forget missing", "relay abort", "relay compact", "relay pause", "relay resume", "relay disconnect"] as const) {
+    for (const command of ["relay help", "relay status", "relay sessions", "relay full", "relay summary", "relay recent", "relay progress", "relay alias phone", "relay progress verbose", "relay images", "relay send-image outputs/render.png", "relay send-file report.md Report", "relay steer go", "relay followup next", "relay to phone one shot", "relay use phone", "relay forget missing", "relay abort", "relay compact", "relay pause", "relay resume", "relay disconnect"] as const) {
       await ops.handler?.(discordMessage(command));
     }
 
@@ -1070,7 +1074,8 @@ describe("DiscordRuntime", () => {
     expect(sendUserMessage).toHaveBeenCalledWith("go", undefined);
     expect(sendUserMessage).toHaveBeenCalledWith("next", undefined);
     expect(sendUserMessage).toHaveBeenCalledWith("one shot", undefined);
-    expect(ops.files.map((file) => file.fileName)).toEqual(["render.png", "render-path.png"]);
+    expect(ops.files.map((file) => file.fileName)).toEqual(["render.png", "render-path.png", "report.md"]);
+    expect(ops.files.at(-1)).toMatchObject({ caption: "Report", mimeType: "text/markdown" });
   });
 
   it("renders Discord session lists through the same formatter as Telegram, including color markers", async () => {

@@ -679,6 +679,7 @@ async function deliverAnswerInjection(route, message, text) {
     text,
     deliverAs,
     auditMessage: `Telegram ${getUserLabel(message.user)} answered a guided Telegram question flow.`,
+    requester: requesterForMessage(route, message),
   });
 }
 
@@ -1131,6 +1132,29 @@ function hasImageAttachments(message) {
   return messageImages(message).length > 0;
 }
 
+function requesterForMessage(route, message) {
+  return {
+    channel: 'telegram',
+    instanceId: 'default',
+    conversationId: String(message.chat.id),
+    userId: String(message.user.id),
+    sessionKey: route.sessionKey,
+    safeLabel: `Telegram ${getUserLabel(message.user)}`,
+    messageId: String(message.messageId || ''),
+    conversationKind: message.chat.type,
+    createdAt: Date.now(),
+  };
+}
+
+function parseSendFileArgs(args) {
+  const parts = String(args || '').trim().split(/\s+/).filter(Boolean);
+  const relativePath = parts[0];
+  if (!relativePath) return undefined;
+  const maybeTarget = relativePath.toLowerCase();
+  if (maybeTarget === 'all' || maybeTarget === 'telegram' || maybeTarget === 'discord' || maybeTarget === 'slack' || /^(telegram|discord|slack):/.test(maybeTarget)) return undefined;
+  return { relativePath, caption: parts.slice(1).join(' ').trim() || undefined };
+}
+
 function promptTextForMessage(message, fallback) {
   const text = String(message.text || '').trim();
   if (text) return text;
@@ -1172,6 +1196,7 @@ async function deliverAuthorizedPrompt(message, route, text, { deliverAs, auditM
     ...payload,
     deliverAs,
     auditMessage,
+    requester: requesterForMessage(route, message),
   });
   if (busyAck) {
     await sendPlainText(message.chat.id, busyAck);
@@ -1404,6 +1429,21 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'images': {
       await sendLatestImages(message, route);
+      return;
+    }
+    case 'send-file':
+    case 'sendfile': {
+      const request = parseSendFileArgs(args);
+      if (!request) {
+        await sendPlainText(message.chat.id, 'Usage: /send-file <relative-path> [caption]');
+        return;
+      }
+      const result = await requestClient(route, 'sendRequesterFile', {
+        requester: requesterForMessage(route, message),
+        relativePath: request.relativePath,
+        caption: request.caption,
+      });
+      if (typeof result === 'string' && !result.startsWith('Delivered ')) await sendPlainText(message.chat.id, result);
       return;
     }
     case 'send-image':

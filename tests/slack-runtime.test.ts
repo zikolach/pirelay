@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -663,10 +663,14 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("Running tests");
   });
 
-  it("uploads latest and explicit Slack images", async () => {
+  it("uploads latest, explicit images, and requester-scoped Slack files", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
+    const root = await mkdtemp(join(tmpdir(), "pirelay-slack-remote-file-"));
+    tempDirs.push(root);
+    await writeFile(join(root, "report.md"), "# Report\n");
     const testRoute = route();
+    (testRoute.actions.context as { cwd: string }).cwd = root;
     testRoute.actions.getLatestImages = vi.fn(async () => [
       { id: "img-1", turnId: "turn-1", fileName: "latest.png", mimeType: "image/png", data: Buffer.from([1, 2]).toString("base64"), byteSize: 2 },
     ]);
@@ -680,9 +684,14 @@ describe("SlackRuntime foundations", () => {
 
     await send("pirelay images", "55", "thread-55");
     await send("pirelay send-image outputs/path.png", "56");
+    await send("pirelay send-file report.md Report", "56.5", "thread-56");
+    const assistantResult = await runtime.sendFileToRequester(testRoute, testRoute.remoteRequester!, "report.md", "Tool report");
 
+    expect(assistantResult).toContain("Delivered report.md");
     expect(operations.uploads).toContainEqual(expect.objectContaining({ channel: "D1", fileName: "latest.png", mimeType: "image/png", caption: "Latest Pi image output", threadTs: "thread-55" }));
     expect(operations.uploads).toContainEqual(expect.objectContaining({ channel: "D1", fileName: "path.png", mimeType: "image/png", caption: "Pi image file" }));
+    expect(operations.uploads).toContainEqual(expect.objectContaining({ channel: "D1", fileName: "report.md", mimeType: "text/markdown", caption: "Report", threadTs: "thread-56" }));
+    expect(operations.uploads).toContainEqual(expect.objectContaining({ channel: "D1", fileName: "report.md", mimeType: "text/markdown", caption: "Tool report", threadTs: "thread-56" }));
     expect(testRoute.actions.getImageByPath).toHaveBeenCalledWith("outputs/path.png");
   });
 

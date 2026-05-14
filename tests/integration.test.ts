@@ -277,6 +277,7 @@ function integrationDiscordMessage(content: string, options: { id?: string; user
 
 function createMockPi() {
   const commands = new Map<string, { handler: (args: string, ctx: any) => void | Promise<void> }>();
+  const tools = new Map<string, { execute: (toolCallId: string, params: any) => Promise<any> | any }>();
   const handlers = new Map<string, Array<(event: any, ctx: any) => void | Promise<void>>>();
   const injectedMessages: Array<{ text: string; options?: { deliverAs?: "followUp" | "steer" } }> = [];
   const localPrompts: string[] = [];
@@ -287,6 +288,9 @@ function createMockPi() {
   const api = {
     registerCommand: vi.fn((name: string, definition: { handler: (args: string, ctx: any) => void | Promise<void> }) => {
       commands.set(name, definition);
+    }),
+    registerTool: vi.fn((definition: { name: string; execute: (toolCallId: string, params: any) => Promise<any> | any }) => {
+      tools.set(definition.name, definition);
     }),
     registerMessageRenderer: vi.fn(),
     on: vi.fn((event: string, handler: (payload: any, ctx: any) => void | Promise<void>) => {
@@ -313,6 +317,7 @@ function createMockPi() {
   return {
     api,
     commands,
+    tools,
     injectedMessages,
     localPrompts,
     sentMessages,
@@ -340,7 +345,6 @@ describe("PiRelay integration behavior", () => {
     const config = await createRuntimeConfig("pi-telegram-relay-alias-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
     vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
-
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
       start: vi.fn(async () => undefined),
@@ -1539,7 +1543,7 @@ describe("PiRelay integration behavior", () => {
         },
       },
     }));
-    vi.stubEnv("PI_RELAY_CONFIG", config.configPath);
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath!);
 
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
@@ -1583,6 +1587,73 @@ describe("PiRelay integration behavior", () => {
 
     expect(sentFiles).toEqual([{ fileName: "proposal.md", mimeType: "text/markdown", caption: "OpenSpec proposal", kind: "document" }]);
     expect(notifications.at(-1)?.message).toContain("Delivered: Slack:work");
+  });
+
+  it("registers relay_send_file and scopes assistant delivery to the current remote requester", async () => {
+    const config = await createRuntimeConfig("pi-assistant-send-file-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    await writeFile(config.configPath!, JSON.stringify({
+      stateDir: config.stateDir,
+      telegram: { botToken: config.botToken },
+      slack: { enabled: true, botToken: "xoxb-test", signingSecret: "signing", appToken: "xapp-test", eventMode: "socket" },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", config.configPath!);
+    let capturedRoute: SessionRoute | undefined;
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route: SessionRoute) => { capturedRoute = route; }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const fakeSlackRuntime = {
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: true })),
+      sendFileToRequester: vi.fn(async () => "Delivered report.md to Slack U1 as report.md (9 bytes)."),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: () => fakeSlackRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("assistant-send-file");
+    relayExtension(pi.api as any);
+    const tool = pi.tools.get("relay_send_file");
+    expect(tool).toBeDefined();
+
+    const noContext = await tool!.execute("tool-1", { relativePath: "report.md" });
+    expect(noContext.content[0].text).toContain("no active Pi session route");
+
+    await pi.emit("session_start", {}, context);
+    expect(capturedRoute).toBeDefined();
+    const localOnly = await tool!.execute("tool-local", { relativePath: "report.md" });
+    expect(localOnly.content[0].text).toContain("No authorized remote requester");
+    capturedRoute!.remoteRequester = {
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U1",
+      sessionKey: capturedRoute!.sessionKey,
+      safeLabel: "Slack U1",
+      threadId: "thread-1",
+      createdAt: Date.now(),
+    };
+
+    const delivered = await tool!.execute("tool-2", { relativePath: "report.md", caption: "Report" });
+    expect(delivered.content[0].text).toContain("Delivered report.md");
+    expect(fakeSlackRuntime.sendFileToRequester).toHaveBeenCalledWith(capturedRoute, capturedRoute!.remoteRequester, "report.md", "Report");
   });
 
   it("rejects oversized local Telegram send-file documents before delivery", async () => {

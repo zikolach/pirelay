@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ImageContent } from "@mariozechner/pi-ai";
+import { Type, type ImageContent } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { loadTelegramTunnelConfig, ConfigError } from "../config/tunnel-config.js";
@@ -22,6 +22,7 @@ import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfi
 import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
 import { parseMessengerRef } from "../core/messenger-ref.js";
+import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult } from "../core/requester-file-delivery.js";
 import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
@@ -1187,6 +1188,42 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return await slack.sendFileToBoundRoute(currentRoute, file, { kind, caption }) ? "delivered" : "skipped";
   }
 
+  async function deliverAssistantRequestedFile(relativePath: string, caption?: string): Promise<string> {
+    const ctx = latestContext;
+    if (!ctx || !currentRoute) return "Relay file delivery is unavailable because no active Pi session route is registered.";
+    const requester = currentRoute.remoteRequester;
+    if (!requester) return "No authorized remote requester is available for this turn. Ask for the file from the paired messenger conversation, or run /relay send-file locally.";
+    const config = await ensureConfig(ctx, true);
+    if (requester.channel === "telegram") {
+      const adapter = new TelegramChannelAdapter(config);
+      const result = await deliverWorkspaceFileToRequester({
+        route: currentRoute,
+        requester,
+        adapter,
+        workspaceRoot: ctx.cwd,
+        relativePath,
+        caption,
+        source: "assistant-tool",
+        maxDocumentBytes: DEFAULT_TELEGRAM_LOCAL_DOCUMENT_MAX_BYTES,
+        maxImageBytes: config.maxOutboundImageBytes,
+        allowedImageMimeTypes: config.allowedImageMimeTypes,
+      });
+      currentRoute.actions.appendAudit(`relay_send_file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
+      return formatRequesterFileDeliveryResult(result);
+    }
+    if (requester.channel === "discord") {
+      const runtime = await ensureDiscordRuntime(ctx, true, requester.instanceId);
+      if (!runtime) return "Discord file delivery is not configured for this instance.";
+      return await runtime.sendFileToRequester(currentRoute, requester, relativePath, caption);
+    }
+    if (requester.channel === "slack") {
+      const runtime = await ensureSlackRuntime(ctx, true, requester.instanceId);
+      if (!runtime) return "Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and retry.";
+      return await runtime.sendFileToRequester(currentRoute, requester, relativePath, caption);
+    }
+    return `Relay file delivery is not supported for ${requester.channel}.`;
+  }
+
   async function handleSendFile(ctx: ExtensionContext, targetRef: string | undefined, relativePath: string | undefined, caption?: string): Promise<void> {
     if (!targetRef || !relativePath) {
       ctx.ui.notify("Usage: /relay send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]", "warning");
@@ -1345,6 +1382,29 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   pi.registerCommand("relay", createLocalRelayCommand("Manage relay pairing and remote control for the current Pi session"));
+
+  pi.registerTool?.({
+    name: "relay_send_file",
+    label: "Relay Send File",
+    description: "Send a safe workspace-relative file to the authorized remote messenger requester for the current PiRelay turn.",
+    promptSnippet: "Send validated workspace files to the current authorized PiRelay remote requester",
+    promptGuidelines: [
+      "Use relay_send_file when an authorized remote Telegram, Discord, or Slack user asks you to send a workspace file or artifact as a messenger attachment.",
+      "Do not use relay_send_file for local-only turns; ask the local user to run /relay send-file instead.",
+      "relay_send_file only accepts workspace-relative paths and cannot send hidden, traversal, unsupported, or oversized files.",
+    ],
+    parameters: Type.Object({
+      relativePath: Type.String({ description: "Workspace-relative file path to send." }),
+      caption: Type.Optional(Type.String({ description: "Optional caption to include with the file." })),
+    }),
+    async execute(_toolCallId, params: { relativePath: string; caption?: string }) {
+      const text = await deliverAssistantRequestedFile(params.relativePath, params.caption);
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { ok: text.startsWith("Delivered "), relativePath: params.relativePath },
+      };
+    },
+  });
 
   pi.registerMessageRenderer(AUDIT_MESSAGE_TYPE, (message, _options, theme) => ({
     render(width: number) {
