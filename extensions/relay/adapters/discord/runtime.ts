@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { routeIdleState, routeIsBusy, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -22,6 +22,12 @@ const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
 const DISCORD_TYPING_REFRESH_MS = 7_000;
 const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
 const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
+function discordRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
+  const idle = routeIdleState(route);
+  if (idle === undefined) return { online: false, busy: false };
+  return { online: true, busy: !idle };
+}
+
 const DISCORD_HELP_TEXT = buildHelpText({
   title: "PiRelay Discord commands:",
   commandPrefix: "relay",
@@ -821,17 +827,17 @@ export class DiscordRuntime {
     for (const binding of bindings) {
       const route = this.routes.get(binding.sessionKey);
       if (route) {
-        const busy = routeIsBusy(route);
+        const availability = discordRouteAvailability(route);
         byKey.set(binding.sessionKey, {
           sessionKey: route.sessionKey,
           sessionId: route.sessionId,
           sessionFile: route.sessionFile,
           sessionLabel: route.sessionLabel,
           alias: channelAlias(binding),
-          online: true,
-          busy,
+          online: availability.online,
+          busy: availability.busy,
           paused: Boolean(binding.paused),
-          modelId: statusSnapshotForRoute(route, { online: true, busy }).modelId,
+          modelId: statusSnapshotForRoute(route, availability).modelId,
           lastActivityAt: route.lastActivityAt,
         });
         continue;
@@ -882,10 +888,10 @@ export class DiscordRuntime {
   }
 
   private statusTextForRoute(route: SessionRoute, binding: ChannelPersistedBindingRecord, online: boolean): string {
-    const busy = routeIsBusy(route);
+    const availability = discordRouteAvailability(route);
     return formatRelayStatusForRoute(route, {
-      online,
-      busy,
+      online: online && availability.online,
+      busy: online && availability.busy,
       binding,
       progressMode: channelProgressMode(binding) ?? this.config.progressMode,
       includeLastStatus: true,

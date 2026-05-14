@@ -1116,6 +1116,32 @@ describe("DiscordRuntime", () => {
     expect(ops.files.at(-1)).toMatchObject({ caption: "Report", mimeType: "text/markdown" });
   });
 
+  it("marks unavailable Discord routes offline in session lists", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const first = route().route;
+    first.actions.isIdle = () => undefined;
+    await runtime.registerRoute(first);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: first.sessionKey,
+      sessionId: first.sessionId,
+      sessionLabel: first.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("relay sessions"));
+
+    expect(ops.messages.at(-1)?.content).toContain("offline");
+    expect(ops.messages.at(-1)?.content).not.toContain("busy");
+  });
+
   it("renders Discord session lists through the same formatter as Telegram, including color markers", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
