@@ -72,7 +72,7 @@ Discord:  relay send-file <relative-path> [caption]
 Slack:    pirelay send-file <relative-path> [caption]
 ```
 
-The command sends only to the authorized conversation/thread that issued the request and the selected route for that identity. `/to <session>` can remain the way to select another session before requesting, but remote `send-file` should not accept raw chat ids or cross-messenger target refs.
+The command sends only to the authorized conversation/thread that issued the request and the selected route for that identity. Use `/use <session>` or the equivalent platform command to switch the active session before requesting a file; `/to <session> <prompt>` remains a one-shot prompt mechanism and does not change which workspace a later `send-file` request uses. Remote `send-file` should not accept raw chat ids or cross-messenger target refs.
 
 Alternative considered: mirror local `/relay send-file <target> <path>` remotely. That would be surprising and dangerous because a remote user could try to fan out files to other messengers. Requester-scoped delivery is safer and matches “send me this file”.
 

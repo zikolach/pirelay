@@ -4,7 +4,7 @@
 PiRelay SHALL allow authorized paired messenger users to request bounded safe workspace-relative files through the generic file-delivery capability, while still refusing arbitrary local filesystem access and unsafe paths.
 
 #### Scenario: Authorized remote user sends safe send-file command
-- **WHEN** an authorized Telegram, Discord, Slack, or future messenger user sends `/send-file docs/report.md`, `relay send-file docs/report.md`, `pirelay send-file docs/report.md`, or an equivalent remote file request for a supported file inside the current workspace
+- **WHEN** an authorized Telegram, Discord, Slack, or future messenger user sends `/send-file docs/report.md`, `relay send-file docs/report.md`, `pirelay send-file docs/report.md`, or an equivalent remote file request for a supported file inside the selected session's workspace
 - **THEN** PiRelay validates the selected route, requester binding, file path, type, and size before reading or uploading the file
 - **AND** sends the file only to the requesting bound conversation or thread through the active messenger adapter
 

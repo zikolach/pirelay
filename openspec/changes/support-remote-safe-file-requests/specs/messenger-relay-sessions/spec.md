@@ -13,7 +13,7 @@ The system SHALL preserve non-secret requester context for authorized remote pro
 - **THEN** PiRelay resolves the selected session using the same active-selection and `/use` rules as other remote controls
 - **AND** delivers the file request only if the selected session is online and unambiguous
 
-#### Scenario: One-shot session selection is respected before file request
+#### Scenario: Active session selection is respected before file request
 - **WHEN** an authorized remote user changes the active session with `/use <session>` or an equivalent command and then requests a file
 - **THEN** PiRelay applies the file request to the selected session's workspace and route
 - **AND** does not read files from another paired session with a similar label
