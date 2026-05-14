@@ -45,4 +45,12 @@ describe("relay core route helpers", () => {
       modelId: "test/model-with-image",
     });
   });
+
+  it("marks unavailable routes offline when busy is not supplied", () => {
+    const unavailable = route();
+    unavailable.actions.isIdle = () => undefined;
+
+    expect(statusSnapshotForRoute(unavailable, { online: true })).toMatchObject({ online: false, busy: false });
+    expect(relayRouteStateForRoute(unavailable, { channel: "telegram" })).toMatchObject({ busy: false });
+  });
 });

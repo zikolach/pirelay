@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { routeIdleState, routeIsBusy, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
@@ -23,6 +23,12 @@ const SLACK_HELP_TEXT = buildHelpText({
   footerLines: ["", "Tip: do not prefix commands with `/` in Slack; Slack treats leading slash text as slash commands for apps."],
 });
 const SLACK_THINKING_REACTION = "thinking_face";
+
+function slackRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
+  const idle = routeIdleState(route);
+  if (idle === undefined) return { online: false, busy: false };
+  return { online: true, busy: !idle };
+}
 
 export interface SlackRuntimeOptions {
   operations?: SlackApiOperations;
@@ -495,9 +501,11 @@ export class SlackRuntime {
       case "help":
         await this.sendText(message, SLACK_HELP_TEXT);
         return;
-      case "status":
-        await this.sendText(message, formatRelayStatusForRoute(route, { online: true, busy: routeIsBusy(route), binding }));
+      case "status": {
+        const availability = slackRouteAvailability(route);
+        await this.sendText(message, formatRelayStatusForRoute(route, { online: availability.online, busy: availability.busy, binding }));
         return;
+      }
       case "sessions":
         await this.sendText(message, formatSessionList(await this.sessionEntriesForMessage(message), await this.activeSelectionForMessage(message)));
         return;
@@ -605,7 +613,15 @@ export class SlackRuntime {
           await this.sendText(message, unavailableRouteMessage());
           return;
         }
-        route.actions.abort();
+        try {
+          route.actions.abort();
+        } catch (error) {
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.sendText(message, error.message);
+            return;
+          }
+          throw error;
+        }
         await this.sendText(message, "Abort requested.");
         return;
       }
@@ -912,7 +928,8 @@ export class SlackRuntime {
     for (const route of this.routes.values()) {
       const binding = await this.activeBindingForRoute(route, { includePaused: true });
       if (!binding || binding.conversationId !== message.conversation.id || binding.userId !== message.sender.userId) continue;
-      entries.push(sessionEntryForRoute(route, { online: true, busy: routeIsBusy(route), binding, modelId: route.actions.getModel()?.id }));
+      const availability = slackRouteAvailability(route);
+      entries.push(sessionEntryForRoute(route, { online: availability.online, busy: availability.busy, binding, modelId: route.actions.getModel()?.id }));
     }
     return entries;
   }

@@ -318,7 +318,12 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             return;
           }
           route.notification.abortRequested = true;
-          route.actions.abort();
+          try {
+            route.actions.abort();
+          } catch (error) {
+            route.notification.abortRequested = false;
+            throw error;
+          }
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }

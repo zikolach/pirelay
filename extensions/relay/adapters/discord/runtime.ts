@@ -533,7 +533,16 @@ export class DiscordRuntime {
         }
         route.notification.abortRequested = true;
         this.stopTypingActivity(route.sessionKey);
-        route.actions.abort();
+        try {
+          route.actions.abort();
+        } catch (error) {
+          route.notification.abortRequested = false;
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.sendText(message, error.message);
+            return;
+          }
+          throw error;
+        }
         route.actions.appendAudit("Discord requested abort.");
         await this.sendText(message, "Abort requested.");
         return;

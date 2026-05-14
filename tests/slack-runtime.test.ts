@@ -850,7 +850,7 @@ describe("SlackRuntime foundations", () => {
     await sendChannelMessage("pirelay to Docs unavailable target", "75.5");
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(callsBeforeUnavailableTarget);
     expect(testRoute.remoteRequester).toBeUndefined();
-    expect(operations.posts.at(-1)?.text).toContain("The Pi session is unavailable");
+    expect(operations.posts.at(-1)?.text).toContain("offline");
 
     const callsBeforeRemoteTarget = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
     await sendChannelMessage("pirelay to remote Docs should not route", "76");

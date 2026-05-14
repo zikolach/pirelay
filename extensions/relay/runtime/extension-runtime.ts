@@ -650,8 +650,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         },
         summarizeText: async (text, mode) => summarizeForTelegram(text, mode, liveContextForRoute(route)),
         sendUserMessage: (text, options) => {
-          if (!liveContextForRoute(route)) throw new Error(unavailableRouteMessage());
           const requester = route.remoteRequester;
+          if (!liveContextForRoute(route)) {
+            route.remoteRequesterPendingTurn = false;
+            if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
+            throw new Error(unavailableRouteMessage());
+          }
           try {
             pi.sendUserMessage(text, options);
           } catch (error) {

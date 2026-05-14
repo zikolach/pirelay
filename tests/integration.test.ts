@@ -1815,7 +1815,8 @@ describe("PiRelay integration behavior", () => {
 
     expect(() => oldRoute.actions.sendUserMessage("from old route")).toThrow("The Pi session is unavailable");
 
-    expect(oldRoute.remoteRequesterPendingTurn).toBeUndefined();
+    expect(oldRoute.remoteRequester).toBeUndefined();
+    expect(oldRoute.remoteRequesterPendingTurn).toBe(false);
     expect(newRoute.remoteRequesterPendingTurn).toBeUndefined();
   });
 

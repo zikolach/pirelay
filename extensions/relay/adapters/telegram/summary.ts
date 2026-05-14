@@ -1,6 +1,7 @@
 import { complete, type UserMessage } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { SummaryMode } from "../../core/types.js";
+import { isStaleExtensionReferenceError } from "../../core/route-actions.js";
 import { summarizeTextDeterministically } from "../../core/utils.js";
 
 const SUMMARY_PROMPT = [
@@ -18,8 +19,9 @@ export async function summarizeForTelegram(
   let model: ExtensionContext["model"] | undefined;
   try {
     model = ctx?.model;
-  } catch {
-    return summarizeTextDeterministically(text);
+  } catch (error) {
+    if (isStaleExtensionReferenceError(error)) return summarizeTextDeterministically(text);
+    throw error;
   }
   if (mode !== "llm" || !ctx || !model) {
     return summarizeTextDeterministically(text);

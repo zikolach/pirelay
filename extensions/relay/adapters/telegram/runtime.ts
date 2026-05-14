@@ -801,7 +801,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(buildChoiceInjection(metadata, option), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+        if (!await this.sendPromptSafely(
+          route,
+          callback,
+          buildChoiceInjection(metadata, option),
+          delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined,
+          () => this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable."),
+        )) return;
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} selected an inline answer option.`);
         await this.api.answerCallbackQuery(callback.callbackQueryId, `Selected ${option.id}`);
         return;
@@ -924,7 +930,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         route.notification.abortRequested = true;
-        route.actions.abort();
+        try {
+          route.actions.abort();
+        } catch (error) {
+          route.notification.abortRequested = false;
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
+            await this.api.sendPlainText(chatId, error.message);
+            return;
+          }
+          throw error;
+        }
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested abort from dashboard.`);
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Abort requested.");
         await this.api.sendPlainText(chatId, "Abort requested.");
@@ -1011,7 +1027,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           this.setSharedRoomOutputDestination(targetRoute, { chatId: message.chat.id, userId: message.user.id });
           await this.startActivityIndicator(targetRoute);
         }
-        targetRoute.actions.sendUserMessage(resolution.prompt, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+        if (!await this.sendPromptSafely(targetRoute, message, resolution.prompt, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return true;
         targetRoute.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a shared-room one-shot prompt to ${targetRoute.sessionLabel}.`);
         await this.api.sendPlainText(message.chat.id, delivery.idle ? "Prompt delivered to Pi." : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`);
         return true;
@@ -1163,6 +1179,26 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return { idle, deliverAs: idle ? undefined : this.config.busyDeliveryMode };
   }
 
+  private async sendPromptSafely(
+    route: SessionRoute,
+    message: Pick<TelegramInboundMessage, "chat">,
+    content: TelegramPromptContent,
+    options?: { deliverAs?: "followUp" | "steer" },
+    onUnavailable?: () => Promise<void>,
+  ): Promise<boolean> {
+    try {
+      route.actions.sendUserMessage(content, options);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message === unavailableRouteMessage()) {
+        await onUnavailable?.();
+        await this.api.sendPlainText(message.chat.id, error.message);
+        return false;
+      }
+      throw error;
+    }
+  }
+
   private async deliverAuthorizedPrompt(
     route: SessionRoute,
     message: TelegramInboundMessage,
@@ -1181,12 +1217,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       : text;
     const activityStarted = await this.startActivityIndicator(route);
     route.remoteRequester = this.telegramRequester(route, message);
-    try {
-      route.actions.sendUserMessage(content, options.deliverAs ? { deliverAs: options.deliverAs } : undefined);
-    } catch (error) {
-      await this.api.sendPlainText(message.chat.id, error instanceof Error ? error.message : unavailableRouteMessage());
-      return;
-    }
+    if (!await this.sendPromptSafely(route, message, content, options.deliverAs ? { deliverAs: options.deliverAs } : undefined)) return;
     route.actions.appendAudit(options.auditMessage);
     if (options.busyAck) {
       await this.api.sendPlainText(message.chat.id, options.busyAck);
@@ -1491,7 +1522,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         route.notification.abortRequested = true;
-        route.actions.abort();
+        try {
+          route.actions.abort();
+        } catch (error) {
+          route.notification.abortRequested = false;
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.api.sendPlainText(message.chat.id, error.message);
+            return;
+          }
+          throw error;
+        }
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} requested abort.`);
         await this.api.sendPlainText(message.chat.id, "Abort requested.");
         return;
@@ -1546,7 +1586,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const deliverAs = delivery.deliverAs;
     const activityStarted = await this.startActivityIndicator(route);
     route.remoteRequester = this.telegramRequester(route, message);
-    route.actions.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
+    if (!await this.sendPromptSafely(route, message, text, deliverAs ? { deliverAs } : undefined)) return;
     route.actions.appendAudit(
       delivery.idle
         ? `Telegram ${getTelegramUserLabel(message.user)} sent a prompt.`
@@ -1601,7 +1641,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     this.clearAnswerStateForRoute(route);
     await this.startActivityIndicator(route);
     route.remoteRequester = this.telegramRequester(route, message);
-    route.actions.sendUserMessage(result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+    if (!await this.sendPromptSafely(route, message, result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return;
     route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
     await this.api.sendPlainText(message.chat.id, result.responseText);
   }
@@ -1657,7 +1697,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       await this.startActivityIndicator(route);
-      route.actions.sendUserMessage(buildFreeTextChoiceInjection(metadata, message.text), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+      if (!await this.sendPromptSafely(route, message, buildFreeTextChoiceInjection(metadata, message.text), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return;
       route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a custom inline answer.`);
       await this.api.sendPlainText(message.chat.id, "Sent your custom answer to Pi.");
       return;
@@ -1681,7 +1721,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         }
         this.answerFlows.delete(flowKey);
         await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+        if (!await this.sendPromptSafely(route, message, result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return;
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
         await this.api.sendPlainText(message.chat.id, result.responseText);
         return;
@@ -1719,7 +1759,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       this.clearAnswerStateForRoute(route);
       await this.startActivityIndicator(route);
-      route.actions.sendUserMessage(buildChoiceInjection(metadata, option), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+      if (!await this.sendPromptSafely(route, message, buildChoiceInjection(metadata, option), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return;
       route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
       await this.api.sendPlainText(message.chat.id, `Selected option ${option.id}: ${option.label}`);
       return;
@@ -1735,7 +1775,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         }
         this.clearAnswerStateForRoute(route);
         await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
+        if (!await this.sendPromptSafely(route, message, result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return;
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
         await this.api.sendPlainText(message.chat.id, result.responseText);
         return;
