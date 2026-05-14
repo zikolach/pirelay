@@ -123,9 +123,11 @@ function isTerminalStatus(status: SessionRoute["notification"]["lastStatus"]): b
   return status === "completed" || status === "failed" || status === "aborted";
 }
 
-function isEffectivelyIdle(route: SessionRoute): boolean {
+function isEffectivelyIdle(route: SessionRoute): boolean | undefined {
+  const idle = routeIdleState(route);
+  if (idle === undefined) return undefined;
   if (isTerminalStatus(route.notification.lastStatus)) return true;
-  return routeIdleState(route) !== false;
+  return idle;
 }
 
 function hasAnswerableLatestOutput(route: SessionRoute): boolean {
@@ -785,10 +787,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         }
         this.answerFlows.delete(this.answerFlowKey(route));
         this.takePendingCustomAnswer(route, callback.user);
+        const delivery = this.promptDeliveryState(route);
+        if (!delivery) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
+          await this.api.sendPlainText(callback.chat.id, unavailableRouteMessage());
+          return;
+        }
         await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(buildChoiceInjection(metadata, option), isEffectivelyIdle(route)
-          ? undefined
-          : { deliverAs: this.config.busyDeliveryMode });
+        route.actions.sendUserMessage(buildChoiceInjection(metadata, option), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} selected an inline answer option.`);
         await this.api.answerCallbackQuery(callback.callbackQueryId, `Selected ${option.id}`);
         return;
@@ -898,8 +904,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Tunnel resumed.");
         await this.api.sendPlainText(chatId, "Tunnel resumed.");
         return;
-      case "abort":
-        if (isEffectivelyIdle(route)) {
+      case "abort": {
+        const idle = isEffectivelyIdle(route);
+        if (idle === undefined) {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
+          await this.api.sendPlainText(chatId, unavailableRouteMessage());
+          return;
+        }
+        if (idle) {
           await this.api.answerCallbackQuery(callback.callbackQueryId, "Session is idle.");
           await this.api.sendPlainText(chatId, "The Pi session is already idle.");
           return;
@@ -910,6 +922,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Abort requested.");
         await this.api.sendPlainText(chatId, "Abort requested.");
         return;
+      }
       case "compact":
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested compaction from dashboard.`);
         await route.actions.compact();
@@ -982,14 +995,18 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           await this.api.sendPlainText(message.chat.id, "The tunnel is currently paused. Use /resume in the private chat or disconnect locally.");
           return true;
         }
-        const idle = isEffectivelyIdle(targetRoute);
-        if (idle) {
+        const delivery = this.promptDeliveryState(targetRoute);
+        if (!delivery) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return true;
+        }
+        if (delivery.idle) {
           this.setSharedRoomOutputDestination(targetRoute, { chatId: message.chat.id, userId: message.user.id });
           await this.startActivityIndicator(targetRoute);
         }
-        targetRoute.actions.sendUserMessage(resolution.prompt, idle ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        targetRoute.actions.sendUserMessage(resolution.prompt, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
         targetRoute.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a shared-room one-shot prompt to ${targetRoute.sessionLabel}.`);
-        await this.api.sendPlainText(message.chat.id, idle ? "Prompt delivered to Pi." : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`);
+        await this.api.sendPlainText(message.chat.id, delivery.idle ? "Prompt delivered to Pi." : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`);
         return true;
       }
     }
@@ -1131,6 +1148,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return undefined;
     }
     return downloaded;
+  }
+
+  private promptDeliveryState(route: SessionRoute): { idle: boolean; deliverAs?: "followUp" | "steer" } | undefined {
+    const idle = isEffectivelyIdle(route);
+    if (idle === undefined) return undefined;
+    return { idle, deliverAs: idle ? undefined : this.config.busyDeliveryMode };
   }
 
   private async deliverAuthorizedPrompt(
@@ -1350,12 +1373,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           await this.api.sendPlainText(message.chat.id, `Pi session ${resolution.result.entry.alias || resolution.result.entry.sessionLabel} is offline. Resume it locally, then try again.`);
           return;
         }
-        const idle = isEffectivelyIdle(targetRoute);
+        const delivery = this.promptDeliveryState(targetRoute);
+        if (!delivery) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return;
+        }
         await this.deliverAuthorizedPrompt(targetRoute, message, resolution.prompt, {
-          deliverAs: idle ? undefined : this.config.busyDeliveryMode,
+          deliverAs: delivery.deliverAs,
           auditMessage: `Telegram ${getTelegramUserLabel(message.user)} sent a one-shot prompt to ${targetRoute.sessionLabel}.`,
           idleAck: "Prompt delivered to Pi.",
-          busyAck: idle ? undefined : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`,
+          busyAck: delivery.idle ? undefined : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`,
         });
         return;
       }
@@ -1416,6 +1443,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         const idle = isEffectivelyIdle(route);
+        if (idle === undefined) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return;
+        }
         await this.deliverAuthorizedPrompt(route, message, args || "Please inspect the attached image.", {
           deliverAs: idle ? undefined : "steer",
           auditMessage: `Telegram ${getTelegramUserLabel(message.user)} sent a steering instruction.`,
@@ -1430,6 +1461,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         const idle = isEffectivelyIdle(route);
+        if (idle === undefined) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return;
+        }
         await this.deliverAuthorizedPrompt(route, message, args || "Please inspect the attached image.", {
           deliverAs: idle ? undefined : "followUp",
           auditMessage: `Telegram ${getTelegramUserLabel(message.user)} queued a follow-up.`,
@@ -1496,17 +1531,21 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async deliverPlainPrompt(route: SessionRoute, message: TelegramInboundMessage, text: string): Promise<void> {
     this.clearAnswerStateForRoute(route);
-    const idle = isEffectivelyIdle(route);
-    const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
+    const delivery = this.promptDeliveryState(route);
+    if (!delivery) {
+      await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+      return;
+    }
+    const deliverAs = delivery.deliverAs;
     const activityStarted = await this.startActivityIndicator(route);
     route.remoteRequester = this.telegramRequester(route, message);
     route.actions.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
     route.actions.appendAudit(
-      idle
+      delivery.idle
         ? `Telegram ${getTelegramUserLabel(message.user)} sent a prompt.`
         : `Telegram ${getTelegramUserLabel(message.user)} queued a ${deliverAs} message.`,
     );
-    if (!idle) {
+    if (!delivery.idle) {
       await this.api.sendPlainText(message.chat.id, `Pi is busy; your message was queued as ${deliverAs}.`);
       return;
     }
@@ -1547,10 +1586,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.api.sendPlainText(message.chat.id, "I could not use that text as a complete answer. Send 'answer' to open the guided answer flow.");
       return;
     }
+    const delivery = this.promptDeliveryState(route);
+    if (!delivery) {
+      await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+      return;
+    }
     this.clearAnswerStateForRoute(route);
     await this.startActivityIndicator(route);
     route.remoteRequester = this.telegramRequester(route, message);
-    route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
+    route.actions.sendUserMessage(result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
     route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
     await this.api.sendPlainText(message.chat.id, result.responseText);
   }
@@ -1565,14 +1609,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
     if (this.hasImageAttachments(message)) {
       this.clearAnswerStateForRoute(route);
-      const idle = isEffectivelyIdle(route);
-      const deliverAs = idle ? undefined : this.config.busyDeliveryMode;
+      const delivery = this.promptDeliveryState(route);
+      if (!delivery) {
+        await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+        return;
+      }
       await this.deliverAuthorizedPrompt(route, message, this.promptTextForMessage(message), {
-        deliverAs,
-        auditMessage: idle
+        deliverAs: delivery.deliverAs,
+        auditMessage: delivery.idle
           ? `Telegram ${getTelegramUserLabel(message.user)} sent an image prompt.`
-          : `Telegram ${getTelegramUserLabel(message.user)} queued an image ${deliverAs} message.`,
-        busyAck: idle ? undefined : `Pi is busy; your message was queued as ${deliverAs}.`,
+          : `Telegram ${getTelegramUserLabel(message.user)} queued an image ${delivery.deliverAs} message.`,
+        busyAck: delivery.idle ? undefined : `Pi is busy; your message was queued as ${delivery.deliverAs}.`,
       });
       return;
     }
@@ -1597,10 +1644,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, "That custom answer request is no longer current. Use the latest buttons or send a normal prompt.");
         return;
       }
+      const delivery = this.promptDeliveryState(route);
+      if (!delivery) {
+        await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+        return;
+      }
       await this.startActivityIndicator(route);
-      route.actions.sendUserMessage(buildFreeTextChoiceInjection(metadata, message.text), isEffectivelyIdle(route)
-        ? undefined
-        : { deliverAs: this.config.busyDeliveryMode });
+      route.actions.sendUserMessage(buildFreeTextChoiceInjection(metadata, message.text), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
       route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a custom inline answer.`);
       await this.api.sendPlainText(message.chat.id, "Sent your custom answer to Pi.");
       return;
@@ -1617,9 +1667,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       if (result.done && result.injectionText) {
+        const delivery = this.promptDeliveryState(route);
+        if (!delivery) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return;
+        }
         this.answerFlows.delete(flowKey);
         await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        route.actions.sendUserMessage(result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
         await this.api.sendPlainText(message.chat.id, result.responseText);
         return;
@@ -1650,11 +1705,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
     if (metadata && (intent.kind === "bare-option" || (intent.kind === "explicit-answer" && intent.option))) {
       const option = intent.kind === "bare-option" ? intent.option : intent.option!;
+      const delivery = this.promptDeliveryState(route);
+      if (!delivery) {
+        await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+        return;
+      }
       this.clearAnswerStateForRoute(route);
       await this.startActivityIndicator(route);
-      route.actions.sendUserMessage(buildChoiceInjection(metadata, option), isEffectivelyIdle(route)
-        ? undefined
-        : { deliverAs: this.config.busyDeliveryMode });
+      route.actions.sendUserMessage(buildChoiceInjection(metadata, option), delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
       route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
       await this.api.sendPlainText(message.chat.id, `Selected option ${option.id}: ${option.label}`);
       return;
@@ -1663,9 +1721,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (metadata && intent.kind === "explicit-answer") {
       const result = advanceGuidedAnswerFlow(metadata, startGuidedAnswerFlow(), message.text);
       if (result.done && result.injectionText) {
+        const delivery = this.promptDeliveryState(route);
+        if (!delivery) {
+          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+          return;
+        }
         this.clearAnswerStateForRoute(route);
         await this.startActivityIndicator(route);
-        route.actions.sendUserMessage(result.injectionText, isEffectivelyIdle(route) ? undefined : { deliverAs: this.config.busyDeliveryMode });
+        route.actions.sendUserMessage(result.injectionText, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined);
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} answered a guided Telegram question flow.`);
         await this.api.sendPlainText(message.chat.id, result.responseText);
         return;

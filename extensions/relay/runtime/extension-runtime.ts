@@ -692,7 +692,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         abort: () => {
           const live = liveContextForRoute(route);
           if (!live) throw new Error(unavailableRouteMessage());
-          live.abort();
+          try {
+            live.abort();
+          } catch (error) {
+            if (isStaleExtensionReferenceError(error)) throw new Error(unavailableRouteMessage());
+            throw error;
+          }
         },
         compact: () =>
           new Promise<void>((resolve, reject) => {
@@ -701,10 +706,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
               reject(new Error(unavailableRouteMessage()));
               return;
             }
-            live.compact({
-              onComplete: () => resolve(),
-              onError: reject,
-            });
+            try {
+              live.compact({
+                onComplete: () => resolve(),
+                onError: (error) => reject(isStaleExtensionReferenceError(error) ? new Error(unavailableRouteMessage()) : error),
+              });
+            } catch (error) {
+              reject(isStaleExtensionReferenceError(error) ? new Error(unavailableRouteMessage()) : error);
+            }
           }),
       },
     };

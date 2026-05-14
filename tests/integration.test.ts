@@ -1742,6 +1742,12 @@ describe("PiRelay integration behavior", () => {
 
     context.ui.confirm = vi.fn(async () => { throw new Error(STALE_EXTENSION_ERROR); });
     await expect(route.actions.promptLocalConfirmation({ channel: "telegram", id: 1, userId: "1" })).resolves.toBe("deny");
+
+    context.abort = vi.fn(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    expect(() => route.actions.abort()).toThrow("The Pi session is unavailable");
+
+    context.compact = vi.fn(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    await expect(route.actions.compact()).rejects.toThrow("The Pi session is unavailable");
   });
 
   it("refuses workspace image lookup when the live context is stale", async () => {
