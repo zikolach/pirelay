@@ -14,6 +14,7 @@ const [
   relayMiddlewareModule,
   progressModule,
   commandsModule,
+  requesterFileDeliveryModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -24,6 +25,7 @@ const [
   jiti.import('../middleware/pipeline.ts'),
   jiti.import('../notifications/progress.ts'),
   jiti.import('../commands/remote.ts'),
+  jiti.import('../core/requester-file-delivery.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -96,6 +98,7 @@ const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progre
 const HELP_TEXT = requiredString(commandsModule, './commands.ts', 'BROKER_HELP_TEXT');
 const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts', 'commandAllowsWhilePaused');
 const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
+const parseRemoteSendFileArgs = requiredFunction(requesterFileDeliveryModule, './requester-file-delivery.ts', 'parseRemoteSendFileArgs');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
@@ -1146,15 +1149,6 @@ function requesterForMessage(route, message) {
   };
 }
 
-function parseSendFileArgs(args) {
-  const parts = String(args || '').trim().split(/\s+/).filter(Boolean);
-  const relativePath = parts[0];
-  if (!relativePath) return undefined;
-  const maybeTarget = relativePath.toLowerCase();
-  if (maybeTarget === 'all' || maybeTarget === 'telegram' || maybeTarget === 'discord' || maybeTarget === 'slack' || /^(telegram|discord|slack):/.test(maybeTarget)) return undefined;
-  return { relativePath, caption: parts.slice(1).join(' ').trim() || undefined };
-}
-
 function promptTextForMessage(message, fallback) {
   const text = String(message.text || '').trim();
   if (text) return text;
@@ -1433,7 +1427,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'send-file':
     case 'sendfile': {
-      const request = parseSendFileArgs(args);
+      const request = parseRemoteSendFileArgs(args || '');
       if (!request) {
         await sendPlainText(message.chat.id, 'Usage: /send-file <relative-path> [caption]');
         return;
