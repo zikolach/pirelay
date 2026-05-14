@@ -155,4 +155,78 @@ describe("TunnelStateStore", () => {
     expect(await store.getChannelBindingBySessionKey("discord", "session-1", "personal")).toMatchObject({ conversationId: "dm-personal" });
     expect(await store.getChannelBindingBySessionKey("discord", "session-1", "work")).toMatchObject({ conversationId: "dm-work" });
   });
+
+  it("returns active Telegram bindings only when session, chat, user, and pause state match", async () => {
+    const store = await createStore();
+    await store.upsertBinding({
+      sessionKey: "session-1",
+      sessionId: "session-1",
+      sessionLabel: "Docs",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    expect(await store.getActiveBindingForSession("session-1", { chatId: 123, userId: 456 })).toMatchObject({ chatId: 123, userId: 456 });
+    expect(await store.getActiveBindingForSession("session-1", { chatId: 999, userId: 456 })).toBeUndefined();
+    expect(await store.getActiveBindingForSession("session-1", { chatId: 123, userId: 999 })).toBeUndefined();
+    expect(await store.getActiveBindingForSession("missing", { chatId: 123, userId: 456 })).toBeUndefined();
+
+    await store.upsertBinding({
+      sessionKey: "session-paused",
+      sessionId: "session-paused",
+      sessionLabel: "Paused",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      paused: true,
+    });
+    expect(await store.getActiveBindingForSession("session-paused", { chatId: 123, userId: 456 })).toBeUndefined();
+    expect(await store.getActiveBindingForSession("session-paused", { chatId: 123, userId: 456, includePaused: true })).toMatchObject({ paused: true });
+
+    await store.revokeBinding("session-1");
+    expect(await store.getActiveBindingForSession("session-1", { chatId: 123, userId: 456 })).toBeUndefined();
+  });
+
+  it("returns active channel bindings only when session, conversation, user, instance, and pause state match", async () => {
+    const store = await createStore();
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "work",
+      conversationId: "C1",
+      userId: "U1",
+      sessionKey: "session-1",
+      sessionId: "session-1",
+      sessionLabel: "Docs",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    expect(await store.getActiveChannelBindingForSession("slack", "session-1", { instanceId: "work", conversationId: "C1", userId: "U1" })).toMatchObject({ conversationId: "C1" });
+    expect(await store.getActiveChannelBindingForSession("slack", "session-1", { instanceId: "default", conversationId: "C1", userId: "U1" })).toBeUndefined();
+    expect(await store.getActiveChannelBindingForSession("slack", "session-1", { instanceId: "work", conversationId: "C2", userId: "U1" })).toBeUndefined();
+    expect(await store.getActiveChannelBindingForSession("slack", "session-1", { instanceId: "work", conversationId: "C1", userId: "U2" })).toBeUndefined();
+    expect(await store.getActiveChannelBindingForSession("discord", "session-1", { instanceId: "work", conversationId: "C1", userId: "U1" })).toBeUndefined();
+    expect(await store.getActiveChannelBindingForSession("slack", "missing", { instanceId: "work", conversationId: "C1", userId: "U1" })).toBeUndefined();
+
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "work",
+      conversationId: "C-paused",
+      userId: "U1",
+      sessionKey: "session-paused",
+      sessionId: "session-paused",
+      sessionLabel: "Paused",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      paused: true,
+    });
+    expect(await store.getActiveChannelBindingForSession("slack", "session-paused", { instanceId: "work", conversationId: "C-paused", userId: "U1" })).toBeUndefined();
+    expect(await store.getActiveChannelBindingForSession("slack", "session-paused", { instanceId: "work", conversationId: "C-paused", userId: "U1", includePaused: true })).toMatchObject({ paused: true });
+
+    await store.revokeChannelBinding("slack", "session-1", undefined, "work");
+    expect(await store.getActiveChannelBindingForSession("slack", "session-1", { instanceId: "work", conversationId: "C1", userId: "U1" })).toBeUndefined();
+  });
 });

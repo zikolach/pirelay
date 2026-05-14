@@ -144,12 +144,25 @@ export class SlackRuntime {
     if (this.routes.size === 0) await this.stop();
   }
 
+  private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
+    const stored = await this.store.getActiveChannelBindingForSession(SLACK_CHANNEL, route.sessionKey, { instanceId: this.instanceId, includePaused: options.includePaused });
+    if (stored) return stored;
+    const raw = await this.store.getChannelBindingRecordBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId);
+    if (raw) {
+      this.ownedBindingSessionKeys.delete(route.sessionKey);
+      this.recentBindingBySessionKey.delete(route.sessionKey);
+      return undefined;
+    }
+    const recent = this.recentBindingBySessionKey.get(route.sessionKey);
+    if (!recent || recent.status === "revoked" || (!options.includePaused && recent.paused)) return undefined;
+    return recent;
+  }
+
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     await this.stopThinkingReaction(route.sessionKey);
     this.clearProgressState(route);
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
-      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused && status === "completed") return;
     const address = bindingAddress(binding);
     if (status === "completed" && route.notification.lastAssistantText) {
@@ -165,8 +178,7 @@ export class SlackRuntime {
 
   async sendFileToBoundRoute(route: SessionRoute, file: ChannelOutboundFile, options: { kind: "document" | "image"; caption?: string } = { kind: "document" }): Promise<boolean> {
     if (!this.adapter) throw new Error("Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.");
-    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId)
-      ?? this.recentBindingBySessionKey.get(route.sessionKey);
+    const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused) return false;
     const address = bindingAddress(binding);
     if (options.kind === "image") await this.adapter.sendImage(address, file, { caption: options.caption });
@@ -176,7 +188,7 @@ export class SlackRuntime {
 
   async notifyLifecycle(route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
     if (!this.adapter) return;
-    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId);
+    const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused) return;
     const decision = await this.store.recordLifecycleNotification({
       channel: SLACK_CHANNEL,
@@ -838,7 +850,7 @@ export class SlackRuntime {
   private async sessionEntriesForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<SessionListEntry[]> {
     const entries: SessionListEntry[] = [];
     for (const route of this.routes.values()) {
-      const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId) ?? this.recentBindingBySessionKey.get(route.sessionKey);
+      const binding = await this.activeBindingForRoute(route, { includePaused: true });
       if (!binding || binding.conversationId !== message.conversation.id || binding.userId !== message.sender.userId) continue;
       entries.push(sessionEntryForRoute(route, { online: true, busy: !route.actions.context.isIdle(), binding, modelId: route.actions.getModel()?.id }));
     }
@@ -923,7 +935,7 @@ export class SlackRuntime {
     if (!state) return;
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
-    const binding = this.recentBindingBySessionKey.get(sessionKey);
+    const binding = route ? await this.activeBindingForRoute(route, { includePaused: true }) : undefined;
     if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);

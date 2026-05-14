@@ -960,7 +960,7 @@ describe("DiscordRuntime", () => {
     expect(ops.messages.at(-1)).toMatchObject({ channelId: "dm1", content: expect.stringContaining("The answer is ready") });
   });
 
-  it("uses the recently active Discord binding for completion fan-out if persisted lookup misses", async () => {
+  it("suppresses Discord completion fan-out after persisted revocation", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
     const runtime = new DiscordRuntime(cfg, { operations: ops });
@@ -986,10 +986,10 @@ describe("DiscordRuntime", () => {
     await runtime.notifyTurnCompleted(session, "completed");
 
     expect(ops.messages.some((message) => message.content.includes("Prompt delivered to Pi."))).toBe(true);
-    expect(ops.messages.at(-1)).toMatchObject({ channelId: "dm1", content: expect.stringContaining("Completion after Discord prompt") });
+    expect(ops.messages.some((message) => message.content.includes("Completion after Discord prompt"))).toBe(false);
   });
 
-  it("keeps accepting a recently active Discord chat if persisted state is overwritten", async () => {
+  it("does not keep accepting a recently active Discord chat after persisted revocation", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
     const runtime = new DiscordRuntime(cfg, { operations: ops });
@@ -1012,9 +1012,8 @@ describe("DiscordRuntime", () => {
     await store.revokeChannelBinding("discord", session.sessionKey);
     await ops.handler?.(discordMessage("second discord prompt"));
 
-    expect(sendUserMessage.mock.calls.map(([content]) => content)).toEqual(["first discord prompt", "second discord prompt"]);
-    expect(ops.messages.at(-1)?.content).toContain("Prompt delivered to Pi.");
-    expect(ops.messages.at(-1)?.content).not.toContain("not paired");
+    expect(sendUserMessage.mock.calls.map(([content]) => content)).toEqual(["first discord prompt"]);
+    expect(ops.messages.at(-1)?.content).toContain("not paired");
   });
 
   it("supports canonical Discord commands without falling through to generic unsupported help", async () => {

@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getStateFilePath } from "./paths.js";
 import type { ChannelBinding } from "../core/channel-adapter.js";
@@ -33,8 +34,12 @@ export class TunnelStateStore {
 
   async load(): Promise<TunnelStoreData> {
     await ensureStateDir(this.stateDir);
+    return this.loadExistingSync();
+  }
+
+  private loadExistingSync(): TunnelStoreData {
     try {
-      const raw = await readFile(this.filePath, "utf8");
+      const raw = readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<TunnelStoreData>;
       return {
         setup: parsed.setup,
@@ -211,8 +216,20 @@ export class TunnelStateStore {
     return revoked;
   }
 
+  getBindingBySessionKeySync(sessionKey: string): PersistedBindingRecord | undefined {
+    return this.loadExistingSync().bindings[sessionKey];
+  }
+
   async getBindingBySessionKey(sessionKey: string): Promise<PersistedBindingRecord | undefined> {
     return (await this.load()).bindings[sessionKey];
+  }
+
+  getActiveBindingForSessionSync(sessionKey: string, expected: { chatId?: number; userId?: number; includePaused?: boolean } = {}): PersistedBindingRecord | undefined {
+    return activeTelegramBindingFromData(this.loadExistingSync(), sessionKey, expected);
+  }
+
+  async getActiveBindingForSession(sessionKey: string, expected: { chatId?: number; userId?: number; includePaused?: boolean } = {}): Promise<PersistedBindingRecord | undefined> {
+    return activeTelegramBindingFromData(await this.load(), sessionKey, expected);
   }
 
   async getBindingByChatId(chatId: number): Promise<PersistedBindingRecord | undefined> {
@@ -306,11 +323,29 @@ export class TunnelStateStore {
     return bindings.filter((binding) => binding.channel === channel && (binding.instanceId ?? "default") === instanceId && binding.conversationId === conversationId && binding.status !== "revoked");
   }
 
-  async getChannelBindingBySessionKey(channel: ChannelBinding["channel"], sessionKey: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
-    const data = await this.load();
-    const binding = data.channelBindings[channelBindingStorageKey(channel, sessionKey, instanceId)]
+  getChannelBindingRecordBySessionKeySync(channel: ChannelBinding["channel"], sessionKey: string, instanceId = "default"): ChannelPersistedBindingRecord | undefined {
+    const data = this.loadExistingSync();
+    return data.channelBindings[channelBindingStorageKey(channel, sessionKey, instanceId)]
       ?? (instanceId === "default" ? data.channelBindings[legacyChannelBindingStorageKey(channel, sessionKey)] : undefined);
+  }
+
+  async getChannelBindingRecordBySessionKey(channel: ChannelBinding["channel"], sessionKey: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
+    const data = await this.load();
+    return data.channelBindings[channelBindingStorageKey(channel, sessionKey, instanceId)]
+      ?? (instanceId === "default" ? data.channelBindings[legacyChannelBindingStorageKey(channel, sessionKey)] : undefined);
+  }
+
+  async getChannelBindingBySessionKey(channel: ChannelBinding["channel"], sessionKey: string, instanceId = "default"): Promise<ChannelPersistedBindingRecord | undefined> {
+    const binding = await this.getChannelBindingRecordBySessionKey(channel, sessionKey, instanceId);
     return binding && binding.status !== "revoked" ? binding : undefined;
+  }
+
+  getActiveChannelBindingForSessionSync(channel: ChannelBinding["channel"], sessionKey: string, expected: { instanceId?: string; conversationId?: string; userId?: string; includePaused?: boolean } = {}): ChannelPersistedBindingRecord | undefined {
+    return activeChannelBindingFromData(this.loadExistingSync(), channel, sessionKey, expected);
+  }
+
+  async getActiveChannelBindingForSession(channel: ChannelBinding["channel"], sessionKey: string, expected: { instanceId?: string; conversationId?: string; userId?: string; includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
+    return activeChannelBindingFromData(await this.load(), channel, sessionKey, expected);
   }
 
   async trustRelayUser(input: Omit<TrustedRelayUserRecord, "trustedAt"> & { trustedAt?: string }): Promise<TrustedRelayUserRecord> {
@@ -427,6 +462,27 @@ function trustedRelayUserStorageKey(channel: ChannelBinding["channel"], instance
 
 function channelSelectionStorageKey(channel: ChannelBinding["channel"], conversationId: string, userId: string): string {
   return `${channel}:${conversationId}:${userId}`;
+}
+
+function activeTelegramBindingFromData(data: TunnelStoreData, sessionKey: string, expected: { chatId?: number; userId?: number; includePaused?: boolean }): PersistedBindingRecord | undefined {
+  const binding = data.bindings[sessionKey];
+  if (!binding || binding.status === "revoked") return undefined;
+  if (!expected.includePaused && binding.paused) return undefined;
+  if (expected.chatId !== undefined && binding.chatId !== expected.chatId) return undefined;
+  if (expected.userId !== undefined && binding.userId !== expected.userId) return undefined;
+  return binding;
+}
+
+function activeChannelBindingFromData(data: TunnelStoreData, channel: ChannelBinding["channel"], sessionKey: string, expected: { instanceId?: string; conversationId?: string; userId?: string; includePaused?: boolean }): ChannelPersistedBindingRecord | undefined {
+  const instanceId = expected.instanceId ?? "default";
+  const binding = data.channelBindings[channelBindingStorageKey(channel, sessionKey, instanceId)]
+    ?? (instanceId === "default" ? data.channelBindings[legacyChannelBindingStorageKey(channel, sessionKey)] : undefined);
+  if (!binding || binding.status === "revoked") return undefined;
+  if (!expected.includePaused && binding.paused) return undefined;
+  if (binding.channel !== channel || (binding.instanceId ?? "default") !== instanceId || binding.sessionKey !== sessionKey) return undefined;
+  if (expected.conversationId !== undefined && binding.conversationId !== expected.conversationId) return undefined;
+  if (expected.userId !== undefined && binding.userId !== expected.userId) return undefined;
+  return binding;
 }
 
 function revokeChannelBindingRecord(binding: ChannelPersistedBindingRecord, revokedAt: string): ChannelPersistedBindingRecord {

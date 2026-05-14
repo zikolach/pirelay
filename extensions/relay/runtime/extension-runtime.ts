@@ -316,8 +316,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   async function currentStatusBinding(config: TelegramTunnelConfig, channel: RelayStatusLineChannel, instanceId = "default"): Promise<RelayStatusLineBindingState | undefined> {
     if (!currentRoute) return undefined;
     const store = new TunnelStateStore(config.stateDir);
-    if (channel === "telegram") return telegramStatusBinding(currentRoute.binding ?? await store.getBindingBySessionKey(currentRoute.sessionKey));
-    return channelStatusBinding(await store.getChannelBindingBySessionKey(channel, currentRoute.sessionKey, instanceId));
+    if (channel === "telegram") {
+      const active = await store.getActiveBindingForSession(currentRoute.sessionKey, { includePaused: true });
+      if (active) return telegramStatusBinding(active);
+      return telegramStatusBinding(await store.getBindingBySessionKey(currentRoute.sessionKey) ? undefined : currentRoute.binding);
+    }
+    return channelStatusBinding(await store.getActiveChannelBindingForSession(channel, currentRoute.sessionKey, { instanceId, includePaused: true }));
   }
 
   async function setMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, state: Omit<Parameters<typeof formatRelayStatusLine>[0], "channel" | "binding"> & { binding?: RelayStatusLineBindingState }, instanceId = "default"): Promise<void> {
@@ -576,9 +580,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   async function publishRouteState(): Promise<void> {
     const route = currentRoute;
     if (!route) return;
-    if (runtime) await runtime.registerRoute(route);
-    await Promise.all([...discordRuntimes.values()].map((discord) => discord.registerRoute(route)));
-    await Promise.all([...slackRuntimes.values()].map((slack) => slack.registerRoute(route)));
+    const registrations: Array<Promise<void>> = [];
+    if (runtime) registrations.push(runtime.registerRoute(route));
+    registrations.push(...[...discordRuntimes.values()].map((discord) => discord.registerRoute(route)));
+    registrations.push(...[...slackRuntimes.values()].map((slack) => slack.registerRoute(route)));
+    await Promise.all(registrations);
     if (latestContext) await refreshRelayStatuses(latestContext);
   }
 
@@ -592,12 +598,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   async function notifyTelegramLifecycle(config: TelegramTunnelConfig, route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
     if (!runtime || !route.binding) return;
     const store = new TunnelStateStore(config.stateDir);
+    const binding = await store.getActiveBindingForSession(route.sessionKey, { chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true });
+    if (!binding || binding.paused) return;
     const decision = await store.recordLifecycleNotification({
       channel: "telegram",
       instanceId: "default",
       sessionKey: route.sessionKey,
-      conversationId: String(route.binding.chatId),
-      userId: String(route.binding.userId),
+      conversationId: String(binding.chatId),
+      userId: String(binding.userId),
       kind,
     });
     if (!decision.shouldNotify) return;
@@ -606,8 +614,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       channel: "telegram",
       instanceId: "default",
       sessionKey: route.sessionKey,
-      conversationId: String(route.binding.chatId),
-      userId: String(route.binding.userId),
+      conversationId: String(binding.chatId),
+      userId: String(binding.userId),
       kind,
     });
   }

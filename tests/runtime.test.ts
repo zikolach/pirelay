@@ -1569,6 +1569,76 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("offline");
   });
 
+  it("does not list a stale in-memory route after its persisted Telegram binding is revoked", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-revoked-list:/tmp/session-revoked-list.jsonl",
+      sessionId: "session-revoked-list",
+      sessionFile: "/tmp/session-revoked-list.jsonl",
+      sessionLabel: "revoked-list.jsonl",
+      chatId: 3030,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    await store.revokeBinding(binding.sessionKey);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 34,
+      messageId: 34,
+      text: "/sessions",
+      chat: { id: 3030, type: "private" },
+      user: { id: 30, username: "owner" },
+    });
+
+    expect(sent.join("\n")).toContain("No paired sessions were found");
+    expect(sent.join("\n")).not.toContain("revoked-list.jsonl");
+  });
+
+  it("suppresses Telegram completion delivery after persisted binding revocation", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-revoked-completion:/tmp/session-revoked-completion.jsonl",
+      sessionId: "session-revoked-completion",
+      sessionFile: "/tmp/session-revoked-completion.jsonl",
+      sessionLabel: "revoked-completion.jsonl",
+      chatId: 4040,
+      userId: 40,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = "This output must not be sent.";
+    route.notification.lastTurnId = "turn-revoked";
+    await store.upsertBinding(binding);
+    await store.revokeBinding(binding.sessionKey);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendDocumentData: async () => sent.push("document"),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sent).toEqual([]);
+  });
+
   it("lists private-paired sessions for bot-authored addressed Telegram group commands without stale keyboards", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
