@@ -14,7 +14,7 @@ Messenger adapter runtimes SHALL use the shared binding-authority contract for a
 - **AND** does not call separate state-loading helpers back-to-back for the same authority decision
 
 #### Scenario: Adapter uses volatile fallback only when allowed
-- **WHEN** an adapter has a recent binding or route-local binding for a session but persisted state is revoked, paused, moved, or unavailable
+- **WHEN** an adapter has a recent binding or route-local binding for a session but persisted state is revoked, paused, moved, or state-unavailable
 - **THEN** it does not use that volatile binding for protected delivery
 - **AND** it clears or ignores the stale cache according to the authority outcome
 
@@ -29,7 +29,7 @@ Messenger adapter runtimes SHALL keep typing, activity, reaction, progress, and 
 #### Scenario: Slack progress flush validates original address and thread
 - **WHEN** Slack progress delivery was scheduled for a channel/user/thread destination
 - **THEN** the flush validates that the active binding still matches the original Slack destination and thread metadata before sending
-- **AND** clears pending progress by its captured key if the binding is revoked, paused, moved, missing, or unavailable
+- **AND** clears pending progress by its captured key if the binding is revoked, paused, moved, missing, or state-unavailable
 
 #### Scenario: Telegram activity refresh validates original chat
 - **WHEN** Telegram activity refresh was scheduled for a chat

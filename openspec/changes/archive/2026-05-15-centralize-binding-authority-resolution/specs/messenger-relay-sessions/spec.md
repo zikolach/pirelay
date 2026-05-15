@@ -11,7 +11,7 @@ The system SHALL verify current binding authority immediately before protected m
 #### Scenario: Callback and action checks authority before serving content
 - **WHEN** a user invokes a dashboard, full-output, Markdown download, latest-image, guided-answer, abort, compact, pause, resume, or similar action that was rendered before a disconnect, pause, or re-pair
 - **THEN** PiRelay re-checks binding authority before returning protected content or mutating Pi state
-- **AND** rejects the action safely when the binding is revoked, moved, unauthorized, unavailable, or stale
+- **AND** rejects the action safely when the binding is revoked, paused, moved, missing, state-unavailable, unauthorized, or stale
 
 #### Scenario: Remote file delivery checks authority before filesystem reads and uploads
 - **WHEN** a remote requester or assistant-triggered requester flow attempts to deliver a workspace file through a messenger
