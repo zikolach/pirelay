@@ -102,7 +102,7 @@ const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progre
 const HELP_TEXT = requiredString(commandsModule, './commands.ts', 'BROKER_HELP_TEXT');
 const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts', 'commandAllowsWhilePaused');
 const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
-const telegramBotCommands = requiredFunction(commandSurfacesModule, './command-surfaces.ts', 'telegramBotCommands');
+const telegramBotCommands = requiredFunction(commandSurfacesModule, './surfaces.ts', 'telegramBotCommands');
 const parseRemoteSendFileArgs = requiredFunction(requesterFileDeliveryModule, './requester-file-delivery.ts', 'parseRemoteSendFileArgs');
 const authorityOutcomeAllowsDelivery = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'authorityOutcomeAllowsDelivery');
 const bindingAuthorityStateFromData = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'bindingAuthorityStateFromData');
@@ -120,6 +120,8 @@ if (!socketPath || !config?.botToken || !config?.stateDir) {
 
 const BROKER_PROTOCOL_VERSION = 1;
 
+let hasRegisteredTelegramCommands = false;
+let hasAttemptedTelegramBotCommandRegistration = false;
 const api = new Api(config.botToken);
 const clients = new Map();
 const routes = new Map();
@@ -412,7 +414,7 @@ async function cleanupExpiredPairings() {
 async function ensureSetup() {
   const state = await loadState();
   if (state.setup) {
-    void registerTelegramBotCommandMenu();
+    if (!hasRegisteredTelegramCommands) void registerTelegramBotCommandMenu();
     return state.setup;
   }
   const me = await api.getMe();
@@ -430,8 +432,11 @@ async function ensureSetup() {
 }
 
 async function registerTelegramBotCommandMenu() {
+  if (hasRegisteredTelegramCommands || hasAttemptedTelegramBotCommandRegistration) return;
+  hasAttemptedTelegramBotCommandRegistration = true;
   try {
     await api.setMyCommands(telegramBotCommands());
+    hasRegisteredTelegramCommands = true;
   } catch (error) {
     console.warn(`Telegram command menu registration failed: ${redact(error instanceof Error ? error.message : String(error))}`);
   }

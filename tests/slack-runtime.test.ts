@@ -172,11 +172,13 @@ describe("SlackLiveOperations", () => {
     const socket = FakeWebSocket.sockets.at(-1)!;
     socket.emit("message", { data: "not-json" } as never);
     socket.emit("message", { data: JSON.stringify({ envelope_id: "env-1", payload: { type: "event_callback", event_id: "ev-1", team_id: "T1", event: { type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "hi", ts: "1" } } }) } as never);
-    socket.emit("message", { data: JSON.stringify({ envelope_id: "env-2", payload: { type: "block_actions", response_url: "https://hooks.slack.com/actions/T/B/secret", state: { values: "xapp-secret-token" }, token: "xoxb-secret-token", user: { id: "U1" }, channel: { id: "C1" }, actions: [{ value: "summary" }] } }) } as never);
+    socket.emit("message", { data: JSON.stringify({ envelope_id: "env-2", type: "slash_commands", payload: { command: "/relay", text: "status", channel_id: "C1", channel_name: "general", user_id: "U1", user_name: "alice", team_id: "T1", trigger_id: "trigger-1", response_url: "https://hooks.slack.com/commands/T1/B1/response" } }) } as never);
+    socket.emit("message", { data: JSON.stringify({ envelope_id: "env-3", payload: { type: "block_actions", response_url: "https://hooks.slack.com/actions/T/B/secret", state: { values: "xapp-secret-token" }, token: "xoxb-secret-token", user: { id: "U1" }, channel: { id: "C1" }, actions: [{ value: "summary" }] } }) } as never);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(socket.sent).toEqual([JSON.stringify({ envelope_id: "env-1" }), JSON.stringify({ envelope_id: "env-2" })]);
+    expect(socket.sent).toEqual([JSON.stringify({ envelope_id: "env-1" }), JSON.stringify({ envelope_id: "env-2" }), JSON.stringify({ envelope_id: "env-3" })]);
     expect(events[0]).toMatchObject({ type: "event_callback", envelopeId: "env-1", eventId: "ev-1", event: { text: "hi", team: "T1" } });
+    expect(events[1]).toMatchObject({ type: "slash_command", envelopeId: "env-2", command: "/relay", text: "status", channel_id: "C1", user_id: "U1", team_id: "T1", trigger_id: "trigger-1", response_url: "https://hooks.slack.com/commands/T1/B1/response" });
     const debugLog = await readFile(logPath, "utf8");
     expect(debugLog).not.toContain("hooks.slack.com");
     expect(debugLog).not.toContain("xapp-secret-token");
