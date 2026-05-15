@@ -585,7 +585,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.lastActivityAt = Date.now();
   }
 
-  function persistBinding(binding: TelegramBindingMetadata | null, revoked = false): void {
+  function persistBinding(binding: TelegramBindingMetadata | null, revoked = false, route?: SessionRoute): void {
     const data: BindingEntryData = {
       version: 1,
       binding: binding ?? undefined,
@@ -596,7 +596,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       pi.appendEntry<BindingEntryData>(BINDING_ENTRY_TYPE, data);
     } catch (error) {
       if (isStaleExtensionReferenceError(error)) {
-        latestContext = undefined;
+        if (route) invalidateLiveContextForRoute(route);
+        else latestContext = undefined;
         return;
       }
       throw error;
@@ -725,7 +726,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           if (!live) return;
           refreshRelayStatusesSoon(live);
         },
-        persistBinding,
+        persistBinding: (binding, revoked) => persistBinding(binding, revoked, route),
         promptLocalConfirmation: async (identity) => {
           const live = liveContextForRoute(route);
           if (!live) return "deny";
@@ -1521,7 +1522,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.binding = undefined;
     await store.revokeBinding(currentRoute.sessionKey);
     await store.revokeChannelBindingsForSession(currentRoute.sessionKey);
-    persistBinding(null, true);
+    persistBinding(null, true, disconnectedRoute);
     if (runtime) {
       await runtime.unregisterRoute(disconnectedRoute.sessionKey);
     }

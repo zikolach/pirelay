@@ -1845,6 +1845,12 @@ describe("PiRelay integration behavior", () => {
     expect(second.statuses).toHaveLength(statusCount);
     expect(second.statuses).not.toContainEqual({ key: "stale-route", value: "should not update active context" });
     expect(second.notifications).toEqual([]);
+
+    const activeRoute = registeredRoutes.at(-1)!;
+    expect(activeRoute.actions.isIdle?.()).toBe(true);
+    pi.api.appendEntry.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    expect(() => staleRoute.actions.persistBinding(null, true)).not.toThrow();
+    expect(activeRoute.actions.isIdle?.()).toBe(true);
   });
 
   it("refuses workspace image lookup when the live context is stale", async () => {
