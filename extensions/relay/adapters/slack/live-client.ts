@@ -204,7 +204,7 @@ export class SlackLiveOperations implements SlackApiOperations {
       return;
     }
     if (envelope.envelope_id) this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
-    const normalized = socketPayloadToSlackEnvelope(envelope.payload);
+    const normalized = socketPayloadToSlackEnvelope(envelope);
     if (normalized && envelope.envelope_id) normalized.envelopeId = envelope.envelope_id;
     if (normalized && this.socketHandler) {
       try {
@@ -263,9 +263,12 @@ function slackHistoryMessageToEvent(message: unknown, channel: string): SlackMes
   };
 }
 
-function socketPayloadToSlackEnvelope(payload: unknown): SlackEnvelope | undefined {
+function socketPayloadToSlackEnvelope(envelope: SlackSocketModeEnvelope): SlackEnvelope | undefined {
+  if (!isRecord(envelope)) return undefined;
+  const payload = envelope.payload;
   if (!isRecord(payload)) return undefined;
-  if (payload.type === "event_callback") {
+  const envelopeType = stringField(envelope, "type") ?? stringField(payload, "type");
+  if (envelopeType === "event_callback") {
     return {
       type: "event_callback",
       eventId: stringField(payload, "event_id"),
@@ -275,8 +278,24 @@ function socketPayloadToSlackEnvelope(payload: unknown): SlackEnvelope | undefin
       team: typeof payload.team_id === "string" ? { id: payload.team_id } : undefined,
     };
   }
-  if (payload.type === "block_actions") return payload as unknown as SlackEnvelope;
+  if (envelopeType === "block_actions") return payload as unknown as SlackEnvelope;
+  if (envelopeType === "slash_command" || envelopeType === "slash_commands") return slackSocketSlashCommandEnvelope(payload);
   return undefined;
+}
+
+function slackSocketSlashCommandEnvelope(payload: Record<string, unknown>): SlackEnvelope {
+  return {
+    type: "slash_command",
+    command: stringField(payload, "command"),
+    text: stringField(payload, "text"),
+    channel_id: stringField(payload, "channel_id"),
+    channel_name: stringField(payload, "channel_name"),
+    user_id: stringField(payload, "user_id"),
+    user_name: stringField(payload, "user_name"),
+    team_id: stringField(payload, "team_id"),
+    trigger_id: stringField(payload, "trigger_id"),
+    response_url: stringField(payload, "response_url"),
+  };
 }
 
 function slackBlocks(rows: SlackPostMessagePayload["blocks"]): unknown[] | undefined {

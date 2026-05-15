@@ -22,8 +22,10 @@ describe("remote relay command metadata", () => {
 
   it("parses slash and relay-prefixed command invocations through one helper", () => {
     expect(parseRemoteCommandInvocation("/progress quiet")).toEqual({ command: "progress", args: "quiet" });
-    expect(parseRemoteCommandInvocation("relay progress quiet", { prefixes: ["relay", "pirelay"] })).toEqual({ command: "progress", args: "quiet" });
-    expect(parseRemoteCommandInvocation("pirelay status", { prefixes: ["relay", "pirelay"] })).toEqual({ command: "status", args: "" });
+    expect(parseRemoteCommandInvocation("relay progress quiet", { prefixes: ["relay"] })).toEqual({ command: "progress", args: "quiet" });
+    expect(parseRemoteCommandInvocation("relay status", { prefixes: ["relay"] })).toEqual({ command: "status", args: "" });
+    expect(parseRemoteCommandInvocation("/sendfile README.md")).toEqual({ command: "send-file", args: "README.md" });
+    expect(parseRemoteCommandInvocation("/sendimage out.png")).toEqual({ command: "send-image", args: "out.png" });
     expect(parseRemoteCommandInvocation("relay progress quiet", { allowPrefix: false })).toBeUndefined();
   });
 });

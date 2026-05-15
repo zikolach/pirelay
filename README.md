@@ -25,11 +25,11 @@ Typical flow:
 
 | Messenger | Current support | Reliable command form |
 |---|---|---|
-| Telegram | private bot chat, media bridge, inline actions, multi-session broker | `/status`, `/full`, `/progress verbose` |
-| Discord | live DM-first bot runtime, optional explicit guild/channel control | `relay status`, `relay full`, `relay progress verbose` |
-| Slack | Socket Mode live runtime, App Home DM pairing, optional explicit channel/thread control | `pirelay status`, `pirelay full`, `pirelay progress verbose` |
+| Telegram | private bot chat, media bridge, inline actions, multi-session broker, BotCommand menu | `/status`, `/full`, `/progress verbose` |
+| Discord | live DM-first bot runtime, optional explicit guild/channel control, best-effort native `/relay` | `relay status`, `relay full`, `relay progress verbose` |
+| Slack | Socket Mode live runtime, App Home DM pairing, optional explicit channel/thread control, `/relay` manifest surface | `relay status`, `relay full`, `relay progress verbose` |
 
-Discord and Slack avoid leading-slash instructions because those platforms can route slash text to app slash-command handlers instead of ordinary message events.
+Discord and Slack still document text prefixes first because native slash commands require platform sync/manifest delivery and can be stale or intercepted by another app.
 
 ## Features
 
@@ -58,7 +58,7 @@ Discord and Slack avoid leading-slash instructions because those platforms can r
 - Slack uses a `:thinking_face:` reaction on accepted prompts when the app has `reactions:write`
 - Slack falls back to a thread-aware ephemeral `Pi is working…` message when reactions are unavailable
 - progress notifications support `quiet`, `normal`, `verbose`, and `completion-only`
-- `/recent`, `relay recent`, and `pirelay recent` show recent safe activity
+- Telegram `/recent` and Discord/Slack `relay recent` show recent safe activity
 
 ### Long-output and answer workflow
 
@@ -128,7 +128,7 @@ Run the setup wizard inside Pi:
 /relay setup slack
 ```
 
-The setup wizard is secret-safe and tab-based. It shows diagnostics, env snippets, config snippets, links/QR guidance, troubleshooting, and for Slack a copyable app manifest.
+The setup wizard is secret-safe and tab-based. It shows diagnostics, env snippets, config snippets, links/QR guidance, troubleshooting, and for Slack a copyable app manifest that includes App Home, interactivity, scopes, events, and `/relay`.
 
 Useful setup actions:
 
@@ -148,7 +148,7 @@ Then follow the messenger-specific instructions:
 
 - Telegram: scan/open the bot deep link and press **Start**
 - Discord: DM the bot with `relay pair 123-456`
-- Slack: open the App Home DM and send `pirelay pair 123-456`, or invite the app to a channel and paste the command there after enabling `slack.allowChannelMessages`
+- Slack: open the App Home DM and send `relay pair 123-456`, or invite the app to a channel and paste the command there after enabling `slack.allowChannelMessages`
 
 If the remote identity is not already allow-listed or trusted, Pi asks locally whether to allow, trust, or deny the pairing.
 
@@ -157,7 +157,7 @@ If the remote identity is not already allow-listed or trusted, Pi asks locally w
 ```text
 /status               # Telegram
 relay status          # Discord
-pirelay status        # Slack
+relay status        # Slack
 ```
 
 ## Messenger setup details
@@ -178,6 +178,8 @@ Optional allow-list:
 export PI_RELAY_TELEGRAM_ALLOW_USER_IDS="123456789"
 ```
 
+After startup validation, PiRelay best-effort registers Telegram's bot command menu from the same canonical command registry used by `/help`. Hyphenated commands use Telegram-safe aliases such as `/sendfile` and `/sendimage`; `/send-file` and `/send-image` text remain supported.
+
 ### Discord
 
 Create an application/bot in the [Discord Developer Portal](https://discord.com/developers/docs/quick-start/getting-started).
@@ -190,11 +192,11 @@ export PI_RELAY_DISCORD_APPLICATION_ID="123456789012345678"
 export PI_RELAY_DISCORD_ALLOW_USER_IDS="123456789012345678"
 ```
 
-Enable **Message Content Intent** for plain DM prompts and `relay <command>` text controls. Invite with `bot` scope and `permissions=0` for DM-first operation. Guild/channel control requires explicit config.
+Enable **Message Content Intent** for plain DM prompts and `relay <command>` text controls. Invite with `bot applications.commands` scope and `permissions=0` for DM-first operation. PiRelay best-effort syncs one native `/relay` command with subcommands after login, but `relay <command>` text remains the reliable fallback, especially in shared rooms. Guild/channel control requires explicit config.
 
 ### Slack
 
-Create a Slack app at <https://api.slack.com/apps>. `/relay setup slack` can copy a ready-to-paste app manifest.
+Create a Slack app at <https://api.slack.com/apps>. `/relay setup slack` can copy a ready-to-paste app manifest including the `/relay` slash command. Reinstall/update the app after adding slash commands, scopes, events, or interactivity.
 
 Recommended Socket Mode env:
 
@@ -212,8 +214,11 @@ Slack app requirements:
 - Socket Mode enabled for local Pi usage
 - App Home → Messages Tab enabled so users can DM the app
 - `message.im` event for App Home DMs
+- interactivity enabled and the `/relay` slash command installed for native slash-command discovery
 - bot scopes including `chat:write`, `im:history`, `im:read`, `reactions:write`, and `files:write` for image/file delivery
-- reinstall the app after scope or App Home changes
+- reinstall the app after scope, slash-command, interactivity, or App Home changes
+
+The `/relay <command>` native slash command is a discoverability layer and is requester-scoped when Slack provides a response URL. Plain `relay <command>` text remains the reliable fallback when the slash command has not been installed, synced, or delivered. Older Slack `pirelay <command>` examples are no longer accepted; use `relay <command>` for a single Discord/Slack text prefix.
 
 Slack channel/thread control is explicit:
 
@@ -221,7 +226,7 @@ Slack channel/thread control is explicit:
 export PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES=true
 ```
 
-Then invite the app to the channel and pair in that channel/thread with `pirelay pair <pin>`.
+Then invite the app to the channel and pair in that channel/thread with `relay pair <pin>`.
 
 ## Local Pi commands
 
@@ -238,30 +243,30 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 
 ## Remote messenger commands
 
-| Purpose | Telegram | Discord | Slack |
+| Purpose | Telegram | Discord/Slack text | Native slash (best-effort) |
 |---|---|---|---|
-| help | `/help` | `relay help` | `pirelay help` |
-| status dashboard | `/status` | `relay status` | `pirelay status` |
-| list sessions | `/sessions` | `relay sessions` | `pirelay sessions` |
-| select session | `/use <session>` | `relay use <session>` | `pirelay use <session>` |
-| forget offline session | `/forget <session>` | `relay forget <session>` | `pirelay forget <session>` |
-| one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `pirelay to <session> <prompt>` |
-| progress mode | `/progress <mode>` | `relay progress <mode>` | `pirelay progress <mode>` |
-| current progress mode | `/progress` | `relay progress` | `pirelay progress` |
-| alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `pirelay alias <name\|clear>` |
-| recent activity | `/recent` or `/activity` | `relay recent` or `relay activity` | `pirelay recent` or `pirelay activity` |
-| latest summary | `/summary` | `relay summary` | `pirelay summary` |
-| full output | `/full` | `relay full` | `pirelay full` |
-| latest images | `/images` | `relay images` | `pirelay images` |
-| send workspace image | `/send-image <path>` | `relay send-image <path>` | `pirelay send-image <path>` |
-| send safe workspace file to requester | `/send-file <path> [caption]` | `relay send-file <path> [caption]` | `pirelay send-file <path> [caption]` |
-| steer active run | `/steer <text>` | `relay steer <text>` | `pirelay steer <text>` |
-| queue follow-up | `/followup <text>` | `relay followup <text>` | `pirelay followup <text>` |
-| abort current run | `/abort` | `relay abort` | `pirelay abort` |
-| compact context | `/compact` | `relay compact` | `pirelay compact` |
-| pause delivery | `/pause` | `relay pause` | `pirelay pause` |
-| resume delivery | `/resume` | `relay resume` | `pirelay resume` |
-| disconnect binding | `/disconnect` | `relay disconnect` | `pirelay disconnect` |
+| help | `/help` (also Telegram menu) | `relay help` | `/relay help` |
+| status dashboard | `/status` | `relay status` | `/relay status` |
+| list sessions | `/sessions` | `relay sessions` | `/relay sessions` |
+| select session | `/use <session>` | `relay use <session>` | `/relay use <session>` |
+| forget offline session | `/forget <session>` | `relay forget <session>` | `/relay forget <session>` |
+| one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `/relay to <session> <prompt>` |
+| progress mode | `/progress <mode>` | `relay progress <mode>` | `/relay progress <mode>` |
+| current progress mode | `/progress` | `relay progress` | `/relay progress` |
+| alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `/relay alias <name\|clear>` |
+| recent activity | `/recent` or `/activity` | `relay recent` or `relay activity` | `/relay recent` or `/relay activity` |
+| latest summary | `/summary` | `relay summary` | `/relay summary` |
+| full output | `/full` | `relay full` | `/relay full` |
+| latest images | `/images` | `relay images` | `/relay images` |
+| send workspace image | `/send-image <path>` | `relay send-image <path>` | `/relay send-image <path>` |
+| send safe workspace file to requester | `/send-file <path> [caption]` | `relay send-file <path> [caption]` | `/relay send-file <path> [caption]` |
+| steer active run | `/steer <text>` | `relay steer <text>` | `/relay steer <text>` |
+| queue follow-up | `/followup <text>` | `relay followup <text>` | `/relay followup <text>` |
+| abort current run | `/abort` | `relay abort` | `/relay abort` |
+| compact context | `/compact` | `relay compact` | `/relay compact` |
+| pause delivery | `/pause` | `relay pause` | `/relay pause` |
+| resume delivery | `/resume` | `relay resume` | `/relay resume` |
+| disconnect binding | `/disconnect` | `relay disconnect` | `/relay disconnect` |
 
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 
@@ -289,7 +294,7 @@ Explicit controls:
 
 - Telegram: `/steer <text>` or `/followup <text>`
 - Discord: `relay steer <text>` or `relay followup <text>`
-- Slack: `pirelay steer <text>` or `pirelay followup <text>`
+- Slack: `relay steer <text>` or `relay followup <text>`
 
 ## Guided answer flow
 
@@ -317,7 +322,7 @@ PiRelay can track multiple live Pi sessions through a local broker. Pair session
 /relay connect slack release
 ```
 
-Use `/sessions`, `relay sessions`, or `pirelay sessions` to list targets. Use `/use`, `relay use`, or `pirelay use` to select an active target. Use `/to`, `relay to`, or `pirelay to` for one-shot prompts without switching sessions.
+Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions.
 
 If the same bot/app is configured on multiple machines, use one ingress owner plus broker federation so other machines register routes instead of polling the same messenger concurrently.
 

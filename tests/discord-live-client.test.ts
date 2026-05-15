@@ -1,6 +1,6 @@
 import type { Client } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
-import { DiscordLiveOperations, discordActionRows, discordJsChatInputInteractionToMessagePayload, discordJsInteractionToPayload, discordJsMessageToPayload } from "../extensions/relay/adapters/discord/live-client.js";
+import { DISCORD_NATIVE_COMMAND_NAME, DiscordLiveOperations, discordActionRows, discordJsChatInputInteractionToMessagePayload, discordJsInteractionToPayload, discordJsMessageToPayload, discordSubcommandTakesArgs } from "../extensions/relay/adapters/discord/live-client.js";
 
 function mockDiscordClient(loginError?: Error): Client {
   return {
@@ -150,5 +150,44 @@ describe("discord live client helpers", () => {
 
     await expect(operations.connect(async () => undefined)).rejects.toThrow("[redacted]");
     await expect(operations.connect(async () => undefined)).rejects.not.toThrow("discord-token-supersecret");
+  });
+
+  it("reuses existing /relay command instead of recreating when manager returns a Collection", async () => {
+    const edit = vi.fn(async () => undefined);
+    const create = vi.fn(async () => undefined);
+    const commands = new Map([
+      ["id-1", { id: "id-1", name: "help" }],
+      ["id-2", { id: "id-2", name: DISCORD_NATIVE_COMMAND_NAME }],
+      ["id-3", { id: "id-3", name: "status" }],
+    ]);
+
+    const client = {
+      application: {
+        commands: {
+          fetch: vi.fn(async () => commands),
+          edit,
+          create,
+        },
+      },
+      on: vi.fn(),
+      login: vi.fn(async () => "ok"),
+      destroy: vi.fn(),
+      isReady: vi.fn(() => true),
+    } as never;
+
+    const operations = new DiscordLiveOperations({ token: "discord-token", client });
+
+    await operations.connect(async () => undefined);
+
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("detects placeholders only in placeholder-style token forms", () => {
+    expect(discordSubcommandTakesArgs("/status")).toBe(false);
+    expect(discordSubcommandTakesArgs("/send <path>")).toBe(true);
+    expect(discordSubcommandTakesArgs("/send [path]")).toBe(true);
+    expect(discordSubcommandTakesArgs("/send <")).toBe(false);
+    expect(discordSubcommandTakesArgs("/send emoji-like smile")).toBe(false);
   });
 });

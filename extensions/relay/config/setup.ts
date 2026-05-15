@@ -184,7 +184,7 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
       return [
         "Telegram relay setup",
         "Set TELEGRAM_BOT_TOKEN or telegram.botToken in ~/.pi/agent/pirelay/config.json, or use a tokenEnv reference.",
-        "Run /relay setup telegram, then /relay connect telegram.",
+        "Run /relay setup telegram, then /relay connect telegram. PiRelay registers a Telegram command menu on startup when the bot is reachable; `/help` remains available as text fallback.",
         "Pairing uses a private Telegram chat and local confirmation unless allowUserIds is configured.",
         "Shared-room mode: create one Telegram group/supergroup, invite one dedicated machine bot per broker, and disable bot privacy mode or use mentions/replies for addressed commands.",
       ].join("\n");
@@ -197,7 +197,7 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Developer Portal > Bot: enable Message Content Intent so DM text prompts are delivered to PiRelay.",
         "Invite scope: bot applications.commands. Use permissions=0 for DM-first operation.",
         "Keep Discord DM-first; set allowUserIds before enabling live control.",
-        "Run /relay connect discord [name], then send the displayed /start code to the bot in a DM.",
+        "Run /relay connect discord [name], then send the displayed /start code to the bot in a DM. After command sync, `/relay <subcommand>` may be available, but `relay <command>` text is the reliable fallback.",
         "Shared-room mode: use a dedicated Discord application/bot per machine in one server channel; prefer `relay <command>` text-prefix or @mention forms over collision-prone top-level slash commands.",
       ].join("\n");
     case "slack":
@@ -206,10 +206,10 @@ export function relaySetupFallbackGuidance(channel: RelaySetupChannel): string {
         "Create a Slack app: https://api.slack.com/apps",
         "Install it to your workspace, then set slack.botToken or PI_RELAY_SLACK_BOT_TOKEN from the Bot User OAuth Token.",
         "Set slack.signingSecret or PI_RELAY_SLACK_SIGNING_SECRET from Basic Information > App Credentials.",
-        "For DMs, enable App Home > Messages Tab > Allow users to send messages to your app, add the message.im event with im:history/im:read scopes, add reactions:write for thinking indicators, add files:write for image/file delivery including requester-scoped send-file, then reinstall the app.",
+        "For DMs, enable App Home > Messages Tab > Allow users to send messages to your app, add the message.im event with im:history/im:read scopes, add reactions:write for thinking indicators, add files:write for image/file delivery including requester-scoped send-file, add the `/relay` slash command from the manifest, then reinstall the app.",
         "Use slack.eventMode=socket for local Pi, or webhook mode with raw-body signature verification.",
         "Keep Slack DM-first; set allowUserIds before enabling live control.",
-        "Run /relay connect slack [name], then send the displayed `pirelay pair <code>` text to the app in a DM. Do not prefix it with `/`; Slack treats leading slash text as a slash command. Set slack.appId or PI_RELAY_SLACK_APP_ID to enable an App Home QR link.",
+        "Run /relay connect slack [name], then send the displayed `relay pair <code>` text to the app in a DM. Do not prefix it with `/`; Slack treats leading slash text as a slash command. Set slack.appId or PI_RELAY_SLACK_APP_ID to enable an App Home QR link.",
         "Shared-room mode: use a dedicated Slack app/bot per machine in one channel with app mention or channel-message scopes, and keep user allow-lists explicit.",
       ].join("\n");
   }
@@ -233,7 +233,7 @@ export function relayPairingInstruction(channel: RelaySetupChannel, code: string
     case "discord":
       return `Send relay pair ${code} to the Discord bot in a DM before the pairing expires. /start ${code} is also accepted.`;
     case "slack":
-      return `Send pirelay pair ${code} to the Slack app in a DM before the pairing expires. Do not prefix it with /; Slack treats leading slash text as a slash command.`;
+      return `Send relay pair ${code} to the Slack app in a DM before the pairing expires. Do not prefix it with /; Slack treats leading slash text as a slash command.`;
   }
 }
 
@@ -390,7 +390,7 @@ function discordGuidance(config: DiscordRelayConfig | undefined): string {
     "Keep Discord DM-first; set allowUserIds before enabling live control.",
     "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "After inviting the bot to a server, DM it from the member list or server profile. If DM is unavailable, check Discord privacy settings for server member DMs.",
-    "Shared-room mode uses one dedicated Discord application/bot per machine in a shared server channel; prefer `relay <command>` or @mention forms for reliable multi-bot routing.",
+    "Shared-room mode uses one dedicated Discord application/bot per machine in a shared server channel; prefer `relay <command>` or @mention forms for reliable multi-bot routing. Native `/relay` command sync is best-effort and may be stale or unavailable.",
   ];
   const applicationId = config?.applicationId ?? config?.clientId;
   if (applicationId) {
@@ -417,7 +417,7 @@ function slackGuidance(config: SlackRelayConfig | undefined): string {
     "Keep Slack DM-first; set allowUserIds before enabling live control.",
     "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "Shared-room mode uses one dedicated Slack app/bot per machine in a shared channel with app mention or channel-message scopes; PiRelay discovers the local bot user id at startup or can use slack.botUserId as a non-secret fallback.",
-    "Run /relay connect slack [name], then send the displayed `pirelay pair <code>` text to the app in a DM. Do not prefix it with `/`; Slack treats leading slash text as a slash command.",
+    "Run /relay connect slack [name], then send the displayed `relay pair <code>` text to the app in a DM. Native `/relay <command>` works after Slack delivers the manifest slash command; plain `relay <command>` text is the reliable fallback.",
   ].join("\n");
 }
 

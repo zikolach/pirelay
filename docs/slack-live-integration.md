@@ -19,7 +19,7 @@ Each app should have:
   - `channels:read` and `channels:history` for public channels, or `groups:read` and `groups:history` for private channels
   - `im:read`/`im:history` when testing or pairing through app DMs
   - `reactions:write` for prompt thinking indicators
-  - `files:write` for `pirelay images`, `pirelay send-image`, and requester-scoped `pirelay send-file` delivery
+  - `files:write` for `relay images`, `relay send-image`, and requester-scoped `relay send-file` delivery
 - App Home Messages Tab enabled with read-only mode off, otherwise Slack will show “Sending messages to this app has been turned off.”
 - event subscriptions for message/app-mention delivery in the target channel and `message.im` for app DMs
 - membership in the target channel
@@ -34,7 +34,7 @@ Template manifests are checked in under `docs/slack-app-manifests/`:
 - `pirelay-live-bot-b.yaml`
 - `pirelay-live-driver.yaml`
 
-Create each app at https://api.slack.com/apps with **Create New App → From an app manifest**, paste the matching YAML, and install it to the disposable workspace. For Bot A and Bot B, create an app-level token with the `connections:write` scope after enabling Socket Mode; Slack does not include app-level tokens in the manifest output. Invite all three apps to the test channel, then copy the Bot User OAuth tokens, signing secrets, app-level tokens, and bot user IDs into the local environment/script.
+Create each app at https://api.slack.com/apps with **Create New App → From an app manifest**, paste the matching YAML, and install it to the disposable workspace. Bot A and Bot B manifests include the `/relay` slash command; reinstall/update the apps after changing manifest command/scopes. For Bot A and Bot B, create an app-level token with the `connections:write` scope after enabling Socket Mode; Slack does not include app-level tokens in the manifest output. Invite all three apps to the test channel, then copy the Bot User OAuth tokens, signing secrets, app-level tokens, and bot user IDs into the local environment/script.
 
 ## Environment variables
 
@@ -53,13 +53,13 @@ export PI_RELAY_SLACK_LIVE_BOT_A_TOKEN=xoxb-...
 export PI_RELAY_SLACK_LIVE_BOT_A_SIGNING_SECRET=...
 export PI_RELAY_SLACK_LIVE_BOT_A_APP_TOKEN=xapp-...
 export PI_RELAY_SLACK_LIVE_BOT_A_USER_ID=UAPP_A # optional but recommended
-export PI_RELAY_SLACK_LIVE_BOT_A_PI_COMMAND='tail -f /dev/null | pi --extension /path/to/pirelay/extensions/relay/index.ts --mode rpc'
+export PI_RELAY_SLACK_LIVE_BOT_A_PI_COMMAND='tail -f /dev/null | pi --extension /path/to/relay/extensions/relay/index.ts --mode rpc'
 
 export PI_RELAY_SLACK_LIVE_BOT_B_TOKEN=xoxb-...
 export PI_RELAY_SLACK_LIVE_BOT_B_SIGNING_SECRET=...
 export PI_RELAY_SLACK_LIVE_BOT_B_APP_TOKEN=xapp-...
 export PI_RELAY_SLACK_LIVE_BOT_B_USER_ID=UAPP_B # optional but recommended
-export PI_RELAY_SLACK_LIVE_BOT_B_PI_COMMAND='tail -f /dev/null | pi --extension /path/to/pirelay/extensions/relay/index.ts --mode rpc'
+export PI_RELAY_SLACK_LIVE_BOT_B_PI_COMMAND='tail -f /dev/null | pi --extension /path/to/relay/extensions/relay/index.ts --mode rpc'
 ```
 
 Optional:

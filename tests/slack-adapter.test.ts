@@ -79,6 +79,21 @@ describe("SlackChannelAdapter", () => {
     expect(downloadFile).toHaveBeenCalledWith("https://slack.test/file");
   });
 
+  it("handles signed Slack slash-command form webhooks", async () => {
+    const adapter = new SlackChannelAdapter(config, { postMessage: async () => undefined, uploadFile: async () => undefined, postEphemeral: async () => undefined });
+    const raw = new URLSearchParams({ command: "/relay", text: "status", channel_id: "D1", user_id: "U1", team_id: "T1", trigger_id: "trig", response_url: "https://hooks.slack.test/response" }).toString();
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `v0=${createHmac("sha256", config.signingSecret).update(`v0:${timestamp}:${raw}`).digest("hex")}`;
+    const events: unknown[] = [];
+
+    await adapter.handleWebhook(raw, { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature }, async (event) => {
+      events.push(event);
+    });
+
+    expect(events[0]).toMatchObject({ kind: "message", text: "relay status", conversation: { id: "D1" }, sender: { userId: "U1" }, metadata: { responseUrl: "https://hooks.slack.test/response" } });
+    await expect(adapter.handleWebhook(raw, { "x-slack-request-timestamp": timestamp, "x-slack-signature": "v0=bad" }, async () => undefined)).rejects.toThrow("Invalid Slack signature");
+  });
+
   it("handles signed Slack form webhooks and preserves channel kind for actions", async () => {
     const adapter = new SlackChannelAdapter(config, { postMessage: async () => undefined, uploadFile: async () => undefined, postEphemeral: async () => undefined });
     const envelope = { type: "block_actions", channel: { id: "C1" }, user: { id: "U1", team_id: "T1" }, actions: [{ value: "full:t:chat" }], response_url: "https://hooks.slack.test/response" };
@@ -149,7 +164,7 @@ describe("SlackChannelAdapter", () => {
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U2", metadata: { teamId: "T1" } }, config)).toBe(false);
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U1", metadata: { teamId: "T2" } }, config)).toBe(false);
     expect(isSlackIdentityAllowed({ channel: "slack", userId: "U1" }, config)).toBe(false);
-    expect(slackPairingCommand("abc")).toBe("pirelay pair abc");
+    expect(slackPairingCommand("abc")).toBe("relay pair abc");
   });
 
   it("normalizes Slack shared-room mentions", () => {

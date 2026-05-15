@@ -67,21 +67,21 @@ The system SHALL expose an optional namespaced Discord native application-comman
 - **WHEN** Discord delivers a native interaction for `/relay` or a subcommand
 - **THEN** PiRelay authorizes the Discord user, guild/channel policy, and binding before route selection, prompt injection, media download, interaction callback execution, or control action execution
 
-### Requirement: Slack pirelay slash-command surface
-The system SHALL expose a Slack `/pirelay` slash-command surface that maps subcommands to existing Slack text-command behavior without replacing text fallbacks.
+### Requirement: Slack relay slash-command surface
+The system SHALL expose a Slack `/relay` slash-command surface that maps subcommands to existing Slack text-command behavior without replacing text fallbacks.
 
 #### Scenario: Slack slash command is declared in setup metadata
 - **WHEN** PiRelay generates Slack command-surface or setup metadata
-- **THEN** it includes a `/pirelay` slash command with safe description and usage hint for PiRelay remote commands
+- **THEN** it includes a `/relay` slash command with safe description and usage hint for PiRelay remote commands
 - **AND** it does not require many workspace-global slash commands such as `/status` or `/abort`
 
 #### Scenario: Slack Socket Mode slash payload is routed
-- **WHEN** Slack delivers a `/pirelay status`, `/pirelay sessions`, `/pirelay full`, `/pirelay abort`, or another supported slash-command payload over Socket Mode
+- **WHEN** Slack delivers a `/relay status`, `/relay sessions`, `/relay full`, `/relay abort`, or another supported slash-command payload over Socket Mode
 - **THEN** PiRelay acknowledges the Slack envelope promptly
-- **AND** it normalizes the slash payload into the same command semantics as `pirelay status`, `pirelay sessions`, `pirelay full`, `pirelay abort`, or the equivalent text command
+- **AND** it normalizes the slash payload into the same command semantics as `relay status`, `relay sessions`, `relay full`, `relay abort`, or the equivalent text command
 
 #### Scenario: Slack webhook slash payload is routed when webhook mode is enabled
-- **WHEN** Slack delivers a signed slash-command webhook payload for `/pirelay` in webhook mode
+- **WHEN** Slack delivers a signed slash-command webhook payload for `/relay` in webhook mode
 - **THEN** PiRelay verifies the Slack signature before command routing
 - **AND** it rejects invalid signatures before route selection, prompt injection, media download, or control actions
 
@@ -91,7 +91,7 @@ The system SHALL expose a Slack `/pirelay` slash-command surface that maps subco
 - **AND** protected output, files, images, and control results are delivered only to the authorized conversation/thread according to existing binding and shared-room rules
 
 #### Scenario: Slack slash command does not weaken authorization
-- **WHEN** a Slack user invokes `/pirelay` from a DM, channel, group, or thread
+- **WHEN** a Slack user invokes `/relay` from a DM, channel, group, or thread
 - **THEN** PiRelay authorizes the Slack workspace, user, conversation policy, and binding before route selection, prompt injection, media download, Block Kit action execution, or control action execution
 
 ### Requirement: Command-surface parity tests and diagnostics
@@ -99,7 +99,7 @@ The system SHALL test and diagnose command-surface parity so registered commands
 
 #### Scenario: Registered command metadata matches parser support
 - **WHEN** command parity tests run
-- **THEN** every Telegram menu command, Discord native subcommand, and Slack `/pirelay` subcommand maps to a runtime-supported command or documented fallback
+- **THEN** every Telegram menu command, Discord native subcommand, and Slack `/relay` subcommand maps to a runtime-supported command or documented fallback
 - **AND** every canonical runtime-supported command has at least one visible command surface or reliable text fallback per platform
 
 #### Scenario: Native command paths preserve safety invariants

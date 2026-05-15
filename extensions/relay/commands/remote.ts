@@ -25,6 +25,7 @@ export const CANONICAL_REMOTE_COMMANDS = [
   { command: "send-file", usage: "/send-file <path> [caption]", description: "send a validated workspace file to this chat" },
   { command: "sendfile", usage: "/sendfile <path> [caption]", description: "alias for /send-file", aliasOf: "send-file" },
   { command: "send-image", usage: "/send-image <path>", description: "send a validated workspace image file" },
+  { command: "sendimage", usage: "/sendimage <path>", description: "alias for /send-image", aliasOf: "send-image" },
   { command: "steer", usage: "/steer <text>", description: "steer the active run" },
   { command: "followup", usage: "/followup <text>", description: "queue a follow-up" },
   { command: "abort", usage: "/abort", description: "abort the active run" },
@@ -37,6 +38,12 @@ export const CANONICAL_REMOTE_COMMANDS = [
 export type RemoteCommandName = typeof CANONICAL_REMOTE_COMMANDS[number]["command"];
 
 export const CANONICAL_REMOTE_COMMAND_NAMES = CANONICAL_REMOTE_COMMANDS.map((definition) => definition.command);
+
+export function canonicalRemoteCommandName(command: string): string {
+  const normalized = command.trim().toLowerCase().replace(/_/g, "-");
+  const definition = CANONICAL_REMOTE_COMMANDS.find((candidate) => candidate.command === normalized);
+  return definition && "aliasOf" in definition ? definition.aliasOf : definition?.command ?? normalized;
+}
 
 // Backwards-compatible export for modules that still import the old name while
 // this change finishes moving command semantics out of Telegram-specific code.
@@ -67,7 +74,7 @@ export function parseRemoteCommand(text: string): ParsedRemoteCommand | undefine
   const [rawCommand, ...rest] = trimmed.split(/\s+/);
   const command = rawCommand.slice(1).split("@")[0]?.toLowerCase();
   if (!command) return undefined;
-  return { command, args: rest.join(" ").trim() };
+  return { command: canonicalRemoteCommandName(command), args: rest.join(" ").trim() };
 }
 
 export function parsePrefixedRemoteCommand(text: string, options: { prefixes?: string[] } = {}): ParsedRemoteCommand | undefined {
@@ -78,7 +85,7 @@ export function parsePrefixedRemoteCommand(text: string, options: { prefixes?: s
   const prefix = rawPrefix?.toLowerCase();
   if (!prefix || !prefixes.map((value) => value.toLowerCase()).includes(prefix)) return undefined;
   const command = (rawCommand ?? "help").replace(/^\/+/, "").toLowerCase();
-  return { command: command || "help", args: rest.join(" ").trim() };
+  return { command: command ? canonicalRemoteCommandName(command) : "help", args: rest.join(" ").trim() };
 }
 
 function usageForDefinition(definition: RemoteCommandDefinition, commandPrefix: string | undefined): string {
@@ -107,7 +114,8 @@ export const HELP_TEXT = buildHelpText();
 export const BROKER_HELP_TEXT = buildHelpText({ includeBrokerOnly: true });
 
 export function commandAllowsWhilePaused(command: string): boolean {
-  return CANONICAL_REMOTE_COMMANDS.some((definition) => definition.command === command && "allowedWhilePaused" in definition && definition.allowedWhilePaused === true);
+  const canonical = canonicalRemoteCommandName(command);
+  return CANONICAL_REMOTE_COMMANDS.some((definition) => definition.command === canonical && "allowedWhilePaused" in definition && definition.allowedWhilePaused === true);
 }
 
 export function normalizeAliasArg(args: string): string | undefined {

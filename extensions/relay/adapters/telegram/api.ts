@@ -1,5 +1,5 @@
 import { Api, GrammyError, HttpError, InputFile } from "grammy";
-import type { User } from "grammy/types";
+import type { BotCommand, User } from "grammy/types";
 import type {
   LatestTurnImage,
   TelegramDownloadedImage,
@@ -23,6 +23,10 @@ export class TelegramApiClient {
 
   async getMe(): Promise<User> {
     return this.api.getMe();
+  }
+
+  async setBotCommands(commands: readonly BotCommand[]): Promise<void> {
+    await this.withRetry(() => this.api.setMyCommands([...commands]));
   }
 
   async getUpdates(offset: number | undefined): Promise<TelegramInboundUpdate[]> {

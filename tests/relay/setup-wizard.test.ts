@@ -7,7 +7,7 @@ function baseConfig(): TelegramTunnelConfig {
   return {
     botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
     configPath: "/tmp/config.json",
-    stateDir: "/tmp/pirelay",
+    stateDir: "/tmp/relay",
     pairingExpiryMs: 300_000,
     busyDeliveryMode: "followUp",
     allowUserIds: [],
@@ -74,6 +74,8 @@ describe("relay setup wizard model", () => {
     expect(manifestText).toContain("message.im");
     expect(manifestText).toContain("reactions:write");
     expect(manifestText).toContain("files:write");
+    expect(manifestText).toContain("command: /relay");
+    expect(manifestText).toContain("usage_hint:");
     expect(slackAppManifestText()).toContain("messages_tab_enabled: true");
     expect(slackAppManifestText()).toContain("reactions:write");
     expect(slackAppManifestText()).toContain("files:write");

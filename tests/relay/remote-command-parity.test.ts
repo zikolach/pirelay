@@ -44,7 +44,7 @@ describe("remote command parity metadata", () => {
     expect(parsePrefixedRemoteCommand("relay status")).toEqual({ command: "status", args: "" });
     expect(parsePrefixedRemoteCommand("relay /full now")).toEqual({ command: "full", args: "now" });
     expect(parseDiscordCommand("relay")).toEqual({ name: "help", args: "" });
-    expect(parseDiscordCommand("pirelay sessions")).toEqual({ name: "sessions", args: "" });
+    expect(parseDiscordCommand("relay sessions")).toEqual({ name: "sessions", args: "" });
     expect(parseDiscordCommand("hello relay status")).toBeUndefined();
   });
 

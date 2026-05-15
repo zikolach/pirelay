@@ -1,6 +1,6 @@
 ## Context
 
-PiRelay has a canonical remote command registry in `extensions/relay/commands/remote.ts` and platform runtimes already parse Telegram slash commands, Discord text-prefix commands, and Slack `pirelay`/`relay` text commands. Current setup guidance correctly warns that Discord and Slack slash surfaces can be intercepted by the platform, but discoverability suffers because Telegram command menus, Discord native `/relay` metadata, and Slack `/pirelay` manifest wiring are not implemented as first-class surfaces.
+PiRelay has a canonical remote command registry in `extensions/relay/commands/remote.ts` and platform runtimes already parse Telegram slash commands, Discord text-prefix commands, and Slack `relay` text commands. Current setup guidance correctly warns that Discord and Slack slash surfaces can be intercepted by the platform, but discoverability suffers because Telegram command menus, Discord native `/relay` metadata, and Slack `/relay` manifest wiring are not implemented as first-class surfaces.
 
 Hermes Agent provides a useful reference pattern: a central command registry feeds Telegram BotCommands, Discord application commands, Slack slash command manifests, CLI help, and tests. PiRelay should adopt that registry-driven shape while preserving PiRelay-specific safety boundaries and reliable text fallbacks.
 
@@ -11,7 +11,7 @@ Hermes Agent provides a useful reference pattern: a central command registry fee
 - Generate platform command/menu metadata from the canonical PiRelay remote command registry.
 - Register Telegram menu commands using Bot API-safe command names.
 - Provide an optional Discord native `/relay` command with subcommands for canonical commands while keeping `relay <command>` text as the documented reliable path.
-- Provide a Slack `/pirelay` native slash command path and include it in the generated setup manifest.
+- Provide a Slack `/relay` native slash command path and include it in the generated setup manifest.
 - Route every native command through the existing authorization, selection, pause, revocation, and command handlers instead of introducing parallel behavior.
 - Add tests that compare registered/menu command metadata with runtime command support and documented fallbacks.
 
@@ -44,8 +44,8 @@ Hermes Agent provides a useful reference pattern: a central command registry fee
    - Continue documenting `relay <command>` as the reliable baseline because Discord owns slash-command routing and requires command sync.
    - Registration should be opt-in or conservative, secret-safe, and resilient to rate limits; global command sync must not block core runtime startup indefinitely.
 
-5. **Slack uses one `/pirelay` slash command.**
-   - Add `/pirelay [command] [args]` to the generated manifest and route slash-command payloads into existing Slack command handling.
+5. **Slack uses one `/relay` slash command.**
+   - Add `/relay [command] [args]` to the generated manifest and route slash-command payloads into existing Slack command handling.
    - Socket Mode and webhook modes both need normalized slash-command envelopes where applicable.
    - Initial acknowledgements and response URL use should be best-effort and requester-scoped; final behavior remains governed by the same authorization and command routing as text messages.
 
@@ -67,7 +67,7 @@ Hermes Agent provides a useful reference pattern: a central command registry fee
 - Existing Telegram, Discord, and Slack text commands remain supported without config changes.
 - Telegram menu registration starts automatically when the bot is configured; failures are non-fatal.
 - Discord native `/relay` registration is introduced without removing text-prefix support; deployments can continue using text-only if command sync is unavailable.
-- Slack users update or reinstall the app from the generated manifest to enable `/pirelay`; text commands continue to work before manifest update.
+- Slack users update or reinstall the app from the generated manifest to enable `/relay`; text commands continue to work before manifest update.
 - Rollback is safe by disabling native registration or reverting manifest changes; existing persisted bindings and pairing state do not need schema changes.
 
 ## Open Questions

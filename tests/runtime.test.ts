@@ -137,6 +137,41 @@ describe("InProcessTunnelRuntime", () => {
     expect((await store.getSetup())?.botId).toBe(123456);
   });
 
+  it("registers Telegram command menu after setup and continues when registration fails", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const setBotCommands = vi.fn(async (_commands: Array<{ command: string; description: string }>) => undefined);
+    (runtime as any).api = {
+      getMe: vi.fn(async () => ({ id: 123456, is_bot: true, first_name: "PiRelay", username: "pirelay_bot" })),
+      getUpdates: vi.fn(async () => []),
+      sendPlainText: async () => undefined,
+      setBotCommands,
+    };
+    (runtime as any).pollLoop = vi.fn(async () => undefined);
+
+    await runtime.start();
+    await runtime.stop();
+
+    expect(setBotCommands).toHaveBeenCalledTimes(1);
+    expect(setBotCommands.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: "status" }),
+      expect.objectContaining({ command: "sendfile" }),
+      expect.objectContaining({ command: "sendimage" }),
+    ]));
+
+    const failing = new InProcessTunnelRuntime(config, store);
+    (failing as any).api = {
+      getMe: vi.fn(async () => ({ id: 123456, is_bot: true, first_name: "PiRelay", username: "pirelay_bot" })),
+      getUpdates: vi.fn(async () => []),
+      sendPlainText: async () => undefined,
+      setBotCommands: vi.fn(async () => { throw new Error("botTOKEN should be redacted"); }),
+    };
+    (failing as any).pollLoop = vi.fn(async () => undefined);
+    await expect(failing.start()).resolves.toBeUndefined();
+    await failing.stop();
+  });
+
   it("loads setup before filtering local bot-authored messages", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
