@@ -255,7 +255,7 @@ The broker SHALL avoid repeated state-file reads for one logical route-selection
 #### Scenario: Progress flush reads state once for authority
 - **WHEN** a broker progress flush timer fires for a session and destination
 - **THEN** the broker loads state at most once for the flush authority decision
-- **AND** clears pending state by the captured progress key when authority is revoked, paused, moved, missing, or unavailable
+- **AND** clears pending state by the captured progress key when authority is revoked, paused, moved, missing, or state-unavailable
 
 #### Scenario: State unavailable blocks broker protected delivery
 - **WHEN** the broker cannot read or parse the state file while evaluating protected delivery or route registration authority
