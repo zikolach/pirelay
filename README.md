@@ -227,11 +227,11 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 
 | Command | Purpose |
 |---|---|
-| `/relay setup <telegram|discord|slack>` | open setup wizard or show headless setup guidance |
-| `/relay connect <telegram|discord|slack> [name]` | create an expiring pairing flow for the current session |
+| `/relay setup <telegram\|discord\|slack>` | open setup wizard or show headless setup guidance |
+| `/relay connect <telegram\|discord\|slack> [name]` | create an expiring pairing flow for the current session |
 | `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, and config/state permissions |
 | `/relay status` | show local relay status for the current session |
-| `/relay send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]` | send an explicit safe workspace file/artifact to paired messenger chat(s) |
+| `/relay send-file <telegram\|discord\|slack\|messenger:instance\|all> <relative-path> [caption]` | send an explicit safe workspace file/artifact to paired messenger chat(s) |
 | `/relay trusted` | list locally trusted relay users |
 | `/relay untrust <messenger> <userId>` | revoke local relay trust |
 | `/relay disconnect` | locally disconnect the current Pi session from all paired messenger bindings |
@@ -248,7 +248,7 @@ Then invite the app to the channel and pair in that channel/thread with `pirelay
 | one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `pirelay to <session> <prompt>` |
 | progress mode | `/progress <mode>` | `relay progress <mode>` | `pirelay progress <mode>` |
 | current progress mode | `/progress` | `relay progress` | `pirelay progress` |
-| alias current session | `/alias <name|clear>` | `relay alias <name|clear>` | `pirelay alias <name|clear>` |
+| alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `pirelay alias <name\|clear>` |
 | recent activity | `/recent` or `/activity` | `relay recent` or `relay activity` | `pirelay recent` or `pirelay activity` |
 | latest summary | `/summary` | `relay summary` | `pirelay summary` |
 | full output | `/full` | `relay full` | `pirelay full` |
