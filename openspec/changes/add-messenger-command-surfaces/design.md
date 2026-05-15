@@ -36,7 +36,7 @@ Hermes Agent provides a useful reference pattern: a central command registry fee
 
 3. **Telegram uses menu commands, not a new command namespace.**
    - Register Telegram BotCommands after setup/startup with Telegram-safe names: lowercase, max 32 characters, underscores instead of invalid punctuation, and collision handling.
-   - Because Telegram BotCommand names cannot contain hyphens, commands such as `send-file` and `send-image` need safe menu aliases such as `sendfile`/`sendimage` or underscore normalization mapped back to canonical commands.
+   - Because Telegram BotCommand names cannot contain hyphens, commands such as `send-file` and `send-image` need Telegram-safe menu names. Alias-style names must be registry-backed, using the existing `sendfile` alias and adding a canonical `sendimage` alias for `send-image`; otherwise use explicit underscore normalization such as `send_image` mapped back to canonical commands.
    - Registration failures are non-fatal and reported as secret-safe diagnostics.
 
 4. **Discord uses one namespaced native command.**
