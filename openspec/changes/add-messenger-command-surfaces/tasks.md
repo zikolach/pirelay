@@ -25,7 +25,7 @@
 
 - [ ] 4.1 Add Slack `/pirelay` command metadata and usage text for generated setup and manifest content.
 - [ ] 4.2 Extend the Slack app manifest generator to include `/pirelay`, interactivity settings, safe description, and usage hint without secrets.
-- [ ] 4.3 Normalize Slack Socket Mode slash-command payloads into existing Slack command routing after prompt envelope acknowledgement.
+- [ ] 4.3 Normalize Slack Socket Mode slash-command payloads into existing Slack command routing after Socket Mode envelope acknowledgement.
 - [ ] 4.4 Normalize signed Slack webhook slash-command payloads when webhook mode is enabled, rejecting invalid signatures before routing.
 - [ ] 4.5 Use response URL or ephemeral requester-scoped acknowledgements where available without changing protected output delivery semantics.
 - [ ] 4.6 Add Slack tests for manifest content, slash payload routing, signature rejection, requester scoping, and authorization before command execution.
