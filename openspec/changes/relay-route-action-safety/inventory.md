@@ -188,3 +188,10 @@ This inventory captures the high-risk fallible `route.actions.*` and existing na
 - Compact audit is currently appended before `actions.compact()` in Telegram/Discord command paths; migration should move audit or mark it as attempted only when that wording remains intentional.
 - File delivery audit happens after the delivery result and is safe if the operation outcome is explicit.
 - Pairing/pause/resume/disconnect persistence is outside route-action safety unless it calls stale local UI/API helpers; binding authority remains a separate OpenSpec change.
+
+## Task 4.7: Prompt rollback test coverage
+
+- Shared helper coverage in `tests/relay/route-actions.test.ts` verifies requester/pending-turn rollback, start/rollback hook invocation, accepted prompt commit hooks, and busy delivery metadata.
+- Telegram coverage in `tests/runtime.test.ts` verifies unavailable private prompt delivery, activity cleanup, shared-room output destination rollback, and requester state cleanup through the migrated helper.
+- Discord coverage in `tests/discord-runtime.test.ts` verifies unavailable prompt delivery returns safe guidance without marking runtime health unhealthy.
+- Slack coverage in `tests/slack-runtime.test.ts` verifies thinking/activity cleanup behavior and keeps best-effort activity failures out of runtime health; migrated prompt paths now share the same core rollback hook contract.

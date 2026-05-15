@@ -27,7 +27,7 @@
 - [x] 4.4 Migrate Discord prompt, steer, follow-up, image prompt, and shared-room prompt paths to the shared prompt operation.
 - [x] 4.5 Migrate Slack ordinary prompt, `pirelay to`, steer/follow-up equivalents, and channel/shared-room prompt paths to the shared prompt operation.
 - [x] 4.6 Migrate broker `deliverPrompt` handling to the shared prompt operation or a thin equivalent wrapper.
-- [ ] 4.7 Add cross-adapter tests proving unavailable prompt races clear requester state, stop activity/typing/reaction refreshes, roll back shared-room destinations, and do not mark messenger runtime health unhealthy.
+- [x] 4.7 Add cross-adapter tests proving unavailable prompt races clear requester state, stop activity/typing/reaction refreshes, roll back shared-room destinations, and do not mark messenger runtime health unhealthy.
 
 ## 5. Control Operation Safety
 

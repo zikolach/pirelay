@@ -7,6 +7,7 @@ import {
   routeActionAlreadyIdle,
   routeActionDisplayMessage,
   routeActionFailed,
+  deliverRoutePrompt,
   routeActionOutcomeFromError,
   routeActionSuccess,
   routeActionUnavailable,
@@ -88,6 +89,46 @@ describe("route action lifetime helpers", () => {
     expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
     expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
     expect(isStaleExtensionReferenceError(new Error("network down"))).toBe(false);
+  });
+
+  it("rolls back prompt reservations and hooks on unavailable delivery", async () => {
+    const session = route({ isIdle: () => true, sendUserMessage: () => { throw routeUnavailableError(); } });
+    const previousRequester = { channel: "telegram" as const, instanceId: "default", conversationId: "old", userId: "1", sessionKey: session.sessionKey, safeLabel: "old", createdAt: 1 };
+    const nextRequester = { ...previousRequester, conversationId: "new", safeLabel: "new" };
+    session.remoteRequester = previousRequester;
+    session.remoteRequesterPendingTurn = true;
+    const events: string[] = [];
+
+    await expect(deliverRoutePrompt(session, {
+      content: "hello",
+      requester: nextRequester,
+      onStart: () => { events.push("start"); },
+      onRollback: () => { events.push("rollback"); },
+    })).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+
+    expect(session.remoteRequester).toBe(previousRequester);
+    expect(session.remoteRequesterPendingTurn).toBe(true);
+    expect(events).toEqual(["start", "rollback"]);
+  });
+
+  it("commits accepted prompt operations without rollback", async () => {
+    const sendUserMessage = vi.fn();
+    const session = route({ isIdle: () => false, sendUserMessage });
+    const requester = { channel: "telegram" as const, instanceId: "default", conversationId: "new", userId: "1", sessionKey: session.sessionKey, safeLabel: "new", createdAt: 1 };
+    const events: string[] = [];
+
+    await expect(deliverRoutePrompt(session, {
+      content: "hello",
+      deliverAs: "followUp",
+      requester,
+      onStart: () => { events.push("start"); },
+      onRollback: () => { events.push("rollback"); },
+      onCommit: () => { events.push("commit"); },
+    })).resolves.toEqual({ kind: "success", result: { idle: false, deliverAs: "followUp" } });
+
+    expect(sendUserMessage).toHaveBeenCalledWith("hello", { deliverAs: "followUp" });
+    expect(session.remoteRequester).toBe(requester);
+    expect(events).toEqual(["start", "commit"]);
   });
 
   it("probes route availability coherently", () => {
