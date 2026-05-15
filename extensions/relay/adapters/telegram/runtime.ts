@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
 import { summarizeForTelegram } from "./summary.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
@@ -1293,11 +1293,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.api.sendPlainText(message.chat.id, "Usage: /send-file <relative-path> [caption]");
       return;
     }
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) {
-      await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") {
+      await this.api.sendPlainText(message.chat.id, routeActionDisplayMessage(workspace));
       return;
     }
+    const workspaceRoot = workspace.result;
     const requester = this.telegramRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
@@ -1317,7 +1318,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async sendImageByPath(route: SessionRoute, chatId: number, relativePath: string): Promise<void> {
-    const loaded = await route.actions.getImageByPath(relativePath);
+    const imageOutcome = await routeImageByPathSafely(route, relativePath);
+    if (imageOutcome.kind !== "success") {
+      await this.api.sendPlainText(chatId, routeActionDisplayMessage(imageOutcome));
+      return;
+    }
+    const loaded = imageOutcome.result;
     if (!loaded.ok) {
       await this.api.sendPlainText(chatId, loaded.error);
       return;
@@ -1331,7 +1337,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async sendLatestImages(route: SessionRoute, chatId: number): Promise<void> {
     const latest = route.notification.latestImages;
-    const images = await route.actions.getLatestImages();
+    const imagesOutcome = await latestRouteImagesSafely(route);
+    if (imagesOutcome.kind !== "success") {
+      await this.api.sendPlainText(chatId, routeActionDisplayMessage(imagesOutcome));
+      return;
+    }
+    const images = imagesOutcome.result;
     if (!latest || latest.count <= 0) {
       await this.api.sendPlainText(chatId, this.emptyImagesMessage(false));
       return;
