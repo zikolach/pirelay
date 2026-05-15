@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CANONICAL_REMOTE_COMMANDS, canonicalRemoteCommandName, parseRemoteCommandInvocation } from "../../extensions/relay/commands/remote.js";
-import { discordRelayCommandSurface, platformSafeDescription, slackRelayCommandSurface, telegramBotCommands, telegramCommandSurface, telegramMenuCommandToCanonical } from "../../extensions/relay/commands/surfaces.js";
-import { DiscordLiveOperations, discordJsChatInputInteractionToMessagePayload, discordRelayApplicationCommandData, DISCORD_NATIVE_COMMAND_NAME } from "../../extensions/relay/adapters/discord/live-client.js";
+import { discordRelayCommandSurface, platformSafeDescription, slackRelayCommandSurface, SLACK_COMMAND_USAGE_HINT_MAX_LENGTH, telegramCommandSurface, telegramMenuCommandToCanonical } from "../../extensions/relay/commands/surfaces.js";
+import { DiscordLiveOperations, DISCORD_NATIVE_COMMAND_NAME, discordJsChatInputInteractionToMessagePayload, discordRelayApplicationCommandData } from "../../extensions/relay/adapters/discord/live-client.js";
 import { parseSlackWebhookBody, slackEnvelopeToChannelEvent, slackSlashCommandMetadata } from "../../extensions/relay/adapters/slack/adapter.js";
 import type { SlackRelayConfig } from "../../extensions/relay/core/types.js";
 
@@ -28,10 +28,25 @@ describe("messenger command surfaces", () => {
     expect(safe).not.toContain("xoxb-secret");
   });
 
+  it("derives Slack slash command usage hint from command registry", () => {
+    const slackSurface = slackRelayCommandSurface();
+    const expectedHint = platformSafeDescription(
+      `/relay <${slackSurface.subcommands.map((command) => command.surfaceName).join("|")}>`,
+      SLACK_COMMAND_USAGE_HINT_MAX_LENGTH,
+    );
+
+    expect(slackSurface.usageHint).toBe(expectedHint);
+    expect(slackSurface.usageHint.length).toBeLessThanOrEqual(SLACK_COMMAND_USAGE_HINT_MAX_LENGTH);
+    for (const command of slackSurface.subcommands) {
+      expect(expectedHint).toContain(command.surfaceName);
+    }
+  });
+
   it("maps platform-safe command names back to canonical command handlers", () => {
     expect(telegramMenuCommandToCanonical("sendfile")).toBe("send-file");
     expect(telegramMenuCommandToCanonical("sendimage")).toBe("send-image");
     expect(telegramMenuCommandToCanonical("send_image")).toBe("send-image");
+    expect(telegramMenuCommandToCanonical("send-image")).toBe("send-image");
     expect(canonicalRemoteCommandName("sendfile")).toBe("send-file");
     expect(parseRemoteCommandInvocation("/sendimage out.png")).toEqual({ command: "send-image", args: "out.png" });
     expect(parseRemoteCommandInvocation("/send_image out.png")).toEqual({ command: "send-image", args: "out.png" });

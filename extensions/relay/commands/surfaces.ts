@@ -76,13 +76,19 @@ export function slackRelayCommandSurface(): SlackRelayCommandSurface {
     usage: slackUsageFor(definition.usage),
     aliases: aliasesFor(definition.command),
   })), "Slack");
+  const usageHint = slackUsageHintFromSubcommands(subcommands);
   return {
     command: "/relay",
     description: platformSafeDescription("Control and monitor PiRelay sessions.", SLACK_COMMAND_DESCRIPTION_MAX_LENGTH),
-    usageHint: platformSafeDescription("/relay <status|sessions|full|images|send-file|abort|compact|pause|resume|disconnect>", SLACK_COMMAND_USAGE_HINT_MAX_LENGTH),
+    usageHint,
     subcommands,
     textFallback: "relay <command>",
   };
+}
+
+function slackUsageHintFromSubcommands(subcommands: readonly CommandSurfaceEntry[]): string {
+  const usageHintValue = `/relay <${subcommands.map((entry) => entry.surfaceName).join("|")}>`;
+  return platformSafeDescription(usageHintValue, SLACK_COMMAND_USAGE_HINT_MAX_LENGTH);
 }
 
 export function telegramBotCommands(): Array<{ command: string; description: string }> {
@@ -91,7 +97,7 @@ export function telegramBotCommands(): Array<{ command: string; description: str
 
 export function telegramMenuCommandToCanonical(command: string): string {
   const normalized = command.trim().toLowerCase().replace(/_/g, "-");
-  const entry = telegramCommandSurface().find((candidate) => candidate.command === command.trim().toLowerCase());
+  const entry = telegramCommandSurface().find((candidate) => candidate.command === normalized || candidate.surfaceName.replace(/_/g, "-") === normalized);
   return entry?.canonicalCommand ?? canonicalRemoteCommandName(normalized);
 }
 

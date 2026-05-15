@@ -1067,17 +1067,21 @@ describe("SlackRuntime foundations", () => {
       response_url: responseUrl,
     });
 
-    await send("https://hooks.slack.test/repeat", "60");
-    expect(operations.responses).toEqual([expect.objectContaining({ url: "https://hooks.slack.test/repeat" })]);
+    try {
+      await send("https://hooks.slack.test/repeat", "60");
+      expect(operations.responses).toEqual([expect.objectContaining({ url: "https://hooks.slack.test/repeat" })]);
 
-    await send("https://hooks.slack.test/repeat", "61");
-    expect(operations.responses).toHaveLength(1);
+      await send("https://hooks.slack.test/repeat", "61");
+      expect(operations.responses).toHaveLength(1);
 
-    vi.advanceTimersByTime(31 * 60 * 1000);
+      vi.advanceTimersByTime(31 * 60 * 1000);
 
-    await send("https://hooks.slack.test/repeat", "62");
-    expect(operations.responses).toHaveLength(2);
-    expect(operations.responses.at(-1)?.url).toBe("https://hooks.slack.test/repeat");
+      await send("https://hooks.slack.test/repeat", "62");
+      expect(operations.responses).toHaveLength(2);
+      expect(operations.responses.at(-1)?.url).toBe("https://hooks.slack.test/repeat");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects workspace mismatch during startup", async () => {
