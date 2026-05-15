@@ -61,6 +61,39 @@ export function routeActionDisplayMessage(outcome: Exclude<RouteActionOutcome<un
   return outcome.message;
 }
 
+export type RouteAvailabilityProbe =
+  | { kind: "available"; idle: boolean; busy: boolean; model?: Model<any>; workspaceRoot?: string }
+  | { kind: "unavailable"; message: string };
+
+export interface RouteAvailabilityProbeOptions {
+  includeModel?: boolean;
+  includeWorkspace?: boolean;
+}
+
+export function probeRouteAvailability(route: SessionRoute, options: RouteAvailabilityProbeOptions = {}): RouteAvailabilityProbe {
+  const idle = routeIdleState(route);
+  if (idle === undefined) return routeActionUnavailable();
+
+  let model: Model<any> | undefined;
+  if (options.includeModel) {
+    try {
+      model = route.actions.getModel();
+    } catch (error) {
+      if (isRouteUnavailableError(error)) return routeActionUnavailable();
+      throw error;
+    }
+    if (routeIdleState(route) === undefined) return routeActionUnavailable();
+  }
+
+  let workspaceRoot: string | undefined;
+  if (options.includeWorkspace) {
+    workspaceRoot = routeWorkspaceRoot(route);
+    if (!workspaceRoot) return routeActionUnavailable();
+  }
+
+  return { kind: "available", idle, busy: !idle, model, workspaceRoot };
+}
+
 export function isStaleExtensionReferenceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
