@@ -61,5 +61,5 @@
 - [x] 8.2 Run targeted Telegram, Discord, Slack, broker, requester-file, and media runtime tests affected by the migration.
 - [x] 8.3 Run `npm run typecheck`.
 - [x] 8.4 Run `npm test`.
-- [ ] 8.5 Run `openspec validate relay-route-action-safety --strict`.
+- [x] 8.5 Run `openspec validate relay-route-action-safety --strict`.
 - [ ] 8.6 Run `openspec validate --all --strict` if other active changes are present.
