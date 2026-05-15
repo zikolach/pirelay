@@ -140,3 +140,51 @@ This inventory captures the high-risk fallible `route.actions.*` and existing na
 
 - Formatting-only reads from `route.notification`, `route.binding`, `route.session*`, and `route.lastActivityAt` are safe as immutable/route-owned metadata, provided they are not used to prove live Pi availability.
 - `route.actions.context` should remain quarantined inside compatibility helpers; adapter/broker long-lived code should not use it directly.
+
+## Task 1.4: Mutable state reserved before fallible route actions
+
+### Requester context and pending-turn state
+
+- Adapters/broker reserve `route.remoteRequester` before prompt injection and requester-scoped file delivery.
+- Extension runtime `sendUserMessage()` commits `route.remoteRequesterPendingTurn = true` only after prompt acceptance and clears requester state when live context/send fails unavailable.
+- Risk: adapter-level prompt unavailable races can retain a just-reserved `remoteRequester` if the shared operation does not explicitly roll back or delegate to the runtime's existing cleanup.
+
+### Activity, typing, and thinking indicators
+
+- Telegram starts an activity indicator before prompt delivery in `deliverAuthorizedPrompt()`, `deliverPlainPrompt()`, answer callbacks, and guided answer flows.
+- Discord starts/stops typing activity around `deliverDiscordPrompt()` and stops typing before abort.
+- Slack starts best-effort activity or thinking reactions for ordinary prompts and `pirelay to`; reactions are explicitly stopped only in selected unavailable catch paths.
+- Risk: unavailable after indicator start can leave refresh timers/reactions active unless rollback hooks are registered and invoked for every prompt outcome.
+
+### Shared-room and output destinations
+
+- Telegram stores shared-room output destinations for group `/to@bot` style interactions and clears them on disconnect/session cleanup.
+- Slack/Discord active selections and shared-room routing metadata can select a session/conversation before prompt delivery.
+- Risk: one-shot shared-room output state should commit only after prompt acceptance and roll back if route delivery becomes unavailable.
+
+### Abort flags
+
+- Telegram dashboard and command abort paths set `route.notification.abortRequested = true` before calling `actions.abort()` and clear it on caught unavailable failures.
+- Discord command abort sets `route.notification.abortRequested = true`, stops typing, calls `actions.abort()`, and clears on caught unavailable failures.
+- Broker abort sets `route.notification.abortRequested = true` before `actions.abort()` and clears on catch.
+- Slack currently calls `actions.abort()` after availability precheck without setting `abortRequested` in the adapter path.
+- Risk: abort helpers must centralize already-idle detection and clear `abortRequested` on all unavailable/non-success outcomes.
+
+### Adapter health and diagnostics
+
+- Discord prompt delivery sets `lastError` for non-unavailable send failures and store update failures.
+- Slack/Telegram mostly surface or rethrow non-unavailable failures; platform transport failures should remain platform diagnostics.
+- Risk: route-unavailable outcomes must not be written as messenger runtime health failures, while non-unavailable platform/programmer failures must remain distinct.
+
+### Media/cache state
+
+- Latest image actions read `route.notification.latestImages` and `actions.getLatestImages()`; explicit image/file operations rely on route workspace availability.
+- Runtime route replacement and stale context invalidation should prevent previous-session image candidates/workspace roots from being reused.
+- Risk: workspace/media helpers must fail closed and must not fall back to another route, stale workspace root, or another requester.
+
+### Audit and persistence timing
+
+- Prompt audit entries should occur after prompt acceptance, not after unavailable outcomes.
+- Compact audit is currently appended before `actions.compact()` in Telegram/Discord command paths; migration should move audit or mark it as attempted only when that wording remains intentional.
+- File delivery audit happens after the delivery result and is safe if the operation outcome is explicit.
+- Pairing/pause/resume/disconnect persistence is outside route-action safety unless it calls stale local UI/API helpers; binding authority remains a separate OpenSpec change.
