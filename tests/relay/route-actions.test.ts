@@ -10,6 +10,7 @@ import {
   routeActionOutcomeFromError,
   routeActionSuccess,
   routeActionUnavailable,
+  probeRouteAvailability,
   routeIdleState,
   routeModelState,
   routeUnavailableError,
@@ -87,6 +88,13 @@ describe("route action lifetime helpers", () => {
     expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
     expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
     expect(isStaleExtensionReferenceError(new Error("network down"))).toBe(false);
+  });
+
+  it("probes route availability coherently", () => {
+    expect(probeRouteAvailability(route({ isIdle: () => false }), { includeModel: true })).toMatchObject({ kind: "available", idle: false, busy: true });
+    expect(probeRouteAvailability(route({ isIdle: () => undefined }))).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(probeRouteAvailability(route({ isIdle: () => true, getModel: () => { throw new Error(STALE_EXTENSION_ERROR); } }), { includeModel: true })).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(probeRouteAvailability(route({ isIdle: () => true, getWorkspaceRoot: () => undefined }), { includeWorkspace: true })).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
   });
 
   it("prefers narrow action helpers over raw context", () => {

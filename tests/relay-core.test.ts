@@ -56,8 +56,8 @@ describe("relay core route helpers", () => {
 
   it("marks routes offline when model lookup discovers unavailability", () => {
     const unavailable = route();
-    unavailable.actions.getModel = () => undefined;
-    unavailable.actions.isIdle = () => undefined;
+    unavailable.actions.isIdle = () => true;
+    unavailable.actions.getModel = () => { throw new Error("This extension ctx is stale after session replacement or reload."); };
 
     expect(statusSnapshotForRoute(unavailable, { online: true, busy: false })).toMatchObject({ online: false, busy: false, modelId: undefined });
     expect(relayRouteStateForRoute(unavailable, { channel: "telegram", busy: true })).toMatchObject({ busy: false, modelId: undefined, imageInputSupported: false });
