@@ -8,6 +8,7 @@ import type { ImageFileLoadResult, LatestTurnImage, SessionRoute, SessionStatusS
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
+import { TunnelStateStore } from "../state/tunnel-store.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
@@ -298,6 +299,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             maxDocumentBytes: 50 * 1024 * 1024,
             maxImageBytes: this.config.maxOutboundImageBytes,
             allowedImageMimeTypes: this.config.allowedImageMimeTypes,
+            authoritySnapshot: await new TunnelStateStore(this.config.stateDir).loadBindingAuthoritySnapshot(),
           });
           route.actions.appendAudit(`Telegram broker send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
           await respond({ ok: true, result: formatRequesterFileDeliveryResult(result) });

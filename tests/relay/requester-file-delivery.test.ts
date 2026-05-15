@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../extensions/relay/core/requester-file-delivery.js";
+import { bindingAuthorityStateFromData, stateUnavailableBindingAuthority } from "../../extensions/relay/core/binding-authority.js";
 import type { ChannelAdapter, ChannelOutboundPayload } from "../../extensions/relay/core/channel-adapter.js";
-import type { SessionRoute } from "../../extensions/relay/core/types.js";
+import type { SessionRoute, TunnelStoreData } from "../../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
 
@@ -28,6 +29,30 @@ function requester(overrides: Partial<RelayFileDeliveryRequester> = {}): RelayFi
     safeLabel: "Slack U1",
     createdAt: Date.now(),
     ...overrides,
+  };
+}
+
+function authorityState(req = requester()): TunnelStoreData {
+  return {
+    pendingPairings: {},
+    bindings: {},
+    channelBindings: {
+      [`${req.channel}:${req.instanceId}:${req.sessionKey}`]: {
+        channel: req.channel,
+        instanceId: req.instanceId,
+        conversationId: req.conversationId,
+        userId: req.userId,
+        sessionKey: req.sessionKey,
+        sessionId: "s",
+        sessionLabel: "Docs",
+        boundAt: "2026-05-15T00:00:00.000Z",
+        lastSeenAt: "2026-05-15T00:00:00.000Z",
+        status: "active",
+      },
+    },
+    activeChannelSelections: {},
+    trustedRelayUsers: {},
+    lifecycleNotifications: {},
   };
 }
 
@@ -124,6 +149,20 @@ describe("requester-scoped file delivery", () => {
     expect(unsupported).toMatchObject({ ok: false, code: "unsupported-capability" });
 
     expect(sent).toEqual([]);
+  });
+
+  it("checks binding authority before reading or uploading requester files", async () => {
+    const root = await workspace();
+    await writeFile(join(root, "report.md"), "# Report\n");
+    const req = requester();
+    const { fake, sent } = adapter();
+
+    const active = await deliverWorkspaceFileToRequester({ route: route(req), requester: req, adapter: fake, workspaceRoot: root, relativePath: "report.md", source: "remote-command", authoritySnapshot: bindingAuthorityStateFromData(authorityState(req)) });
+    expect(active).toMatchObject({ ok: true });
+
+    const unavailable = await deliverWorkspaceFileToRequester({ route: route(req), requester: req, adapter: fake, workspaceRoot: root, relativePath: "missing-after-authority.md", source: "remote-command", authoritySnapshot: stateUnavailableBindingAuthority(new Error("corrupt state")) });
+    expect(unavailable).toMatchObject({ ok: false, code: "authority-denied" });
+    expect(sent).toHaveLength(1);
   });
 
   it("redacts upload failures", async () => {

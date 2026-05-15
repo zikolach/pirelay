@@ -2,6 +2,7 @@ import type { ChannelAdapter, ChannelAdapterKind, ChannelOutboundFile, ChannelRo
 import { redactSecrets } from "../config/setup.js";
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "./file-delivery.js";
 import type { SessionRoute } from "./types.js";
+import { authorityOutcomeAllowsDelivery, resolveChannelBindingAuthority, resolveTelegramBindingAuthority, type BindingAuthorityState } from "./binding-authority.js";
 
 export type RelayFileDeliverySource = "local-command" | "remote-command" | "assistant-tool";
 
@@ -29,11 +30,12 @@ export interface RelayRequesterFileDeliveryOptions {
   maxDocumentBytes?: number;
   maxImageBytes?: number;
   allowedImageMimeTypes?: string[];
+  authoritySnapshot?: BindingAuthorityState;
 }
 
 export type RelayRequesterFileDeliveryResult =
   | { ok: true; kind: RelayOutboundFileKind; relativePath: string; fileName: string; byteSize?: number; targetLabel: string; source: RelayFileDeliverySource }
-  | { ok: false; code: "stale-requester" | "validation-failed" | "unsupported-capability" | "upload-failed"; error: string; relativePath?: string; targetLabel: string; source: RelayFileDeliverySource };
+  | { ok: false; code: "stale-requester" | "authority-denied" | "validation-failed" | "unsupported-capability" | "upload-failed"; error: string; relativePath?: string; targetLabel: string; source: RelayFileDeliverySource };
 
 export interface ParsedRemoteSendFileRequest {
   relativePath: string;
@@ -84,6 +86,19 @@ export async function deliverWorkspaceFileToRequester(options: RelayRequesterFil
     };
   }
 
+  if (options.authoritySnapshot) {
+    const authority = requesterAuthorityIsActive(options.route, options.requester, options.authoritySnapshot);
+    if (!authority) {
+      return {
+        ok: false,
+        code: "authority-denied",
+        error: "File delivery requester binding is no longer active. Ask from the paired messenger conversation again.",
+        targetLabel,
+        source: options.source,
+      };
+    }
+  }
+
   const requestedPath = options.relativePath.trim();
   if (!requestedPath) {
     return { ok: false, code: "validation-failed", error: "Usage: send-file <relative-path> [caption]", targetLabel, source: options.source };
@@ -120,6 +135,31 @@ export async function deliverWorkspaceFileToRequester(options: RelayRequesterFil
   }
 
   return { ok: true, kind: loaded.kind, relativePath: loaded.relativePath, fileName: loaded.file.fileName, byteSize: loaded.file.byteSize, targetLabel, source: options.source };
+}
+
+function requesterAuthorityIsActive(route: SessionRoute, requester: RelayFileDeliveryRequester, snapshot: BindingAuthorityState): boolean {
+  if (requester.channel === "telegram") {
+    const chatId = Number(requester.conversationId);
+    const userId = Number(requester.userId);
+    if (!Number.isFinite(chatId) || !Number.isFinite(userId)) return false;
+    const outcome = resolveTelegramBindingAuthority(
+      snapshot,
+      { sessionKey: requester.sessionKey, chatId, userId, allowVolatileFallback: true },
+      route.binding,
+    );
+    return authorityOutcomeAllowsDelivery(outcome) && !outcome.binding.paused;
+  }
+  const outcome = resolveChannelBindingAuthority(
+    snapshot,
+    {
+      channel: requester.channel,
+      instanceId: requester.instanceId,
+      sessionKey: requester.sessionKey,
+      conversationId: requester.conversationId,
+      userId: requester.userId,
+    },
+  );
+  return authorityOutcomeAllowsDelivery(outcome) && !outcome.binding.paused;
 }
 
 export function formatRequesterFileDeliveryResult(result: RelayRequesterFileDeliveryResult): string {

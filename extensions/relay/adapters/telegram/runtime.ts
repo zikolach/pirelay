@@ -4,6 +4,7 @@ import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/pa
 import { summarizeForTelegram } from "./summary.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
+import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveTelegramBindingAuthority, telegramDestinationKey } from "../../core/binding-authority.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { TelegramApiClient } from "./api.js";
@@ -214,9 +215,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   async registerRoute(route: SessionRoute): Promise<void> {
     const previousRoute = this.routes.get(route.sessionKey);
     if (route.binding) {
-      const active = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true });
-      if (active) route.binding = active;
-      else if (await this.store.getBindingBySessionKey(route.sessionKey)) route.binding = undefined;
+      const expected = { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: true };
+      const outcome = resolveTelegramBindingAuthority(await this.store.loadBindingAuthoritySnapshot(), expected, route.binding);
+      route.binding = authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
     }
     if (previousRoute?.binding?.chatId !== route.binding?.chatId && previousRoute?.binding) {
       this.clearActivityIndicator(previousRoute);
@@ -304,16 +305,23 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const binding = this.outputBindingForRoute(route);
     if (!binding) return undefined;
     const baseBinding = route.binding;
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
     if (baseBinding && (binding.chatId !== baseBinding.chatId || binding.userId !== baseBinding.userId)) {
-      const activeBase = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: baseBinding.chatId, userId: baseBinding.userId, includePaused: true });
-      if (activeBase) return { ...activeBase, chatId: binding.chatId, userId: binding.userId };
-      const stored = await this.store.getBindingBySessionKey(route.sessionKey);
-      return stored ? undefined : binding;
+      const baseOutcome = resolveTelegramBindingAuthority(
+        snapshot,
+        { sessionKey: route.sessionKey, chatId: baseBinding.chatId, userId: baseBinding.userId, includePaused: true, allowVolatileFallback: true },
+        baseBinding,
+      );
+      if (baseOutcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(baseOutcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+      return authorityOutcomeAllowsDelivery(baseOutcome) ? { ...baseOutcome.binding, chatId: binding.chatId, userId: binding.userId } : undefined;
     }
-    const active = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: binding.chatId, userId: binding.userId, includePaused: true });
-    if (active) return active;
-    const stored = await this.store.getBindingBySessionKey(route.sessionKey);
-    return stored ? undefined : binding;
+    const outcome = resolveTelegramBindingAuthority(
+      snapshot,
+      { sessionKey: route.sessionKey, chatId: binding.chatId, userId: binding.userId, includePaused: true, allowVolatileFallback: true },
+      binding,
+    );
+    if (outcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+    return authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
   }
 
   private ambiguityKey(sessionKey: string, chatId: number, userId: number, token: string): string {
@@ -444,13 +452,20 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return undefined;
   }
 
-  private activityKey(sessionKey: string, chatId: number): string {
-    return `${sessionKey}:${chatId}`;
+  private activityKey(sessionKey: string, chatId: number, userId?: number): string {
+    return telegramDestinationKey({ sessionKey, chatId, userId });
   }
 
   private activityKeyForRoute(route: SessionRoute): string | undefined {
     const binding = this.outputBindingForRoute(route);
-    return binding ? this.activityKey(route.sessionKey, binding.chatId) : undefined;
+    return binding ? this.activityKey(route.sessionKey, binding.chatId, binding.userId) : undefined;
+  }
+
+  private clearActivityIndicatorsForSession(sessionKey: string): void {
+    const prefix = `telegram:default:${sessionKey}:`;
+    for (const key of this.activityIndicators.keys()) {
+      if (key.startsWith(prefix)) this.clearActivityIndicatorByKey(key);
+    }
   }
 
   private clearAllActivityIndicators(): void {
@@ -462,7 +477,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private clearActivityIndicator(route: SessionRoute): void {
     const key = this.activityKeyForRoute(route);
-    if (!key) return;
+    if (!key) {
+      this.clearActivityIndicatorsForSession(route.sessionKey);
+      return;
+    }
     this.clearActivityIndicatorByKey(key);
   }
 
@@ -490,28 +508,28 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async startActivityIndicator(route: SessionRoute): Promise<boolean> {
-    const binding = this.outputBindingForRoute(route);
+    const binding = await this.activeOutputBindingForRoute(route);
     if (!binding || binding.paused) return false;
-    const key = this.activityKeyForRoute(route);
+    const key = this.activityKey(route.sessionKey, binding.chatId, binding.userId);
     if (!key) return false;
     if (this.activityIndicators.has(key)) return true;
 
     const sent = await this.trySendActivityIndicator(binding.chatId);
     if (!sent) return false;
-    this.scheduleActivityRefresh(route.sessionKey, binding.chatId, key, TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS);
+    this.scheduleActivityRefresh(route.sessionKey, binding.chatId, binding.userId, key, TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS);
     return true;
   }
 
-  private scheduleActivityRefresh(sessionKey: string, chatId: number, key: string, delayMs = TELEGRAM_ACTIVITY_REFRESH_MS): void {
-    const timer = setTimeout(() => this.refreshActivityIndicator(sessionKey, chatId, key), delayMs);
+  private scheduleActivityRefresh(sessionKey: string, chatId: number, userId: number | undefined, key: string, delayMs = TELEGRAM_ACTIVITY_REFRESH_MS): void {
+    const timer = setTimeout(() => this.refreshActivityIndicator(sessionKey, chatId, userId, key), delayMs);
     unrefTimer(timer);
     this.activityIndicators.set(key, timer);
   }
 
-  private async refreshActivityIndicator(sessionKey: string, chatId: number, key: string): Promise<void> {
+  private async refreshActivityIndicator(sessionKey: string, chatId: number, userId: number | undefined, key: string): Promise<void> {
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
-    if (!route || !binding || binding.chatId !== chatId || binding.paused || !this.shouldContinueActivityIndicator(route)) {
+    if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused || !this.shouldContinueActivityIndicator(route)) {
       this.clearActivityIndicatorByKey(key);
       return;
     }
@@ -522,7 +540,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
     if (!this.activityIndicators.has(key)) return;
-    this.scheduleActivityRefresh(sessionKey, chatId, key);
+    this.scheduleActivityRefresh(sessionKey, chatId, userId, key);
   }
 
   private async trySendActivityIndicator(chatId: number): Promise<boolean> {
@@ -536,7 +554,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private progressKey(route: SessionRoute): string | undefined {
     const binding = this.outputBindingForRoute(route);
-    return binding ? `${route.sessionKey}:${binding.chatId}` : undefined;
+    return binding ? telegramDestinationKey({ sessionKey: route.sessionKey, chatId: binding.chatId, userId: binding.userId }) : undefined;
+  }
+
+  private clearProgressStatesForSession(sessionKey: string): void {
+    const prefix = `telegram:default:${sessionKey}:`;
+    for (const [key, state] of this.progressStates) {
+      if (!key.startsWith(prefix)) continue;
+      if (state.timer) clearTimeout(state.timer);
+      this.progressStates.delete(key);
+    }
   }
 
   private clearAllProgressStates(): void {
@@ -548,7 +575,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private clearProgressState(route: SessionRoute): void {
     const key = this.progressKey(route);
-    if (!key) return;
+    if (!key) {
+      this.clearProgressStatesForSession(route.sessionKey);
+      return;
+    }
     const state = this.progressStates.get(key);
     if (state?.timer) clearTimeout(state.timer);
     this.progressStates.delete(key);
@@ -577,17 +607,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const interval = progressIntervalMsFor(mode, this.config);
     const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
     const delay = Math.max(0, interval - elapsed);
-    state.timer = setTimeout(() => this.flushProgress(route.sessionKey, binding.chatId, key), delay);
+    state.timer = setTimeout(() => this.flushProgress(route.sessionKey, binding.chatId, binding.userId, key), delay);
     unrefTimer(state.timer);
   }
 
-  private async flushProgress(sessionKey: string, chatId: number, key: string): Promise<void> {
+  private async flushProgress(sessionKey: string, chatId: number, userId: number | undefined, key: string): Promise<void> {
     const state = this.progressStates.get(key);
     if (!state) return;
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
-    if (!route || !binding || binding.chatId !== chatId || binding.paused || route.notification.lastStatus !== "running") {
+    if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused || route.notification.lastStatus !== "running") {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);
       return;
@@ -1122,12 +1152,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!binding) return false;
     if (binding.userId !== user.id) return false;
     if (this.config.allowUserIds.length > 0 && !this.config.allowUserIds.includes(user.id)) return false;
-    const active = await this.store.getActiveBindingForSession(route.sessionKey, { chatId: binding.chatId, userId: user.id, includePaused: true });
-    if (active) {
-      route.binding = active;
-      return true;
-    }
-    return !(await this.store.getBindingBySessionKey(route.sessionKey));
+    const outcome = resolveTelegramBindingAuthority(
+      await this.store.loadBindingAuthoritySnapshot(),
+      { sessionKey: route.sessionKey, chatId: binding.chatId, userId: user.id, includePaused: true, allowVolatileFallback: true },
+      binding,
+    );
+    if (!authorityOutcomeAllowsDelivery(outcome)) return false;
+    route.binding = outcome.binding;
+    return true;
   }
 
   private acceptedImageFormatsText(): string {
@@ -1312,6 +1344,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       maxDocumentBytes: 50 * 1024 * 1024,
       maxImageBytes: this.config.maxOutboundImageBytes,
       allowedImageMimeTypes: this.config.allowedImageMimeTypes,
+      authoritySnapshot: await this.store.loadBindingAuthoritySnapshot(),
     });
     route.actions.appendAudit(`Telegram remote send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
     if (!result.ok) await this.api.sendPlainText(message.chat.id, formatRequesterFileDeliveryResult(result));
@@ -1880,37 +1913,43 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
-    const persisted = (await this.store.getBindingsByChatId(chatId))
-      .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
-    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId);
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
+    if (snapshot.kind === "state-unavailable") return [];
+    const persisted = Object.values(snapshot.data.bindings)
+      .filter((binding) => binding.chatId === chatId && binding.status !== "revoked" && binding.userId === userId);
+    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId, snapshot);
   }
 
   private async sessionEntriesForTelegramUser(userId: number): Promise<SessionListEntry[]> {
-    const persisted = (await this.store.getTelegramBindingsByUserId(userId))
-      .filter((binding) => binding.status !== "revoked");
-    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId);
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
+    if (snapshot.kind === "state-unavailable") return [];
+    const persisted = Object.values(snapshot.data.bindings)
+      .filter((binding) => binding.userId === userId && binding.status !== "revoked");
+    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId, snapshot);
   }
 
   private async sessionEntriesFromBindings(
     persisted: Array<TelegramBindingMetadata & { status?: string }>,
     includeUnpersistedRoute: (route: SessionRoute) => boolean,
+    snapshot?: Awaited<ReturnType<TunnelStateStore["loadBindingAuthoritySnapshot"]>>,
   ): Promise<SessionListEntry[]> {
+    const authoritySnapshot = snapshot ?? await this.store.loadBindingAuthoritySnapshot();
     const byKey = new Map<string, SessionListEntry>();
     for (const binding of persisted) {
       const route = this.routes.get(binding.sessionKey);
       if (route) {
         const availability = routeAvailability(route);
-        const snapshot = statusSnapshotForRoute(route, availability);
+        const routeStatusSnapshot = statusSnapshotForRoute(route, availability);
         byKey.set(binding.sessionKey, {
           sessionKey: route.sessionKey,
           sessionId: route.sessionId,
           sessionFile: route.sessionFile,
           sessionLabel: route.sessionLabel,
           alias: route.binding?.alias ?? binding.alias,
-          online: snapshot.online,
-          busy: snapshot.busy,
+          online: routeStatusSnapshot.online,
+          busy: routeStatusSnapshot.busy,
           paused: Boolean(route.binding?.paused ?? binding.paused),
-          modelId: snapshot.modelId,
+          modelId: routeStatusSnapshot.modelId,
           lastActivityAt: route.lastActivityAt,
         });
         continue;
@@ -1930,25 +1969,24 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
     for (const route of this.routes.values()) {
       const routeBinding = route.binding;
-      const active = routeBinding
-        ? await this.store.getActiveBindingForSession(route.sessionKey, { chatId: routeBinding.chatId, userId: routeBinding.userId, includePaused: true })
+      const outcome = routeBinding
+        ? resolveTelegramBindingAuthority(authoritySnapshot, { sessionKey: route.sessionKey, chatId: routeBinding.chatId, userId: routeBinding.userId, includePaused: true, allowVolatileFallback: true }, routeBinding)
         : undefined;
-      const stored = routeBinding ? await this.store.getBindingBySessionKey(route.sessionKey) : undefined;
-      if (stored && !active) continue;
-      if (active) route.binding = active;
+      if (outcome && !authorityOutcomeAllowsDelivery(outcome)) continue;
+      if (outcome && authorityOutcomeAllowsDelivery(outcome)) route.binding = outcome.binding;
       if (!includeUnpersistedRoute(route) || byKey.has(route.sessionKey)) continue;
       const availability = routeAvailability(route);
-      const snapshot = statusSnapshotForRoute(route, availability);
+      const routeStatusSnapshot = statusSnapshotForRoute(route, availability);
       byKey.set(route.sessionKey, {
         sessionKey: route.sessionKey,
         sessionId: route.sessionId,
         sessionFile: route.sessionFile,
         sessionLabel: route.sessionLabel,
         alias: route.binding?.alias,
-        online: snapshot.online,
-        busy: snapshot.busy,
+        online: routeStatusSnapshot.online,
+        busy: routeStatusSnapshot.busy,
         paused: Boolean(route.binding?.paused),
-        modelId: snapshot.modelId,
+        modelId: routeStatusSnapshot.modelId,
         lastActivityAt: route.lastActivityAt,
       });
     }

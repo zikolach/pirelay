@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -70,6 +70,19 @@ describe("TunnelStateStore", () => {
 
     const consumed = await store.consumePendingPairing(nonce);
     expect(consumed).toBeUndefined();
+  });
+
+  it("distinguishes missing state from corrupt state for binding authority snapshots", async () => {
+    const { store, dir } = await createStoreWithDir();
+
+    const missing = await store.loadBindingAuthoritySnapshot();
+    expect(missing).toMatchObject({ kind: "loaded", missing: true });
+
+    await writeFile(join(dir, "state.json"), "{not-json", "utf8");
+    const corrupt = await store.loadBindingAuthoritySnapshot();
+    expect(corrupt.kind).toBe("state-unavailable");
+
+    expect(await store.load()).toMatchObject({ bindings: {}, channelBindings: {} });
   });
 
   it("serializes concurrent state updates so messenger bindings are not clobbered", async () => {

@@ -120,6 +120,56 @@ describe("telegram broker process", () => {
     expect(updated.bindings?.["revoked-session:memory"]).toMatchObject({ status: "revoked", revokedAt: revokedBinding.revokedAt, lastSeenAt: revokedBinding.lastSeenAt });
   });
 
+  it("does not authorize stale route bindings when broker state is corrupt", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    await writeFile(statePath, "{not-json", "utf8");
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    await sendBrokerRequest(socketPath, {
+      type: "request",
+      requestId: "corrupt-state-route",
+      action: "registerRoute",
+      clientId: "test-client",
+      route: {
+        sessionKey: "corrupt-session:memory",
+        sessionId: "corrupt-session",
+        sessionLabel: "Corrupt Docs",
+        online: true,
+        busy: false,
+        notification: {},
+        binding: {
+          sessionKey: "corrupt-session:memory",
+          sessionId: "corrupt-session",
+          sessionLabel: "Corrupt Docs",
+          chatId: 123,
+          userId: 456,
+          boundAt: new Date(0).toISOString(),
+          lastSeenAt: new Date(3).toISOString(),
+        },
+      },
+    });
+
+    expect(await readFile(statePath, "utf8")).toBe("{not-json");
+  });
+
   it("preserves non-Telegram channel bindings when updating broker state", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
