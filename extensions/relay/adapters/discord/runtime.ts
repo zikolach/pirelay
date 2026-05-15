@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -534,48 +534,29 @@ export class DiscordRuntime {
       case "followup":
         await this.handlePromptCommand(message, binding, route, command.args, "followUp");
         return;
-      case "abort":
-        const idle = routeIdleState(route);
-        if (idle === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+      case "abort": {
+        const outcome = abortRouteSafely(route);
+        if (outcome.kind === "unavailable" || outcome.kind === "already-idle") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
-        if (idle) {
-          await this.sendText(message, "The Pi session is already idle.");
-          return;
-        }
-        route.notification.abortRequested = true;
+        if (outcome.kind === "failed") throw outcome.error;
         this.stopTypingActivity(route.sessionKey);
-        try {
-          route.actions.abort();
-        } catch (error) {
-          route.notification.abortRequested = false;
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
         route.actions.appendAudit("Discord requested abort.");
         await this.sendText(message, "Abort requested.");
         return;
-      case "compact":
-        if (routeIdleState(route) === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+      }
+      case "compact": {
+        const outcome = await compactRouteSafely(route);
+        if (outcome.kind === "unavailable") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
+        if (outcome.kind === "failed") throw outcome.error;
         route.actions.appendAudit("Discord requested compaction.");
-        try {
-          await route.actions.compact();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
         await this.sendText(message, "Compaction requested.");
         return;
+      }
       case "pause":
         this.stopTypingActivity(route.sessionKey);
         await this.setPaused(message, binding, route, true);
@@ -680,6 +661,7 @@ export class DiscordRuntime {
       content,
       deliverAs: options.deliverAs ?? this.config.busyDeliveryMode,
       requester: this.discordRequester(route, message),
+      passUndefinedOptions: true,
       onStart: () => this.startTypingActivity(route, bindingAddress(binding)),
       onRollback: () => this.stopTypingActivity(route.sessionKey),
       safeFailureMessage: "Could not deliver the Discord prompt to Pi.",
