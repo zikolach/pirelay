@@ -163,6 +163,17 @@ export function abortRouteSafely(route: SessionRoute, options: { alreadyIdleMess
   return routeActionSuccess(undefined);
 }
 
+export async function compactRouteSafely(route: SessionRoute, options: { safeFailureMessage?: string } = {}): Promise<RouteControlOperationOutcome> {
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return probe;
+  try {
+    await route.actions.compact();
+  } catch (error) {
+    return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not request compaction.");
+  }
+  return routeActionSuccess(undefined);
+}
+
 export function isStaleExtensionReferenceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
