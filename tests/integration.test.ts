@@ -1733,6 +1733,7 @@ describe("PiRelay integration behavior", () => {
     expect(() => route.actions.sendUserMessage("hello")).toThrow("The Pi session is unavailable");
     expect(route.remoteRequester).toBeUndefined();
     expect(route.remoteRequesterPendingTurn).toBe(false);
+    expect(route.actions.isIdle?.()).toBeUndefined();
 
     pi.api.sendMessage.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => route.actions.appendAudit("audit")).not.toThrow();

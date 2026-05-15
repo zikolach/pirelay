@@ -198,6 +198,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return safeSessionKeyForContext(ctx) === route.sessionKey ? ctx : undefined;
   }
 
+  function invalidateLiveContextForRoute(route: SessionRoute): void {
+    const ctx = liveContextForRoute(route);
+    if (ctx && latestContext === ctx) latestContext = undefined;
+  }
+
   function safeSetStatus(key: string, value: string, ctx = latestContext): void {
     if (!ctx) return;
     try {
@@ -661,7 +666,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           } catch (error) {
             route.remoteRequesterPendingTurn = false;
             if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
-            if (isStaleExtensionReferenceError(error)) throw new Error(unavailableRouteMessage());
+            if (isStaleExtensionReferenceError(error)) {
+              invalidateLiveContextForRoute(route);
+              throw new Error(unavailableRouteMessage());
+            }
             throw error;
           }
           if (requester) route.remoteRequesterPendingTurn = true;
@@ -699,7 +707,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           try {
             live.abort();
           } catch (error) {
-            if (isStaleExtensionReferenceError(error)) throw new Error(unavailableRouteMessage());
+            if (isStaleExtensionReferenceError(error)) {
+              invalidateLiveContextForRoute(route);
+              throw new Error(unavailableRouteMessage());
+            }
             throw error;
           }
         },
@@ -713,10 +724,22 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             try {
               live.compact({
                 onComplete: () => resolve(),
-                onError: (error) => reject(isStaleExtensionReferenceError(error) ? new Error(unavailableRouteMessage()) : error),
+                onError: (error) => {
+                  if (isStaleExtensionReferenceError(error)) {
+                    invalidateLiveContextForRoute(route);
+                    reject(new Error(unavailableRouteMessage()));
+                    return;
+                  }
+                  reject(error);
+                },
               });
             } catch (error) {
-              reject(isStaleExtensionReferenceError(error) ? new Error(unavailableRouteMessage()) : error);
+              if (isStaleExtensionReferenceError(error)) {
+                invalidateLiveContextForRoute(route);
+                reject(new Error(unavailableRouteMessage()));
+                return;
+              }
+              reject(error);
             }
           }),
       },
