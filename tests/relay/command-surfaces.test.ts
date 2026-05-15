@@ -41,8 +41,10 @@ describe("messenger command surfaces", () => {
     const data = discordRelayApplicationCommandData();
     expect(DISCORD_NATIVE_COMMAND_NAME).toBe("relay");
     expect(data).toMatchObject({ name: "relay" });
-    const options = data.options as Array<{ name: string }>;
+    const options = data.options as Array<{ name: string; options: unknown[] }>;
     expect(options.map((option) => option.name)).toEqual(expect.arrayContaining(["status", "send-file", "send-image"]));
+    expect(options.find((option) => option.name === "status")?.options).toEqual([]);
+    expect(options.find((option) => option.name === "send-file")?.options).toHaveLength(1);
 
     expect(discordJsChatInputInteractionToMessagePayload({
       id: "i1",
@@ -66,7 +68,7 @@ describe("messenger command surfaces", () => {
     expect(slackSlashCommandMetadata()).toMatchObject({ command: "/relay" });
     const raw = new URLSearchParams({
       command: "/relay",
-      text: "status",
+      text: "status\nrelay disconnect",
       channel_id: "D123",
       user_id: "U123",
       user_name: "owner",
@@ -75,11 +77,11 @@ describe("messenger command surfaces", () => {
       trigger_id: "trig",
     }).toString();
     const envelope = parseSlackWebhookBody(raw);
-    expect(envelope).toMatchObject({ type: "slash_command", command: "/relay", text: "status" });
+    expect(envelope).toMatchObject({ type: "slash_command", command: "/relay", text: "status\nrelay disconnect" });
     const event = slackEnvelopeToChannelEvent(envelope, {} as SlackRelayConfig);
     expect(event).toMatchObject({
       kind: "message",
-      text: "relay status",
+      text: "relay status relay disconnect",
       conversation: { id: "D123", kind: "private" },
       sender: { userId: "U123" },
       metadata: { responseUrl: "https://hooks.slack.test/response", slashCommand: "/relay" },
@@ -88,7 +90,7 @@ describe("messenger command surfaces", () => {
 
   it("does not fail Discord startup when native command sync fails", async () => {
     const client = {
-      application: { commands: { set: async () => { throw new Error("rate_limited token-secret"); } } },
+      application: { commands: { create: async () => { throw new Error("rate_limited token-secret"); } } },
       on: () => client,
       login: async () => "ok",
       destroy: () => undefined,
@@ -98,8 +100,10 @@ describe("messenger command surfaces", () => {
     await expect(operations.connect(async () => undefined)).resolves.toBeUndefined();
   });
 
-  it("does not route unrelated Slack slash commands", () => {
-    const envelope = parseSlackWebhookBody(new URLSearchParams({ command: "/status", text: "", channel_id: "D123", user_id: "U123" }).toString());
+  it("does not route unrelated or incomplete Slack slash commands", () => {
+    const envelope = parseSlackWebhookBody(new URLSearchParams({ command: "/status", text: "", channel_id: "D123", user_id: "U123", trigger_id: "trig" }).toString());
     expect(slackEnvelopeToChannelEvent(envelope, {} as SlackRelayConfig)).toBeUndefined();
+    const missingTrigger = parseSlackWebhookBody(new URLSearchParams({ command: "/relay", text: "status", channel_id: "D123", user_id: "U123" }).toString());
+    expect(slackEnvelopeToChannelEvent(missingTrigger, {} as SlackRelayConfig)).toBeUndefined();
   });
 });

@@ -322,9 +322,9 @@ export function slackSlashCommandMetadata(): { command: string; description: str
 }
 
 function slackSlashCommandToChannelEvent(envelope: SlackEnvelope): ChannelInboundMessage | undefined {
-  if (envelope.command !== "/relay" || !envelope.channel_id || !envelope.user_id) return undefined;
-  const text = envelope.text?.trim();
-  const updateId = envelope.trigger_id ?? `${envelope.channel_id}:${Date.now()}`;
+  if (envelope.command !== "/relay" || !envelope.channel_id || !envelope.user_id || !envelope.trigger_id) return undefined;
+  const text = sanitizeSlackSlashText(envelope.text);
+  const updateId = envelope.trigger_id;
   return {
     kind: "message",
     channel: SLACK_CHANNEL,
@@ -336,6 +336,10 @@ function slackSlashCommandToChannelEvent(envelope: SlackEnvelope): ChannelInboun
     sender: slackIdentity(envelope.user_id, envelope.user_name, envelope.team_id ?? envelope.team?.id),
     metadata: { teamId: envelope.team_id ?? envelope.team?.id, responseUrl: envelope.response_url, slashCommand: envelope.command },
   };
+}
+
+function sanitizeSlackSlashText(text: string | undefined): string {
+  return (text ?? "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {

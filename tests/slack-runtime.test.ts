@@ -52,6 +52,7 @@ class FakeSlackOperations implements SlackApiOperations {
   readonly posts: SlackPostMessagePayload[] = [];
   readonly ephemeral: SlackPostEphemeralPayload[] = [];
   readonly responses: Array<{ url: string; text: string }> = [];
+  responseError?: Error;
   addReaction?: (payload: SlackReactionPayload) => Promise<void>;
   removeReaction?: (payload: SlackReactionPayload) => Promise<void>;
 
@@ -84,6 +85,7 @@ class FakeSlackOperations implements SlackApiOperations {
   }
 
   async postResponse(url: string, payload: { text: string }): Promise<void> {
+    if (this.responseError) throw this.responseError;
     this.responses.push({ url, text: payload.text });
   }
 }
@@ -587,9 +589,16 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("do not prefix commands with `/`");
     await send("/status", "41");
     expect(operations.posts.at(-1)?.text).toContain("Session: Docs");
-    await operations.handler!({ type: "slash_command", command: "/relay", text: "status", channel_id: "D1", user_id: "U_DRIVER", user_name: "driver", team_id: "T1", response_url: "https://hooks.slack.test/slash" });
+    await operations.handler!({ type: "slash_command", command: "/relay", text: "status", channel_id: "D1", user_id: "U_DRIVER", user_name: "driver", team_id: "T1", trigger_id: "slash-status", response_url: "https://hooks.slack.test/slash" });
     expect(operations.responses.at(-1)).toMatchObject({ url: "https://hooks.slack.test/slash", text: expect.stringContaining("Session: Docs") });
-    await operations.handler!({ type: "slash_command", command: "/relay", text: "status", channel_id: "D1", user_id: "U_BAD", user_name: "bad", team_id: "T1", response_url: "https://hooks.slack.test/bad" });
+    await operations.handler!({ type: "slash_command", command: "/relay", text: "help", channel_id: "D1", user_id: "U_DRIVER", user_name: "driver", team_id: "T1", trigger_id: "slash-help", response_url: "https://hooks.slack.test/help" });
+    expect(operations.responses.at(-1)).toMatchObject({ url: "https://hooks.slack.test/help", text: expect.stringContaining("PiRelay Slack commands") });
+    expect(operations.responses.filter((response) => response.url === "https://hooks.slack.test/help")).toHaveLength(1);
+    operations.responseError = new Error("expired response url");
+    await operations.handler!({ type: "slash_command", command: "/relay", text: "status", channel_id: "D1", user_id: "U_DRIVER", user_name: "driver", team_id: "T1", trigger_id: "slash-fallback", response_url: "https://hooks.slack.test/expired" });
+    expect(operations.posts.at(-1)?.text).toContain("Session: Docs");
+    operations.responseError = undefined;
+    await operations.handler!({ type: "slash_command", command: "/relay", text: "status", channel_id: "D1", user_id: "U_BAD", user_name: "bad", team_id: "T1", trigger_id: "slash-bad", response_url: "https://hooks.slack.test/bad" });
     expect(operations.responses.some((response) => response.url === "https://hooks.slack.test/bad")).toBe(false);
     await send("/progress", "41.1");
     expect(operations.posts.at(-1)?.text).toContain("Progress mode: normal");
@@ -994,6 +1003,33 @@ describe("SlackRuntime foundations", () => {
 
     expect(operations.posts.at(-1)?.text).toContain("Slack paired");
     await expect(store.getTrustedRelayUser("slack", "U_NEW")).resolves.toMatchObject({ userId: "U_NEW" });
+  });
+
+  it("does not route Slack slash commands from channels when channel control is disabled", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: false };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "C1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "slash_command", command: "/relay", text: "status", channel_id: "C1", user_id: "U_DRIVER", user_name: "driver", team_id: "T1", trigger_id: "slash-channel", response_url: "https://hooks.slack.test/channel" });
+
+    expect(operations.responses).toEqual([]);
+    expect(operations.posts).toEqual([]);
   });
 
   it("rejects workspace mismatch during startup", async () => {

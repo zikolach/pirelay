@@ -390,7 +390,7 @@ function discordGuidance(config: DiscordRelayConfig | undefined): string {
     "Keep Discord DM-first; set allowUserIds before enabling live control.",
     "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "After inviting the bot to a server, DM it from the member list or server profile. If DM is unavailable, check Discord privacy settings for server member DMs.",
-    "Shared-room mode uses one dedicated Discord application/bot per machine in a shared server channel; prefer `relay <command>` or @mention forms for reliable multi-bot routing. Native `/relay` command sync is best-effort and may be stale or unavailable."
+    "Shared-room mode uses one dedicated Discord application/bot per machine in a shared server channel; prefer `relay <command>` or @mention forms for reliable multi-bot routing. Native `/relay` command sync is best-effort and may be stale or unavailable.",
   ];
   const applicationId = config?.applicationId ?? config?.clientId;
   if (applicationId) {
@@ -417,7 +417,7 @@ function slackGuidance(config: SlackRelayConfig | undefined): string {
     "Keep Slack DM-first; set allowUserIds before enabling live control.",
     "In the interactive setup wizard, use tabs to inspect setup details; press c to copy placeholder env exports to the clipboard or w to write config from currently defined env vars without storing secret values.",
     "Shared-room mode uses one dedicated Slack app/bot per machine in a shared channel with app mention or channel-message scopes; PiRelay discovers the local bot user id at startup or can use slack.botUserId as a non-secret fallback.",
-    "Run /relay connect slack [name], then send the displayed `relay pair <code>` text to the app in a DM. Native `/relay <command>` works after Slack delivers the manifest slash command; plain `relay <command>` text is the reliable fallback."
+    "Run /relay connect slack [name], then send the displayed `relay pair <code>` text to the app in a DM. Native `/relay <command>` works after Slack delivers the manifest slash command; plain `relay <command>` text is the reliable fallback.",
   ].join("\n");
 }
 

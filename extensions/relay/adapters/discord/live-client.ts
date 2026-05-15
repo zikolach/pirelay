@@ -174,10 +174,11 @@ export class DiscordLiveOperations implements DiscordApiOperations {
   }
 
   private async syncNativeCommandsBestEffort(): Promise<void> {
-    const manager = this.client.application?.commands as DiscordApplicationCommandManagerLike | undefined;
-    if (!manager || typeof manager.set !== "function") return;
     try {
-      await withTimeout(manager.set([discordRelayApplicationCommandData()]), 3_000);
+      await withTimeout(waitForDiscordApplication(this.client), 3_000);
+      const manager = this.client.application?.commands as DiscordApplicationCommandManagerLike | undefined;
+      if (!manager || typeof manager.create !== "function") return;
+      await withTimeout(upsertDiscordRelayCommand(manager), 3_000);
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));
       console.warn(`Discord native /relay command sync skipped: ${message}`);
@@ -318,7 +319,14 @@ interface SendableDiscordTextChannel {
 }
 
 interface DiscordApplicationCommandManagerLike {
-  set(commands: readonly unknown[]): Promise<unknown>;
+  fetch?(): Promise<Iterable<DiscordApplicationCommandLike> | { values(): Iterable<DiscordApplicationCommandLike> }>;
+  create(command: Record<string, unknown>): Promise<unknown>;
+  edit?(command: string | DiscordApplicationCommandLike, data: Record<string, unknown>): Promise<unknown>;
+}
+
+interface DiscordApplicationCommandLike {
+  id: string;
+  name: string;
 }
 
 export function discordRelayApplicationCommandData(): Record<string, unknown> {
@@ -330,14 +338,44 @@ export function discordRelayApplicationCommandData(): Record<string, unknown> {
       type: ApplicationCommandOptionType.Subcommand,
       name: subcommand.surfaceName,
       description: subcommand.description,
-      options: [{
+      options: discordSubcommandTakesArgs(subcommand.usage) ? [{
         type: ApplicationCommandOptionType.String,
         name: "args",
         description: "Arguments for this PiRelay command.",
         required: false,
-      }],
+      }] : [],
     })),
   };
+}
+
+async function waitForDiscordApplication(client: Client): Promise<void> {
+  if (client.application) return;
+  if (typeof client.isReady === "function" && client.isReady()) return;
+  await new Promise<void>((resolve) => {
+    client.once(Events.ClientReady, () => resolve());
+  });
+}
+
+async function upsertDiscordRelayCommand(manager: DiscordApplicationCommandManagerLike): Promise<void> {
+  const data = discordRelayApplicationCommandData();
+  const existing = await fetchDiscordApplicationCommands(manager);
+  const relay = existing.find((command) => command.name === DISCORD_NATIVE_COMMAND_NAME);
+  if (relay && manager.edit) {
+    await manager.edit(relay.id, data);
+    return;
+  }
+  await manager.create(data);
+}
+
+async function fetchDiscordApplicationCommands(manager: DiscordApplicationCommandManagerLike): Promise<DiscordApplicationCommandLike[]> {
+  if (!manager.fetch) return [];
+  const commands = await manager.fetch();
+  if (Symbol.iterator in Object(commands)) return [...commands as Iterable<DiscordApplicationCommandLike>];
+  return [...(commands as { values(): Iterable<DiscordApplicationCommandLike> }).values()];
+}
+
+function discordSubcommandTakesArgs(usage: string): boolean {
+  return /[<[].+[>\]]/.test(usage);
 }
 
 function discordOptionTokens(option: DiscordChatInputOptionLike): string[] {

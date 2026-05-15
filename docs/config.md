@@ -3,7 +3,7 @@
 PiRelay uses a namespaced configuration file at:
 
 ```text
-~/.pi/agent/relay/config.json
+~/.pi/agent/pirelay/config.json
 ```
 
 Environment variables can still provide secrets and deployment overrides. Legacy Telegram tunnel env vars and state/config paths are accepted only as migration fallbacks.
@@ -14,7 +14,7 @@ Environment variables can still provide secrets and deployment overrides. Legacy
 {
   "relay": {
     "machineId": "laptop",
-    "stateDir": "~/.pi/agent/relay",
+    "stateDir": "~/.pi/agent/pirelay",
     "brokerGroup": "personal",
     "brokerPeers": []
   },
@@ -106,12 +106,12 @@ See `docs/shared-room-parity.md` for the current parity matrix.
 
 Legacy files under `~/.pi/agent/telegram-tunnel` are read as migration input. Active non-secret Telegram bindings migrate to `messengers.telegram.default`; active pairing nonces are not copied, so create a fresh pairing with `/relay connect telegram` when needed.
 
-When `/relay doctor` detects legacy top-level config keys, it asks whether to migrate the config file to the namespaced schema, creates a timestamped backup, and writes the migrated file with `0600` permissions. If the canonical PiRelay config is missing but `~/.pi/agent/telegram-tunnel/config.json` exists, doctor can copy that legacy config to `~/.pi/agent/relay/config.json` after confirmation.
+When `/relay doctor` detects legacy top-level config keys, it asks whether to migrate the config file to the namespaced schema, creates a timestamped backup, and writes the migrated file with `0600` permissions. If the canonical PiRelay config is missing but `~/.pi/agent/telegram-tunnel/config.json` exists, doctor can copy that legacy config to `~/.pi/agent/pirelay/config.json` after confirmation.
 
 After migration, keep secrets in environment variables or namespaced `messengers.*.*.tokenEnv` references, and protect config/state files with:
 
 ```bash
-chmod 600 ~/.pi/agent/relay/config.json
+chmod 600 ~/.pi/agent/pirelay/config.json
 ```
 
 ## Platform setup links

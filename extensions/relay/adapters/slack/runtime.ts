@@ -936,8 +936,13 @@ export class SlackRuntime {
   private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string): Promise<void> {
     const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
     if (responseUrl && this.operations?.postResponse) {
-      await this.operations.postResponse(responseUrl, { text, ephemeral: true }).catch(() => undefined);
-      return;
+      delete message.metadata!.responseUrl;
+      try {
+        await this.operations.postResponse(responseUrl, { text, ephemeral: true });
+        return;
+      } catch (error) {
+        debugSlackRuntime(`Slack response_url delivery failed: ${safeSlackRuntimeError(error)}`);
+      }
     }
     await this.adapter?.sendText(slackAddress(message), text);
   }

@@ -34,7 +34,7 @@ export const DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH = 100;
 export const SLACK_COMMAND_DESCRIPTION_MAX_LENGTH = 100;
 export const SLACK_COMMAND_USAGE_HINT_MAX_LENGTH = 200;
 
-const SECRET_PATTERN = /(bot\d+:[\w-]+|xox[abprs]-[\w-]+|\d{3}-\d{3}|callback[_-]?data|hidden prompt|transcript)/gi;
+const SECRET_PATTERN_SOURCE = String.raw`\b(?:bot\d+:[\w-]+|xox[abprs]-[\w-]+|callback[_-]?data|hidden prompt|transcript)\b`;
 
 export function telegramCommandSurface(): readonly TelegramBotCommandSurface[] {
   return visibleCommandDefinitions().map((definition) => {
@@ -52,32 +52,34 @@ export function telegramCommandSurface(): readonly TelegramBotCommandSurface[] {
 }
 
 export function discordRelayCommandSurface(): DiscordRelayCommandSurface {
+  const subcommands = assertNoSurfaceCollisions(visibleCommandDefinitions().map((definition) => ({
+    canonicalCommand: definition.command,
+    surfaceName: platformCommandName(definition.command, { allowHyphen: true, maxLength: DISCORD_COMMAND_NAME_MAX_LENGTH }),
+    description: platformSafeDescription(definition.description, DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH),
+    usage: discordUsageFor(definition.usage),
+    aliases: aliasesFor(definition.command),
+  })), "Discord");
   return {
     name: "relay",
     description: "Control and monitor PiRelay sessions.",
-    subcommands: visibleCommandDefinitions().map((definition) => ({
-      canonicalCommand: definition.command,
-      surfaceName: platformCommandName(definition.command, { allowHyphen: true, maxLength: DISCORD_COMMAND_NAME_MAX_LENGTH }),
-      description: platformSafeDescription(definition.description, DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH),
-      usage: discordUsageFor(definition.usage),
-      aliases: aliasesFor(definition.command),
-    })),
+    subcommands,
     textFallback: "relay <command>",
   };
 }
 
 export function slackRelayCommandSurface(): SlackRelayCommandSurface {
+  const subcommands = assertNoSurfaceCollisions(visibleCommandDefinitions().map((definition) => ({
+    canonicalCommand: definition.command,
+    surfaceName: definition.command,
+    description: platformSafeDescription(definition.description, SLACK_COMMAND_DESCRIPTION_MAX_LENGTH),
+    usage: slackUsageFor(definition.usage),
+    aliases: aliasesFor(definition.command),
+  })), "Slack");
   return {
     command: "/relay",
     description: platformSafeDescription("Control and monitor PiRelay sessions.", SLACK_COMMAND_DESCRIPTION_MAX_LENGTH),
     usageHint: platformSafeDescription("/relay <status|sessions|full|images|send-file|abort|compact|pause|resume|disconnect>", SLACK_COMMAND_USAGE_HINT_MAX_LENGTH),
-    subcommands: visibleCommandDefinitions().map((definition) => ({
-      canonicalCommand: definition.command,
-      surfaceName: definition.command,
-      description: platformSafeDescription(definition.description, SLACK_COMMAND_DESCRIPTION_MAX_LENGTH),
-      usage: slackUsageFor(definition.usage),
-      aliases: aliasesFor(definition.command),
-    })),
+    subcommands,
     textFallback: "relay <command>",
   };
 }
@@ -105,7 +107,7 @@ export function assertNoSurfaceCollisions<T extends Pick<CommandSurfaceEntry, "s
 }
 
 export function platformSafeDescription(description: string, maxLength: number): string {
-  const cleaned = description.replace(SECRET_PATTERN, "[redacted]").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = description.replace(new RegExp(SECRET_PATTERN_SOURCE, "gi"), "[redacted]").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
   if (cleaned.length <= maxLength) return cleaned;
   return cleaned.slice(0, Math.max(0, maxLength - 1)).trimEnd() + "…";
 }

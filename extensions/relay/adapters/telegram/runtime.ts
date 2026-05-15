@@ -221,9 +221,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     try {
       await setBotCommands.call(this.api, telegramBotCommands());
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = redactSecrets(error instanceof Error ? error.message : String(error));
+      console.warn(`Telegram command menu registration failed: ${message}`);
       for (const route of this.routes.values()) {
-        route.actions.setLocalStatus?.("relay-runtime", `telegram command menu registration failed: ${redactSecrets(message)}`);
+        route.actions.setLocalStatus?.("relay-runtime", `telegram command menu registration failed: ${message}`);
       }
     }
   }

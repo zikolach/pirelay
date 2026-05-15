@@ -81,7 +81,7 @@ describe("SlackChannelAdapter", () => {
 
   it("handles signed Slack slash-command form webhooks", async () => {
     const adapter = new SlackChannelAdapter(config, { postMessage: async () => undefined, uploadFile: async () => undefined, postEphemeral: async () => undefined });
-    const raw = new URLSearchParams({ command: "/relay", text: "status", channel_id: "D1", user_id: "U1", team_id: "T1", response_url: "https://hooks.slack.test/response" }).toString();
+    const raw = new URLSearchParams({ command: "/relay", text: "status", channel_id: "D1", user_id: "U1", team_id: "T1", trigger_id: "trig", response_url: "https://hooks.slack.test/response" }).toString();
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = `v0=${createHmac("sha256", config.signingSecret).update(`v0:${timestamp}:${raw}`).digest("hex")}`;
     const events: unknown[] = [];

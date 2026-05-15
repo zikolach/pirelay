@@ -276,7 +276,7 @@ function socketPayloadToSlackEnvelope(payload: unknown): SlackEnvelope | undefin
     };
   }
   if (payload.type === "block_actions") return payload as unknown as SlackEnvelope;
-  if (payload.type === "slash_commands" || payload.command === "/relay") return slackSocketSlashCommandEnvelope(payload);
+  if (payload.type === "slash_commands") return slackSocketSlashCommandEnvelope(payload);
   return undefined;
 }
 

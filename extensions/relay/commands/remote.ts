@@ -41,10 +41,8 @@ export const CANONICAL_REMOTE_COMMAND_NAMES = CANONICAL_REMOTE_COMMANDS.map((def
 
 export function canonicalRemoteCommandName(command: string): string {
   const normalized = command.trim().toLowerCase().replace(/_/g, "-");
-  const exact = CANONICAL_REMOTE_COMMANDS.find((definition) => definition.command === normalized);
-  if (exact) return "aliasOf" in exact ? exact.aliasOf : exact.command;
-  const alias = CANONICAL_REMOTE_COMMANDS.find((definition) => definition.command === command.trim().toLowerCase());
-  return alias && "aliasOf" in alias ? alias.aliasOf : normalized;
+  const definition = CANONICAL_REMOTE_COMMANDS.find((candidate) => candidate.command === normalized);
+  return definition && "aliasOf" in definition ? definition.aliasOf : definition?.command ?? normalized;
 }
 
 // Backwards-compatible export for modules that still import the old name while

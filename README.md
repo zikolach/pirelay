@@ -58,7 +58,7 @@ Discord and Slack still document text prefixes first because native slash comman
 - Slack uses a `:thinking_face:` reaction on accepted prompts when the app has `reactions:write`
 - Slack falls back to a thread-aware ephemeral `Pi is working…` message when reactions are unavailable
 - progress notifications support `quiet`, `normal`, `verbose`, and `completion-only`
-- `/recent`, `relay recent`, and `relay recent` show recent safe activity
+- Telegram `/recent` and Discord/Slack `relay recent` show recent safe activity
 
 ### Long-output and answer workflow
 
@@ -106,8 +106,8 @@ pi install npm:pirelay
 Install from GitHub or a local checkout during development:
 
 ```bash
-pi install https://github.com/zikolach/relay
-pi install /absolute/path/to/relay
+pi install https://github.com/zikolach/pirelay
+pi install /absolute/path/to/pirelay
 ```
 
 For a one-off run without adding it to settings:
@@ -218,7 +218,7 @@ Slack app requirements:
 - bot scopes including `chat:write`, `im:history`, `im:read`, `reactions:write`, and `files:write` for image/file delivery
 - reinstall the app after scope, slash-command, interactivity, or App Home changes
 
-The `/relay <command>` native slash command is a discoverability layer and is requester-scoped when Slack provides a response URL. Plain `relay <command>` text remains the reliable fallback when the slash command has not been installed, synced, or delivered.
+The `/relay <command>` native slash command is a discoverability layer and is requester-scoped when Slack provides a response URL. Plain `relay <command>` text remains the reliable fallback when the slash command has not been installed, synced, or delivered. Older Slack `pirelay <command>` examples are no longer accepted; use `relay <command>` for a single Discord/Slack text prefix.
 
 Slack channel/thread control is explicit:
 
@@ -243,30 +243,30 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 
 ## Remote messenger commands
 
-| Purpose | Telegram | Discord | Slack |
+| Purpose | Telegram | Discord/Slack text | Native slash (best-effort) |
 |---|---|---|---|
-| help | `/help` (also Telegram menu) | `relay help` or best-effort `/relay help` | `relay help` or installed `/relay help` |
-| status dashboard | `/status` | `relay status` | `relay status` |
-| list sessions | `/sessions` | `relay sessions` | `relay sessions` |
-| select session | `/use <session>` | `relay use <session>` | `relay use <session>` |
-| forget offline session | `/forget <session>` | `relay forget <session>` | `relay forget <session>` |
-| one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `relay to <session> <prompt>` |
-| progress mode | `/progress <mode>` | `relay progress <mode>` | `relay progress <mode>` |
-| current progress mode | `/progress` | `relay progress` | `relay progress` |
-| alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `relay alias <name\|clear>` |
-| recent activity | `/recent` or `/activity` | `relay recent` or `relay activity` | `relay recent` or `relay activity` |
-| latest summary | `/summary` | `relay summary` | `relay summary` |
-| full output | `/full` | `relay full` | `relay full` |
-| latest images | `/images` | `relay images` | `relay images` |
-| send workspace image | `/send-image <path>` | `relay send-image <path>` | `relay send-image <path>` |
-| send safe workspace file to requester | `/send-file <path> [caption]` | `relay send-file <path> [caption]` | `relay send-file <path> [caption]` |
-| steer active run | `/steer <text>` | `relay steer <text>` | `relay steer <text>` |
-| queue follow-up | `/followup <text>` | `relay followup <text>` | `relay followup <text>` |
-| abort current run | `/abort` | `relay abort` | `relay abort` |
-| compact context | `/compact` | `relay compact` | `relay compact` |
-| pause delivery | `/pause` | `relay pause` | `relay pause` |
-| resume delivery | `/resume` | `relay resume` | `relay resume` |
-| disconnect binding | `/disconnect` | `relay disconnect` | `relay disconnect` |
+| help | `/help` (also Telegram menu) | `relay help` | `/relay help` |
+| status dashboard | `/status` | `relay status` | `/relay status` |
+| list sessions | `/sessions` | `relay sessions` | `/relay sessions` |
+| select session | `/use <session>` | `relay use <session>` | `/relay use <session>` |
+| forget offline session | `/forget <session>` | `relay forget <session>` | `/relay forget <session>` |
+| one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `/relay to <session> <prompt>` |
+| progress mode | `/progress <mode>` | `relay progress <mode>` | `/relay progress <mode>` |
+| current progress mode | `/progress` | `relay progress` | `/relay progress` |
+| alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `/relay alias <name\|clear>` |
+| recent activity | `/recent` or `/activity` | `relay recent` or `relay activity` | `/relay recent` or `/relay activity` |
+| latest summary | `/summary` | `relay summary` | `/relay summary` |
+| full output | `/full` | `relay full` | `/relay full` |
+| latest images | `/images` | `relay images` | `/relay images` |
+| send workspace image | `/send-image <path>` | `relay send-image <path>` | `/relay send-image <path>` |
+| send safe workspace file to requester | `/send-file <path> [caption]` | `relay send-file <path> [caption]` | `/relay send-file <path> [caption]` |
+| steer active run | `/steer <text>` | `relay steer <text>` | `/relay steer <text>` |
+| queue follow-up | `/followup <text>` | `relay followup <text>` | `/relay followup <text>` |
+| abort current run | `/abort` | `relay abort` | `/relay abort` |
+| compact context | `/compact` | `relay compact` | `/relay compact` |
+| pause delivery | `/pause` | `relay pause` | `/relay pause` |
+| resume delivery | `/resume` | `relay resume` | `/relay resume` |
+| disconnect binding | `/disconnect` | `relay disconnect` | `/relay disconnect` |
 
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 
@@ -322,7 +322,7 @@ PiRelay can track multiple live Pi sessions through a local broker. Pair session
 /relay connect slack release
 ```
 
-Use `/sessions`, `relay sessions`, or `relay sessions` to list targets. Use `/use`, `relay use`, or `relay use` to select an active target. Use `/to`, `relay to`, or `relay to` for one-shot prompts without switching sessions.
+Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions.
 
 If the same bot/app is configured on multiple machines, use one ingress owner plus broker federation so other machines register routes instead of polling the same messenger concurrently.
 
@@ -331,7 +331,7 @@ If the same bot/app is configured on multiple machines, use one ingress owner pl
 Canonical config lives at:
 
 ```text
-~/.pi/agent/relay/config.json
+~/.pi/agent/pirelay/config.json
 ```
 
 Example:
@@ -340,7 +340,7 @@ Example:
 {
   "relay": {
     "machineId": "laptop",
-    "stateDir": "~/.pi/agent/relay",
+    "stateDir": "~/.pi/agent/pirelay",
     "brokerGroup": "personal"
   },
   "defaults": {
@@ -378,7 +378,7 @@ Example:
 Recommended permissions:
 
 ```bash
-chmod 600 ~/.pi/agent/relay/config.json
+chmod 600 ~/.pi/agent/pirelay/config.json
 ```
 
 Legacy Telegram tunnel config/state under `~/.pi/agent/telegram-tunnel` and `PI_TELEGRAM_TUNNEL_*` env vars are migration fallbacks only. Active non-secret bindings migrate to `telegram:default`; active pairing codes are not copied.
@@ -456,7 +456,7 @@ PiRelay consists of:
 - a companion skill at `skills/relay/`
 - adapter runtimes for Telegram, Discord, and Slack
 - a local broker process for multi-session routing
-- persisted local state under `~/.pi/agent/relay/`
+- persisted local state under `~/.pi/agent/pirelay/`
 
 The extension listens to Pi lifecycle events, tracks task state, publishes route updates, and injects authorized messenger input back into the session. Adapter modules own platform-specific I/O while shared core helpers own routing, authorization, formatting, media safety, redaction, progress, and setup metadata.
 

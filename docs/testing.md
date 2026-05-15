@@ -4,7 +4,7 @@ Use this checklist when validating the PiRelay against a real Pi session and a r
 
 ## Preconditions
 
-- `TELEGRAM_BOT_TOKEN` or `~/.pi/agent/relay/config.json` is configured
+- `TELEGRAM_BOT_TOKEN` or `~/.pi/agent/pirelay/config.json` is configured
 - Pi is running with this package loaded
 - no stale broker process is running from an older checkout
 
