@@ -56,6 +56,11 @@ export function routeActionOutcomeFromError(error: unknown, safeMessage: string)
   return routeActionFailed(error, safeMessage);
 }
 
+export function routeActionDisplayMessage(outcome: Exclude<RouteActionOutcome<unknown>, { kind: "success" }>): string {
+  if (outcome.kind === "failed") return outcome.safeMessage;
+  return outcome.message;
+}
+
 export function isStaleExtensionReferenceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -101,5 +106,7 @@ export function routeWorkspaceRoot(route: SessionRoute): string | undefined {
 }
 
 export function unavailableRouteMessage(): string {
+  // Keep display wording centralized; callers should branch on typed outcomes or
+  // RouteUnavailableError rather than comparing this user-facing string.
   return "The Pi session is unavailable. Resume it locally, then try again.";
 }
