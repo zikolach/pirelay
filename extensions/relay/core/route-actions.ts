@@ -102,25 +102,40 @@ export interface RoutePromptOperationOptions {
   deliverAs?: DeliveryMode;
   requester?: RelayFileDeliveryRequester;
   safeFailureMessage?: string;
+  onStart?(): void | Promise<void>;
+  onRollback?(): void | Promise<void>;
+  onCommit?(): void | Promise<void>;
 }
 
-export function deliverRoutePrompt(route: SessionRoute, options: RoutePromptOperationOptions): RoutePromptOperationOutcome {
+export async function deliverRoutePrompt(route: SessionRoute, options: RoutePromptOperationOptions): Promise<RoutePromptOperationOutcome> {
   const probe = probeRouteAvailability(route);
   if (probe.kind === "unavailable") return probe;
 
   const previousRequester = route.remoteRequester;
   const previousPendingTurn = route.remoteRequesterPendingTurn;
-  if (options.requester) route.remoteRequester = options.requester;
-  const deliverAs = probe.idle ? undefined : options.deliverAs;
-
-  try {
-    route.actions.sendUserMessage(options.content, deliverAs ? { deliverAs } : undefined);
-  } catch (error) {
+  const rollback = async (): Promise<void> => {
     if (options.requester) {
       route.remoteRequester = previousRequester;
       route.remoteRequesterPendingTurn = previousPendingTurn;
     }
+    await options.onRollback?.();
+  };
+
+  if (options.requester) route.remoteRequester = options.requester;
+  const deliverAs = probe.idle ? undefined : options.deliverAs;
+
+  try {
+    await options.onStart?.();
+    route.actions.sendUserMessage(options.content, deliverAs ? { deliverAs } : undefined);
+  } catch (error) {
+    await rollback();
     return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not deliver the prompt to Pi.");
+  }
+
+  try {
+    await options.onCommit?.();
+  } catch (error) {
+    return routeActionFailed(error, options.safeFailureMessage ?? "Could not finish prompt delivery.");
   }
 
   return routeActionSuccess({ idle: probe.idle, deliverAs });
