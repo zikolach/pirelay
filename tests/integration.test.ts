@@ -1751,6 +1751,61 @@ describe("PiRelay integration behavior", () => {
     await expect(route.actions.compact()).rejects.toThrow("The Pi session is unavailable");
   });
 
+  it("invalidates live context when auxiliary route actions see stale session APIs", async () => {
+    const config = await createRuntimeConfig("pi-stale-aux-route-actions-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const registeredRoutes: SessionRoute[] = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route: SessionRoute) => { registeredRoutes.push(route); }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    relayExtension(pi.api as any);
+
+    async function startRoute(sessionId: string) {
+      const { context } = createMockContext(sessionId);
+      await pi.emit("session_start", {}, context);
+      return { route: registeredRoutes.at(-1)!, context };
+    }
+
+    let started = await startRoute("stale-append-audit");
+    expect(started.route.actions.isIdle?.()).toBe(true);
+    pi.api.sendMessage.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    expect(() => started.route.actions.appendAudit("audit")).not.toThrow();
+    expect(started.route.actions.isIdle?.()).toBeUndefined();
+
+    started = await startRoute("stale-persist-binding");
+    expect(started.route.actions.isIdle?.()).toBe(true);
+    pi.api.appendEntry.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    expect(() => started.route.actions.persistBinding(null, true)).not.toThrow();
+    expect(started.route.actions.isIdle?.()).toBeUndefined();
+
+    started = await startRoute("stale-workspace-root");
+    expect(started.route.actions.isIdle?.()).toBe(true);
+    Object.defineProperty(started.context, "cwd", { configurable: true, get: () => { throw new Error(STALE_EXTENSION_ERROR); } });
+    await expect(started.route.actions.getImageByPath("outputs/render.png")).resolves.toMatchObject({ ok: false, error: expect.stringContaining("unavailable") });
+    expect(started.route.actions.isIdle?.()).toBeUndefined();
+
+    started = await startRoute("stale-local-confirmation");
+    expect(started.route.actions.isIdle?.()).toBe(true);
+    started.context.ui.confirm = vi.fn(async () => { throw new Error(STALE_EXTENSION_ERROR); });
+    await expect(started.route.actions.promptLocalConfirmation({ channel: "telegram", id: 1, userId: "1" })).resolves.toBe("deny");
+    expect(started.route.actions.isIdle?.()).toBeUndefined();
+  });
+
   it("refuses workspace image lookup when the live context is stale", async () => {
     const config = await createRuntimeConfig("pi-stale-workspace-image-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
@@ -2335,7 +2390,9 @@ describe("PiRelay integration behavior", () => {
 
     const nextContext = createMockContext("other-image-session").context;
     await pi.emit("session_start", { reason: "switch" }, nextContext);
+    const nextRoute = registeredRoutes.get("other-image-session:/tmp/other-image-session.jsonl")!;
     await expect(route.actions.getLatestImages()).resolves.toEqual([]);
+    await expect(nextRoute.actions.getLatestImages()).resolves.toEqual([]);
   }, 10_000);
 
   it("stages latest assistant image file references and loads them on demand", async () => {

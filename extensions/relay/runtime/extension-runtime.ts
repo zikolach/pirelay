@@ -510,23 +510,38 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
   }
 
-  function appendAudit(message: string): void {
+  function clearTurnImageCaches(): void {
+    activeTurnImages = [];
+    activeTurnImagePathTexts = [];
+    latestTurnImages = [];
+    latestTurnImageFileCandidates = [];
+  }
+
+  function appendAudit(message: string, route?: SessionRoute): void {
     const safe = summarizeTextDeterministically(message, 280);
     try {
       pi.sendMessage({ customType: AUDIT_MESSAGE_TYPE, content: safe, display: true });
     } catch (error) {
-      if (isStaleExtensionReferenceError(error)) return;
+      if (isStaleExtensionReferenceError(error)) {
+        if (route) invalidateLiveContextForRoute(route);
+        else latestContext = undefined;
+        return;
+      }
       throw error;
     }
   }
 
-  async function loadImagePathForTelegram(ctx: ExtensionContext, relativePath: string, turnId: string, index: number): Promise<ImageFileLoadResult> {
+  async function loadImagePathForTelegram(ctx: ExtensionContext, relativePath: string, turnId: string, index: number, route?: SessionRoute): Promise<ImageFileLoadResult> {
     const config = await ensureConfig();
     let workspaceRoot: string;
     try {
       workspaceRoot = ctx.cwd;
     } catch (error) {
-      if (isStaleExtensionReferenceError(error)) return { ok: false, error: unavailableRouteMessage() };
+      if (isStaleExtensionReferenceError(error)) {
+        if (route) invalidateLiveContextForRoute(route);
+        else if (latestContext === ctx) latestContext = undefined;
+        return { ok: false, error: unavailableRouteMessage() };
+      }
       throw error;
     }
     return loadWorkspaceImageFile(relativePath, {
@@ -545,7 +560,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const config = await ensureConfig();
     for (const candidate of latestTurnImageFileCandidates) {
       if (images.length >= config.maxLatestImages) break;
-      const loaded = await loadImagePathForTelegram(ctx, candidate.path, candidate.turnId, images.length);
+      const loaded = await loadImagePathForTelegram(ctx, candidate.path, candidate.turnId, images.length, route);
       if (loaded.ok) images.push(loaded.image);
     }
     return images;
@@ -576,7 +591,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     try {
       pi.appendEntry<BindingEntryData>(BINDING_ENTRY_TYPE, data);
     } catch (error) {
-      if (isStaleExtensionReferenceError(error)) return;
+      if (isStaleExtensionReferenceError(error)) {
+        latestContext = undefined;
+        return;
+      }
       throw error;
     }
   }
@@ -649,7 +667,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           try {
             return live?.model;
           } catch (error) {
-            if (isStaleExtensionReferenceError(error)) return undefined;
+            if (isStaleExtensionReferenceError(error)) {
+              invalidateLiveContextForRoute(route);
+              return undefined;
+            }
             throw error;
           }
         },
@@ -679,9 +700,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           const live = liveContextForRoute(route);
           if (!live) return { ok: false, error: unavailableRouteMessage() };
           const turnId = route.notification.lastTurnId ?? createTurnId();
-          return loadImagePathForTelegram(live, relativePath, turnId, 0);
+          return loadImagePathForTelegram(live, relativePath, turnId, 0, route);
         },
-        appendAudit,
+        appendAudit: (message) => appendAudit(message, route),
         notifyLocal: (message, level = "info") => {
           closeConnectQrScreen?.();
           closeConnectQrScreen = undefined;
@@ -697,7 +718,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           try {
             return await promptPairingApproval(live, identity, route.sessionLabel);
           } catch (error) {
-            if (isStaleExtensionReferenceError(error)) return "deny";
+            if (isStaleExtensionReferenceError(error)) {
+              invalidateLiveContextForRoute(route);
+              return "deny";
+            }
             throw error;
           }
         },
@@ -849,7 +873,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
 
     const restoredBinding = await restoreBinding(ctx, config);
-    currentRoute = buildRoute(ctx, restoredBinding);
+    const previousSessionKey = currentRoute?.sessionKey;
+    const nextRoute = buildRoute(ctx, restoredBinding);
+    if (nextRoute.sessionKey !== previousSessionKey) clearTurnImageCaches();
+    currentRoute = nextRoute;
     const startedDiscordInstances = new Set<string>();
     const startedSlackInstances = new Set<string>();
     await ensureAllDiscordRuntimes();
@@ -1655,10 +1682,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
-    activeTurnImages = [];
-    activeTurnImagePathTexts = [];
-    latestTurnImages = [];
-    latestTurnImageFileCandidates = [];
+    clearTurnImageCaches();
     currentRoute.actions.context = ctx;
     if (!currentRoute.remoteRequesterPendingTurn) currentRoute.remoteRequester = undefined;
     currentRoute.remoteRequesterPendingTurn = false;
