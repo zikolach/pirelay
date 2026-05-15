@@ -62,4 +62,4 @@
 - [x] 8.3 Run `npm run typecheck`.
 - [x] 8.4 Run `npm test`.
 - [x] 8.5 Run `openspec validate relay-route-action-safety --strict`.
-- [ ] 8.6 Run `openspec validate --all --strict` if other active changes are present.
+- [x] 8.6 Run `openspec validate --all --strict` if other active changes are present.
