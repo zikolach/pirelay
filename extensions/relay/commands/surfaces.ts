@@ -37,7 +37,7 @@ export const SLACK_COMMAND_USAGE_HINT_MAX_LENGTH = 200;
 const SECRET_PATTERN_SOURCE = String.raw`\b(?:bot\d+:[\w-]+|xox[abprs]-[\w-]+|callback[_-]?data|hidden prompt|transcript)\b`;
 
 export function telegramCommandSurface(): readonly TelegramBotCommandSurface[] {
-  return visibleCommandDefinitions().map((definition) => {
+  const entries = visibleCommandDefinitions().map((definition) => {
     const aliases = aliasesFor(definition.command);
     const preferred = preferredTelegramName(definition, aliases);
     return {
@@ -48,7 +48,8 @@ export function telegramCommandSurface(): readonly TelegramBotCommandSurface[] {
       usage: telegramUsageFor(preferred, definition.usage),
       aliases,
     };
-  }).sort((left, right) => left.command.localeCompare(right.command));
+  });
+  return [...assertNoSurfaceCollisions(entries, "Telegram")].sort((left, right) => left.command.localeCompare(right.command));
 }
 
 export function discordRelayCommandSurface(): DiscordRelayCommandSurface {
@@ -85,7 +86,7 @@ export function slackRelayCommandSurface(): SlackRelayCommandSurface {
 }
 
 export function telegramBotCommands(): Array<{ command: string; description: string }> {
-  return assertNoSurfaceCollisions(telegramCommandSurface(), "Telegram").map((entry) => ({ command: entry.command, description: entry.description }));
+  return telegramCommandSurface().map((entry) => ({ command: entry.command, description: entry.description }));
 }
 
 export function telegramMenuCommandToCanonical(command: string): string {

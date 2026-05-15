@@ -58,6 +58,7 @@ export class SlackRuntime {
   private historyPollInFlight = false;
   private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
   private readonly seenEventKeys = new Map<string, number>();
+  private readonly consumedResponseUrls = new Set<string>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
   private botIdentity?: SlackAuthTestResult;
@@ -935,8 +936,8 @@ export class SlackRuntime {
 
   private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string): Promise<void> {
     const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
-    if (responseUrl && this.operations?.postResponse) {
-      delete message.metadata!.responseUrl;
+    if (responseUrl && this.operations?.postResponse && !this.consumedResponseUrls.has(responseUrl)) {
+      this.rememberConsumedResponseUrl(responseUrl);
       try {
         await this.operations.postResponse(responseUrl, { text, ephemeral: true });
         return;
@@ -945,6 +946,13 @@ export class SlackRuntime {
       }
     }
     await this.adapter?.sendText(slackAddress(message), text);
+  }
+
+  private rememberConsumedResponseUrl(responseUrl: string): void {
+    this.consumedResponseUrls.add(responseUrl);
+    if (this.consumedResponseUrls.size <= 100) return;
+    const [first] = this.consumedResponseUrls;
+    if (first) this.consumedResponseUrls.delete(first);
   }
 
   private async sessionEntriesForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<SessionListEntry[]> {
