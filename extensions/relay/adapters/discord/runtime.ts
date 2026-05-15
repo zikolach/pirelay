@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { probeRouteAvailability, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -676,27 +676,25 @@ export class DiscordRuntime {
     options: { deliverAs?: "followUp" | "steer"; idleAck?: string; busyAck?: string; auditAction?: string } = {},
   ): Promise<void> {
     const content = buildImagePromptContent(promptText, []);
-    const wasIdle = routeIdleState(route);
-    if (wasIdle === undefined) {
-      await this.sendText(message, unavailableRouteMessage());
+    const outcome = await deliverRoutePrompt(route, {
+      content,
+      deliverAs: options.deliverAs ?? this.config.busyDeliveryMode,
+      requester: this.discordRequester(route, message),
+      onStart: () => this.startTypingActivity(route, bindingAddress(binding)),
+      onRollback: () => this.stopTypingActivity(route.sessionKey),
+      safeFailureMessage: "Could not deliver the Discord prompt to Pi.",
+    });
+    if (outcome.kind === "unavailable") {
+      await this.sendText(message, routeActionDisplayMessage(outcome));
       return;
     }
-    this.startTypingActivity(route, bindingAddress(binding));
-    const deliverAs = wasIdle ? undefined : options.deliverAs ?? this.config.busyDeliveryMode;
-    try {
-      route.remoteRequester = this.discordRequester(route, message);
-      route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
-    } catch (error) {
-      this.stopTypingActivity(route.sessionKey);
-      if (error instanceof Error && error.message === unavailableRouteMessage()) {
-        await this.sendText(message, error.message);
-        return;
-      }
-      const safeMessage = safeDiscordRuntimeError(error);
+    if (outcome.kind === "failed") {
+      const safeMessage = safeDiscordRuntimeError(outcome.error);
       this.lastError = safeMessage;
       await this.sendText(message, `Could not deliver the Discord prompt to Pi: ${safeMessage}`);
       return;
     }
+    if (outcome.kind !== "success") return;
     route.lastActivityAt = Date.now();
     try {
       await this.store.upsertChannelBinding({ ...binding, lastSeenAt: new Date().toISOString() });
@@ -706,7 +704,7 @@ export class DiscordRuntime {
     }
     const auditAction = options.auditAction ?? "prompt";
     route.actions.appendAudit(`Discord ${auditAction} from ${message.sender.displayName ?? message.sender.userId}: ${summarizeTextDeterministically(promptText, 120)}`);
-    await this.sendText(message, wasIdle ? options.idleAck ?? "Prompt delivered to Pi." : options.busyAck ?? `Pi is busy; queued as ${deliverAs}.`);
+    await this.sendText(message, outcome.result.idle ? options.idleAck ?? "Prompt delivered to Pi." : options.busyAck ?? `Pi is busy; queued as ${outcome.result.deliverAs}.`);
   }
 
   private async handlePromptCommand(
@@ -720,16 +718,11 @@ export class DiscordRuntime {
       await this.sendText(message, `Usage: /${deliverAs === "steer" ? "steer" : "followup"} <text>`);
       return;
     }
-    const idle = routeIdleState(route);
-    if (idle === undefined) {
-      await this.sendText(message, unavailableRouteMessage());
-      return;
-    }
     await this.deliverDiscordPrompt(message, binding, route, args, {
-      deliverAs: idle ? undefined : deliverAs,
+      deliverAs,
       auditAction: deliverAs === "steer" ? "steering instruction" : "follow-up",
-      idleAck: idle ? "Sent as a prompt." : undefined,
-      busyAck: idle ? undefined : deliverAs === "steer" ? "Steering queued." : "Follow-up queued.",
+      idleAck: "Sent as a prompt.",
+      busyAck: deliverAs === "steer" ? "Steering queued." : "Follow-up queued.",
     });
   }
 

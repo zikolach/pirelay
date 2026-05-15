@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordGatewayEvent, DiscordMentionPayload, DiscordSendFilePayload, DiscordSendMessagePayload } from "../extensions/relay/adapters/discord/adapter.js";
 import { createDiscordRuntime, DiscordRuntime, getOrCreateDiscordRuntime } from "../extensions/relay/adapters/discord/runtime.js";
+import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 import { formatSessionList } from "../extensions/relay/core/session-selection.js";
@@ -951,7 +952,7 @@ describe("DiscordRuntime", () => {
     const runtime = new DiscordRuntime(cfg, { operations: ops });
     const { route: session, sendUserMessage } = route();
     sendUserMessage.mockImplementation(() => {
-      throw new Error("The Pi session is unavailable. Resume it locally, then try again.");
+      throw routeUnavailableError();
     });
     await runtime.registerRoute(session);
     await runtime.start();
