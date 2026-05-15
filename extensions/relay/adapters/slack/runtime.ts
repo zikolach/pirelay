@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
@@ -590,38 +590,25 @@ export class SlackRuntime {
         await this.sendText(message, formatRelayRecentActivity(route, this.config));
         return;
       case "abort": {
-        if (routeIdleState(route) === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+        const outcome = abortRouteSafely(route);
+        if (outcome.kind === "unavailable" || outcome.kind === "already-idle") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
-        try {
-          route.actions.abort();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
+        if (outcome.kind === "failed") throw outcome.error;
         await this.sendText(message, "Abort requested.");
         return;
       }
-      case "compact":
-        if (routeIdleState(route) === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+      case "compact": {
+        const outcome = await compactRouteSafely(route);
+        if (outcome.kind === "unavailable") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
-        try {
-          await route.actions.compact();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
+        if (outcome.kind === "failed") throw outcome.error;
         await this.sendText(message, "Compaction requested.");
         return;
+      }
       case "pause":
         await this.updateBinding(binding, { paused: true });
         route.actions.refreshLocalStatus?.();
