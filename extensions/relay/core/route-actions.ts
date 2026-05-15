@@ -1,5 +1,6 @@
 import type { Model } from "@mariozechner/pi-ai";
-import type { SessionRoute } from "./types.js";
+import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
+import type { DeliveryMode, SessionRoute, TelegramPromptContent } from "./types.js";
 
 const STALE_EXTENSION_REFERENCE_PATTERNS = [
   "extension ctx is stale",
@@ -92,6 +93,37 @@ export function probeRouteAvailability(route: SessionRoute, options: RouteAvaila
   }
 
   return { kind: "available", idle, busy: !idle, model, workspaceRoot };
+}
+
+export type RoutePromptOperationOutcome = RouteActionOutcome<{ idle: boolean; deliverAs?: DeliveryMode }>;
+
+export interface RoutePromptOperationOptions {
+  content: TelegramPromptContent;
+  deliverAs?: DeliveryMode;
+  requester?: RelayFileDeliveryRequester;
+  safeFailureMessage?: string;
+}
+
+export function deliverRoutePrompt(route: SessionRoute, options: RoutePromptOperationOptions): RoutePromptOperationOutcome {
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return probe;
+
+  const previousRequester = route.remoteRequester;
+  const previousPendingTurn = route.remoteRequesterPendingTurn;
+  if (options.requester) route.remoteRequester = options.requester;
+  const deliverAs = probe.idle ? undefined : options.deliverAs;
+
+  try {
+    route.actions.sendUserMessage(options.content, deliverAs ? { deliverAs } : undefined);
+  } catch (error) {
+    if (options.requester) {
+      route.remoteRequester = previousRequester;
+      route.remoteRequesterPendingTurn = previousPendingTurn;
+    }
+    return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not deliver the prompt to Pi.");
+  }
+
+  return routeActionSuccess({ idle: probe.idle, deliverAs });
 }
 
 export function isStaleExtensionReferenceError(error: unknown): boolean {
