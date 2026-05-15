@@ -23,7 +23,7 @@
 
 - [x] 4.1 Implement a shared prompt operation helper that probes availability, chooses busy delivery mode, reserves requester context, invokes `sendUserMessage`, and returns typed accepted/unavailable/failure outcomes.
 - [x] 4.2 Add rollback hooks for adapter-private side effects such as typing, activity, thinking reactions, and shared-room output destinations.
-- [ ] 4.3 Migrate Telegram private prompt, callback/guided answer, and shared-room `/to@bot` prompt paths to the shared prompt operation.
+- [x] 4.3 Migrate Telegram private prompt, callback/guided answer, and shared-room `/to@bot` prompt paths to the shared prompt operation.
 - [ ] 4.4 Migrate Discord prompt, steer, follow-up, image prompt, and shared-room prompt paths to the shared prompt operation.
 - [ ] 4.5 Migrate Slack ordinary prompt, `pirelay to`, steer/follow-up equivalents, and channel/shared-room prompt paths to the shared prompt operation.
 - [ ] 4.6 Migrate broker `deliverPrompt` handling to the shared prompt operation or a thin equivalent wrapper.

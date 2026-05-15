@@ -6,6 +6,7 @@ import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
 import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
 import { InProcessTunnelRuntime, sendSessionNotification } from "../extensions/relay/adapters/telegram/runtime.js";
+import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
 
@@ -1525,7 +1526,7 @@ describe("InProcessTunnelRuntime", () => {
       lastSeenAt: new Date().toISOString(),
     };
     const { route, deliveries } = createRoute(binding, true);
-    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    route.actions.sendUserMessage = () => { throw routeUnavailableError(); };
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: string[] = [];
@@ -1991,7 +1992,7 @@ describe("InProcessTunnelRuntime", () => {
       lastSeenAt: new Date().toISOString(),
     };
     const { route } = createRoute(binding, true);
-    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    route.actions.sendUserMessage = () => { throw routeUnavailableError(); };
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: Array<{ chatId: number; text: string }> = [];
