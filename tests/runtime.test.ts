@@ -1486,6 +1486,29 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toContain("The Pi session is unavailable. Resume it locally, then try again.");
   });
 
+  it("stops Telegram activity indicators for unavailable routes", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-activity:/tmp/session-unavailable-activity.jsonl",
+      sessionId: "session-unavailable-activity",
+      sessionFile: "/tmp/session-unavailable-activity.jsonl",
+      sessionLabel: "unavailable-activity.jsonl",
+      chatId: 1016,
+      userId: 36,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.actions.isIdle = () => undefined;
+    route.notification.lastStatus = "running";
+    await store.upsertBinding(binding);
+
+    expect((runtime as any).shouldContinueActivityIndicator(route)).toBe(false);
+  });
+
   it("reports Telegram prompt delivery becoming unavailable after the idle check", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);

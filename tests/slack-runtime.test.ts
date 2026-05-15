@@ -617,6 +617,9 @@ describe("SlackRuntime foundations", () => {
     expect(testRoute.actions.abort).toHaveBeenCalled();
     await send("/compact", "50");
     expect(testRoute.actions.compact).toHaveBeenCalled();
+    vi.mocked(testRoute.actions.compact).mockRejectedValueOnce(new Error("The Pi session is unavailable. Resume it locally, then try again."));
+    await send("/compact", "50.5");
+    expect(operations.posts.at(-1)?.text).toContain("The Pi session is unavailable");
     await send("/recent", "51");
     expect(operations.posts.at(-1)?.text).toContain("No recent activity");
     await send("/unknown", "52");

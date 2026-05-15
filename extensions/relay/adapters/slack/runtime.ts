@@ -630,7 +630,15 @@ export class SlackRuntime {
           await this.sendText(message, unavailableRouteMessage());
           return;
         }
-        await route.actions.compact();
+        try {
+          await route.actions.compact();
+        } catch (error) {
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.sendText(message, error.message);
+            return;
+          }
+          throw error;
+        }
         await this.sendText(message, "Compaction requested.");
         return;
       case "pause":

@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
 import { summarizeForTelegram } from "./summary.js";
-import { routeIdleState, routeIsBusy, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
@@ -475,7 +475,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const binding = this.outputBindingForRoute(route);
     if (!binding || binding.paused) return false;
     if (isTerminalStatus(route.notification.lastStatus)) return false;
-    return routeIsBusy(route) || route.notification.lastStatus === "running";
+    const idle = routeIdleState(route);
+    if (idle === undefined) return false;
+    return idle === false || route.notification.lastStatus === "running";
   }
 
   private syncActivityIndicator(route: SessionRoute): void {
@@ -948,7 +950,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       case "compact":
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested compaction from dashboard.`);
-        await route.actions.compact();
+        try {
+          await route.actions.compact();
+        } catch (error) {
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
+            await this.api.sendPlainText(chatId, error.message);
+            return;
+          }
+          throw error;
+        }
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Compaction requested.");
         await this.api.sendPlainText(chatId, "Compaction requested.");
         return;
@@ -1538,7 +1549,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       case "compact": {
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} requested compaction.`);
-        await route.actions.compact();
+        try {
+          await route.actions.compact();
+        } catch (error) {
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.api.sendPlainText(message.chat.id, error.message);
+            return;
+          }
+          throw error;
+        }
         await this.api.sendPlainText(message.chat.id, "Compaction requested.");
         return;
       }
