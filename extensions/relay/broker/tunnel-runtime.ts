@@ -9,7 +9,7 @@ import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { normalizeBrokerNamespace } from "./supervisor.js";
@@ -278,11 +278,12 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             await respond({ ok: false, error: "Missing requester context." });
             return;
           }
-          const workspaceRoot = routeWorkspaceRoot(route);
-          if (!workspaceRoot) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const workspace = routeWorkspaceRootSafely(route);
+          if (workspace.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(workspace) });
             return;
           }
+          const workspaceRoot = workspace.result;
           const requester = request.requester as unknown as RelayFileDeliveryRequester;
           route.remoteRequester = requester;
           const adapter = new TelegramChannelAdapter(this.config);
@@ -303,13 +304,21 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "getLatestImages": {
-          const images: LatestTurnImage[] = await route.actions.getLatestImages();
-          await respond({ ok: true, result: images });
+          const outcome = await latestRouteImagesSafely(route);
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
+            return;
+          }
+          await respond({ ok: true, result: outcome.result });
           return;
         }
         case "getImageByPath": {
-          const result: ImageFileLoadResult = await route.actions.getImageByPath(String(request.path ?? ""));
-          await respond({ ok: true, result });
+          const outcome = await routeImageByPathSafely(route, String(request.path ?? ""));
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
+            return;
+          }
+          await respond({ ok: true, result: outcome.result });
           return;
         }
         case "abort": {
