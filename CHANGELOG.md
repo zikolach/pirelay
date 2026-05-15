@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 - 2026-05-15
+
+- Added messenger command surfaces: Telegram BotCommand menus, Discord native `/relay` command metadata/routing, and Slack `/pirelay` slash-command manifest and runtime support. #56
+- Improved command-surface documentation and setup guidance, including reliable Discord/Slack text fallbacks and archived OpenSpec requirements. #56 #57
+- Fixed README command tables so alternatives containing `|` render correctly. #55
+
 ## 0.6.0 - 2026-05-15
 
 - Added unified messenger file delivery and requester-scoped remote safe file requests for Telegram, Discord, and Slack. #41 #43
