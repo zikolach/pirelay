@@ -58,7 +58,7 @@
 ## 8. Validation
 
 - [x] 8.1 Run targeted unit tests for route-action helpers and status probes.
-- [ ] 8.2 Run targeted Telegram, Discord, Slack, broker, requester-file, and media runtime tests affected by the migration.
+- [x] 8.2 Run targeted Telegram, Discord, Slack, broker, requester-file, and media runtime tests affected by the migration.
 - [ ] 8.3 Run `npm run typecheck`.
 - [ ] 8.4 Run `npm test`.
 - [ ] 8.5 Run `openspec validate relay-route-action-safety --strict`.
