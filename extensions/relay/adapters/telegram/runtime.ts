@@ -1208,11 +1208,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       passUndefinedOptions: true,
       onRollback: async () => {
         await options?.onRollback?.();
-        await onUnavailable?.();
       },
     });
     if (outcome.kind === "success") return true;
     if (outcome.kind === "unavailable") {
+      await onUnavailable?.();
       await this.api.sendPlainText(message.chat.id, routeActionDisplayMessage(outcome));
       return false;
     }

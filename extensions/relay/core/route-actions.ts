@@ -72,7 +72,7 @@ export interface RouteAvailabilityProbeOptions {
 }
 
 export function probeRouteAvailability(route: SessionRoute, options: RouteAvailabilityProbeOptions = {}): RouteAvailabilityProbe {
-  const idle = routeIdleState(route);
+  let idle = routeIdleState(route);
   if (idle === undefined) return routeActionUnavailable();
 
   let model: Model<any> | undefined;
@@ -83,7 +83,8 @@ export function probeRouteAvailability(route: SessionRoute, options: RouteAvaila
       if (isRouteUnavailableError(error)) return routeActionUnavailable();
       throw error;
     }
-    if (routeIdleState(route) === undefined) return routeActionUnavailable();
+    idle = routeIdleState(route);
+    if (idle === undefined) return routeActionUnavailable();
   }
 
   let workspaceRoot: string | undefined;

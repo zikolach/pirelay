@@ -535,13 +535,13 @@ export class DiscordRuntime {
         await this.handlePromptCommand(message, binding, route, command.args, "followUp");
         return;
       case "abort": {
+        this.stopTypingActivity(route.sessionKey);
         const outcome = abortRouteSafely(route);
         if (outcome.kind === "unavailable" || outcome.kind === "already-idle") {
           await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
         if (outcome.kind === "failed") throw outcome.error;
-        this.stopTypingActivity(route.sessionKey);
         route.actions.appendAudit("Discord requested abort.");
         await this.sendText(message, "Abort requested.");
         return;

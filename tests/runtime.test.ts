@@ -1125,6 +1125,49 @@ describe("InProcessTunnelRuntime", () => {
     expect(deliveries).toEqual([{ text: "Answer to: Choose:\nSelected option 2: skip", deliverAs: undefined }]);
   });
 
+  it("does not answer callback as unavailable for non-unavailable prompt failures", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-callback-failure:/tmp/session-callback-failure.jsonl",
+      sessionId: "session-callback-failure",
+      sessionFile: "/tmp/session-callback-failure.jsonl",
+      sessionLabel: "session-callback-failure.jsonl",
+      chatId: 1002,
+      userId: 22,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route } = createRoute(binding, true);
+    route.actions.sendUserMessage = () => { throw new Error("non-unavailable prompt failure"); };
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-callback-failure";
+    route.notification.lastAssistantText = ["Choose:", "1. sync", "2. skip"].join("\n");
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(route.notification.lastAssistantText, { turnId: "turn-callback-failure" });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async () => undefined,
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await expect((runtime as any).processInbound({
+      kind: "callback",
+      updateId: 111,
+      callbackQueryId: "cb-failure",
+      data: buildAnswerOptionCallbackData("turn-callback-failure", "2"),
+      chat: { id: 1002, type: "private" },
+      user: { id: 22, username: "owner" },
+    })).rejects.toThrow("non-unavailable prompt failure");
+
+    expect(callbacks).toEqual([]);
+  });
+
   it("captures custom answers after an inline custom-answer callback and lets commands bypass capture", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);

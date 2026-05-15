@@ -185,6 +185,19 @@ describe("route action lifetime helpers", () => {
     expect(probeRouteAvailability(route({ isIdle: () => true, getWorkspaceRoot: () => undefined }), { includeWorkspace: true })).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
   });
 
+  it("uses the post-model idle state for coherent probes", () => {
+    let idle = true;
+    const session = route({
+      isIdle: () => idle,
+      getModel: () => {
+        idle = false;
+        return undefined;
+      },
+    });
+
+    expect(probeRouteAvailability(session, { includeModel: true })).toMatchObject({ kind: "available", idle: false, busy: true });
+  });
+
   it("prefers narrow action helpers over raw context", () => {
     const session = route({ isIdle: () => false, getWorkspaceRoot: () => "/safe" });
     expect(routeIdleState(session)).toBe(false);
