@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Broker uses shared route-action safety
-Broker-mediated prompt delivery, requester file delivery, image retrieval, abort, compact, and pairing confirmation actions SHALL use the same route-action safety outcomes as in-process messenger adapters.
+Broker-mediated prompt delivery, requester file delivery, image retrieval, abort, and compact actions SHALL use the same route-action safety outcomes as in-process messenger adapters.
 
 #### Scenario: Broker prompt race reports unavailable
 - **WHEN** the broker forwards an authorized prompt to a registered route and the route becomes unavailable during delivery
