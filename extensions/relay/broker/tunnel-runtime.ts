@@ -9,7 +9,7 @@ import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
-import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
+import { deliverRoutePrompt, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { normalizeBrokerNamespace } from "./supervisor.js";
@@ -256,12 +256,17 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             ? request.content as TelegramPromptContent
             : String(request.text ?? "");
           const deliverAs = request.deliverAs as "steer" | "followUp" | undefined;
-          if (routeIdleState(route) === undefined) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const outcome = await deliverRoutePrompt(route, {
+            content,
+            deliverAs,
+            requester: isRecord(request.requester) ? request.requester as unknown as RelayFileDeliveryRequester : undefined,
+            passUndefinedOptions: true,
+            safeFailureMessage: "Could not deliver the broker prompt to Pi.",
+          });
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
             return;
           }
-          if (isRecord(request.requester)) route.remoteRequester = request.requester as unknown as RelayFileDeliveryRequester;
-          route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }
