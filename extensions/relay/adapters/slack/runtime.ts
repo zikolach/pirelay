@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
@@ -721,11 +721,13 @@ export class SlackRuntime {
       if (source === "remote-command") await this.sendText(message, error);
       return error;
     }
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) {
-      if (source === "remote-command") await this.sendText(message, unavailableRouteMessage());
-      return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") {
+      const text = routeActionDisplayMessage(workspace);
+      if (source === "remote-command") await this.sendText(message, text);
+      return text;
     }
+    const workspaceRoot = workspace.result;
     const requester = this.slackRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
@@ -748,8 +750,9 @@ export class SlackRuntime {
 
   async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
     if (!this.adapter) return "Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.";
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") return routeActionDisplayMessage(workspace);
+    const workspaceRoot = workspace.result;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
@@ -767,7 +770,12 @@ export class SlackRuntime {
   }
 
   private async sendLatestImages(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
-    const images = await route.actions.getLatestImages();
+    const imagesOutcome = await latestRouteImagesSafely(route);
+    if (imagesOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imagesOutcome));
+      return;
+    }
+    const images = imagesOutcome.result;
     if (images.length === 0) {
       await this.sendText(message, formatLatestImageEmptyMessage().replaceAll("/images", "pirelay images").replaceAll("/send-image", "pirelay send-image"));
       return;
@@ -795,7 +803,12 @@ export class SlackRuntime {
       await this.sendText(message, "Usage: pirelay send-image <relative-image-path>");
       return;
     }
-    const result = await route.actions.getImageByPath(relativePath);
+    const imageOutcome = await routeImageByPathSafely(route, relativePath);
+    if (imageOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imageOutcome));
+      return;
+    }
+    const result = imageOutcome.result;
     if (!result.ok) {
       await this.sendText(message, result.error);
       return;

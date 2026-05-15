@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -604,11 +604,13 @@ export class DiscordRuntime {
       if (source === "remote-command") await this.sendText(message, error);
       return error;
     }
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) {
-      if (source === "remote-command") await this.sendText(message, unavailableRouteMessage());
-      return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") {
+      const text = routeActionDisplayMessage(workspace);
+      if (source === "remote-command") await this.sendText(message, text);
+      return text;
     }
+    const workspaceRoot = workspace.result;
     const requester = this.discordRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
@@ -631,8 +633,9 @@ export class DiscordRuntime {
 
   async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
     if (!this.adapter) return "Discord file delivery is not configured for this instance.";
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") return routeActionDisplayMessage(workspace);
+    const workspaceRoot = workspace.result;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
@@ -781,7 +784,12 @@ export class DiscordRuntime {
   }
 
   private async sendLatestImages(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
-    const images = await route.actions.getLatestImages();
+    const imagesOutcome = await latestRouteImagesSafely(route);
+    if (imagesOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imagesOutcome));
+      return;
+    }
+    const images = imagesOutcome.result;
     if (images.length === 0) {
       await this.sendText(message, formatLatestImageEmptyMessage());
       return;
@@ -799,7 +807,12 @@ export class DiscordRuntime {
       await this.sendText(message, "Usage: /send-image <relative-image-path>");
       return;
     }
-    const result = await route.actions.getImageByPath(relativePath);
+    const imageOutcome = await routeImageByPathSafely(route, relativePath);
+    if (imageOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imageOutcome));
+      return;
+    }
+    const result = imageOutcome.result;
     if (!result.ok) {
       await this.sendText(message, result.error);
       return;
