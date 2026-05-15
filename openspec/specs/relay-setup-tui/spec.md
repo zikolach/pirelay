@@ -171,7 +171,7 @@ The setup wizard SHALL present setup content in a tab-like layout that keeps eac
 
 #### Scenario: Slack setup exposes a copyable app manifest
 - **WHEN** the setup wizard is rendered for Slack
-- **THEN** it includes an App manifest tab containing a secret-free Slack app manifest with App Home messages enabled, Socket Mode enabled, `chat:write`, `im:history`, `im:read`, `reactions:write`, channel/group history scopes, `message.im` events, interactivity enabled, and a `/relay` slash command entry for PiRelay remote commands
+- **THEN** it includes an App manifest tab (labeled "App manifest") containing a secret-free Slack app manifest with App Home messages enabled, Socket Mode enabled, `chat:write`, `im:history`, `im:read`, `reactions:write`, channel/group history scopes, `message.im` events, interactivity enabled, and a `/relay` slash command entry for PiRelay remote commands
 - **AND** it exposes a footer action to copy the manifest to the clipboard without closing the wizard
 - **AND** the copied manifest does not include bot tokens, signing secrets, app-level tokens, pairing codes, hidden prompts, tool internals, or transcripts
 - **AND** the setup guidance explains that Slack must deliver `/relay` through the installed app manifest before native slash invocations work, while plain `relay <command>` text remains the reliable fallback when slash setup is unavailable
