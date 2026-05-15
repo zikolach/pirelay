@@ -1839,7 +1839,14 @@ describe("PiRelay integration behavior", () => {
 
     let closeCount = 0;
     let customRendered = false;
-    second.context.ui.custom = vi.fn((factory: (...args: any[]) => { render?: (width: number) => string[] } | undefined) => new Promise((resolve) => {
+    type TestCustomScreen = { render?: (width: number) => string[] };
+    type TestCustomFactory = (
+      terminal: Record<string, never>,
+      theme: { fg: (name: string, text: string) => string },
+      keymap: Record<string, never>,
+      done: (value: unknown) => void,
+    ) => TestCustomScreen | undefined;
+    second.context.ui.custom = vi.fn((factory: TestCustomFactory) => new Promise((resolve) => {
       const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, (value: unknown) => {
         closeCount += 1;
         resolve(value);
