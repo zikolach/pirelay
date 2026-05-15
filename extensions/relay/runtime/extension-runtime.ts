@@ -267,7 +267,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         try {
           ctx.ui.notify(warning, "warning");
         } catch (error) {
-          if (!isStaleExtensionReferenceError(error)) throw error;
+          if (isStaleExtensionReferenceError(error)) {
+            if (latestContext === ctx) latestContext = undefined;
+            break;
+          }
+          throw error;
         }
       }
     }
@@ -706,11 +710,21 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         notifyLocal: (message, level = "info") => {
           closeConnectQrScreen?.();
           closeConnectQrScreen = undefined;
+          const live = liveContextForRoute(route);
+          if (!live) return;
           safeNotifyLocal(message, level, route);
-          refreshRelayStatusesSoon(liveContextForRoute(route));
+          refreshRelayStatusesSoon(live);
         },
-        setLocalStatus: (key, value) => safeSetStatus(key, value, liveContextForRoute(route)),
-        refreshLocalStatus: () => refreshRelayStatusesSoon(liveContextForRoute(route)),
+        setLocalStatus: (key, value) => {
+          const live = liveContextForRoute(route);
+          if (!live) return;
+          safeSetStatus(key, value, live);
+        },
+        refreshLocalStatus: () => {
+          const live = liveContextForRoute(route);
+          if (!live) return;
+          refreshRelayStatusesSoon(live);
+        },
         persistBinding,
         promptLocalConfirmation: async (identity) => {
           const live = liveContextForRoute(route);

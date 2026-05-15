@@ -1806,6 +1806,47 @@ describe("PiRelay integration behavior", () => {
     expect(started.route.actions.isIdle?.()).toBeUndefined();
   });
 
+  it("does not refresh active status from stale route-local actions", async () => {
+    const config = await createRuntimeConfig("pi-stale-route-local-status-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const registeredRoutes: SessionRoute[] = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route: SessionRoute) => { registeredRoutes.push(route); }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const first = createMockContext("stale-route-local-status-a");
+    const second = createMockContext("stale-route-local-status-b");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, first.context);
+    const staleRoute = registeredRoutes.at(-1)!;
+    await pi.emit("session_start", {}, second.context);
+    const statusCount = second.statuses.length;
+
+    staleRoute.actions.setLocalStatus?.("stale-route", "should not update active context");
+    staleRoute.actions.notifyLocal?.("stale route notification");
+    staleRoute.actions.refreshLocalStatus?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(second.statuses).toHaveLength(statusCount);
+    expect(second.statuses).not.toContainEqual({ key: "stale-route", value: "should not update active context" });
+    expect(second.notifications).toEqual([]);
+  });
+
   it("refuses workspace image lookup when the live context is stale", async () => {
     const config = await createRuntimeConfig("pi-stale-workspace-image-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
