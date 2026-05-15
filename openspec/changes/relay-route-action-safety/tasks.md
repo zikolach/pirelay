@@ -53,7 +53,7 @@
 - [x] 7.1 Replace high-risk long-lived direct `route.actions.context` usage with shared probes or narrow route actions.
 - [x] 7.2 Review remaining direct `route.actions.*` calls and document or test why each remaining call does not need operation-level rollback.
 - [x] 7.3 Add or update import/boundary tests to ensure new route-action safety helpers live in shared core modules and adapters do not add new raw context dependencies.
-- [ ] 7.4 Update relevant docs or developer comments to explain route-action safety versus binding-authority responsibilities.
+- [x] 7.4 Update relevant docs or developer comments to explain route-action safety versus binding-authority responsibilities.
 
 ## 8. Validation
 
