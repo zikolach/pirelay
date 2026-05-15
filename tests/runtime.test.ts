@@ -1555,7 +1555,7 @@ describe("InProcessTunnelRuntime", () => {
     };
     const { route, setIdle } = createRoute(binding, true);
     setIdle(false);
-    route.actions.abort = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    route.actions.abort = () => { throw routeUnavailableError(); };
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: string[] = [];

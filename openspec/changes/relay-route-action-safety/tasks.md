@@ -33,7 +33,7 @@
 
 - [x] 5.1 Implement shared abort operation safety with availability precheck, idle outcome, abort-requested commit/rollback, and unavailable race handling.
 - [x] 5.2 Implement shared compact operation safety with availability precheck and unavailable race handling.
-- [ ] 5.3 Migrate Telegram abort and compact command/callback paths to shared control helpers.
+- [x] 5.3 Migrate Telegram abort and compact command/callback paths to shared control helpers.
 - [ ] 5.4 Migrate Discord abort and compact command paths to shared control helpers.
 - [ ] 5.5 Migrate Slack abort and compact command paths to shared control helpers.
 - [ ] 5.6 Migrate broker abort and compact actions to shared control helpers or a thin equivalent wrapper.

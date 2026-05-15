@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
 import { summarizeForTelegram } from "./summary.js";
-import { deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
@@ -925,49 +925,36 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(chatId, "Tunnel resumed.");
         return;
       case "abort": {
-        const idle = isEffectivelyIdle(route);
-        if (idle === undefined) {
+        const outcome = abortRouteSafely(route);
+        if (outcome.kind === "unavailable") {
           await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
-          await this.api.sendPlainText(chatId, unavailableRouteMessage());
+          await this.api.sendPlainText(chatId, routeActionDisplayMessage(outcome));
           return;
         }
-        if (idle) {
+        if (outcome.kind === "already-idle") {
           await this.api.answerCallbackQuery(callback.callbackQueryId, "Session is idle.");
-          await this.api.sendPlainText(chatId, "The Pi session is already idle.");
+          await this.api.sendPlainText(chatId, routeActionDisplayMessage(outcome));
           return;
         }
-        route.notification.abortRequested = true;
-        try {
-          route.actions.abort();
-        } catch (error) {
-          route.notification.abortRequested = false;
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
-            await this.api.sendPlainText(chatId, error.message);
-            return;
-          }
-          throw error;
-        }
+        if (outcome.kind === "failed") throw outcome.error;
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested abort from dashboard.`);
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Abort requested.");
         await this.api.sendPlainText(chatId, "Abort requested.");
         return;
       }
-      case "compact":
-        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested compaction from dashboard.`);
-        try {
-          await route.actions.compact();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
-            await this.api.sendPlainText(chatId, error.message);
-            return;
-          }
-          throw error;
+      case "compact": {
+        const outcome = await compactRouteSafely(route);
+        if (outcome.kind === "unavailable") {
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "Session unavailable.");
+          await this.api.sendPlainText(chatId, routeActionDisplayMessage(outcome));
+          return;
         }
+        if (outcome.kind === "failed") throw outcome.error;
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(callback.user)} requested compaction from dashboard.`);
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Compaction requested.");
         await this.api.sendPlainText(chatId, "Compaction requested.");
         return;
+      }
     }
   }
 
@@ -1218,6 +1205,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       content,
       deliverAs: options?.deliverAs,
       requester: options?.requester,
+      passUndefinedOptions: true,
       onRollback: async () => {
         await options?.onRollback?.();
         await onUnavailable?.();
@@ -1548,41 +1536,24 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "abort": {
-        const idle = routeIdleState(route);
-        if (idle === undefined) {
-          await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+        const outcome = abortRouteSafely(route);
+        if (outcome.kind === "unavailable" || outcome.kind === "already-idle") {
+          await this.api.sendPlainText(message.chat.id, routeActionDisplayMessage(outcome));
           return;
         }
-        if (idle) {
-          await this.api.sendPlainText(message.chat.id, "The Pi session is already idle.");
-          return;
-        }
-        route.notification.abortRequested = true;
-        try {
-          route.actions.abort();
-        } catch (error) {
-          route.notification.abortRequested = false;
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.api.sendPlainText(message.chat.id, error.message);
-            return;
-          }
-          throw error;
-        }
+        if (outcome.kind === "failed") throw outcome.error;
         route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} requested abort.`);
         await this.api.sendPlainText(message.chat.id, "Abort requested.");
         return;
       }
       case "compact": {
-        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} requested compaction.`);
-        try {
-          await route.actions.compact();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.api.sendPlainText(message.chat.id, error.message);
-            return;
-          }
-          throw error;
+        const outcome = await compactRouteSafely(route);
+        if (outcome.kind === "unavailable") {
+          await this.api.sendPlainText(message.chat.id, routeActionDisplayMessage(outcome));
+          return;
         }
+        if (outcome.kind === "failed") throw outcome.error;
+        route.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} requested compaction.`);
         await this.api.sendPlainText(message.chat.id, "Compaction requested.");
         return;
       }

@@ -152,12 +152,11 @@ export function abortRouteSafely(route: SessionRoute, options: { alreadyIdleMess
   if (probe.kind === "unavailable") return probe;
   if (probe.idle) return routeActionAlreadyIdle(options.alreadyIdleMessage ?? "The Pi session is already idle.");
 
-  const previousAbortRequested = route.notification.abortRequested;
   route.notification.abortRequested = true;
   try {
     route.actions.abort();
   } catch (error) {
-    route.notification.abortRequested = previousAbortRequested;
+    route.notification.abortRequested = false;
     return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not request abort.");
   }
   return routeActionSuccess(undefined);
