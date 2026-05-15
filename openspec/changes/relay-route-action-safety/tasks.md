@@ -7,7 +7,7 @@
 
 ## 2. Core Route-Action Safety Types
 
-- [ ] 2.1 Add typed route action outcome types for success, unavailable, already-idle, and non-unavailable failure.
+- [x] 2.1 Add typed route action outcome types for success, unavailable, already-idle, and non-unavailable failure.
 - [ ] 2.2 Add helper predicates/converters for route-unavailable errors and outcomes without relying on user-facing message string equality.
 - [ ] 2.3 Keep existing safe unavailable wording for messenger rendering while separating it from control-flow representation.
 - [ ] 2.4 Add focused unit tests for typed outcomes, unavailable detection, and non-unavailable error preservation.

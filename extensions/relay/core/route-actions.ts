@@ -8,6 +8,28 @@ const STALE_EXTENSION_REFERENCE_PATTERNS = [
   "session replacement or reload",
 ];
 
+export type RouteActionOutcome<T = void> =
+  | { kind: "success"; result: T }
+  | { kind: "unavailable"; message: string }
+  | { kind: "already-idle"; message: string }
+  | { kind: "failed"; error: unknown; safeMessage: string };
+
+export function routeActionSuccess<T = void>(result: T): RouteActionOutcome<T> {
+  return { kind: "success", result };
+}
+
+export function routeActionUnavailable(message = unavailableRouteMessage()): RouteActionOutcome<never> {
+  return { kind: "unavailable", message };
+}
+
+export function routeActionAlreadyIdle(message: string): RouteActionOutcome<never> {
+  return { kind: "already-idle", message };
+}
+
+export function routeActionFailed(error: unknown, safeMessage: string): RouteActionOutcome<never> {
+  return { kind: "failed", error, safeMessage };
+}
+
 export function isStaleExtensionReferenceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
