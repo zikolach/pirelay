@@ -46,7 +46,7 @@
 - [x] 6.3 Migrate Telegram latest-image, send-image, and requester file paths to shared workspace/media safety outcomes.
 - [x] 6.4 Migrate Discord and Slack latest-image, send-image, and requester file paths to shared workspace/media safety outcomes.
 - [x] 6.5 Migrate broker latest-image, get-image-by-path, and requester file actions to shared workspace/media safety outcomes.
-- [ ] 6.6 Add tests for stale workspace failures, session-switch media isolation, requester file unavailable outcomes, and preservation of existing path/MIME/size validation.
+- [x] 6.6 Add tests for stale workspace failures, session-switch media isolation, requester file unavailable outcomes, and preservation of existing path/MIME/size validation.
 
 ## 7. Architecture Cleanup and Guardrails
 

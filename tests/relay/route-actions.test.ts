@@ -10,14 +10,17 @@ import {
   abortRouteSafely,
   compactRouteSafely,
   deliverRoutePrompt,
+  latestRouteImagesSafely,
   routeActionOutcomeFromError,
   routeActionSuccess,
   routeActionUnavailable,
   probeRouteAvailability,
+  routeImageByPathSafely,
   routeIdleState,
   routeModelState,
   routeUnavailableError,
   routeWorkspaceRoot,
+  routeWorkspaceRootSafely,
   unavailableRouteMessage,
 } from "../../extensions/relay/core/route-actions.js";
 import type { SessionRoute, TelegramBindingMetadata } from "../../extensions/relay/core/types.js";
@@ -91,6 +94,24 @@ describe("route action lifetime helpers", () => {
     expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
     expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
     expect(isStaleExtensionReferenceError(new Error("network down"))).toBe(false);
+  });
+
+  it("fails workspace and media operations closed when route context is unavailable", async () => {
+    const unavailableWorkspace = route({ isIdle: () => true, getWorkspaceRoot: () => { throw new Error(STALE_EXTENSION_ERROR); } });
+    expect(routeWorkspaceRootSafely(unavailableWorkspace)).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+
+    const getImageByPath = vi.fn(async () => ({ ok: false as const, error: "should not read" }));
+    await expect(routeImageByPathSafely(route({ isIdle: () => true, getWorkspaceRoot: () => undefined, getImageByPath }), "out.png")).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(getImageByPath).not.toHaveBeenCalled();
+
+    await expect(latestRouteImagesSafely(route({ isIdle: () => undefined }))).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+  });
+
+  it("preserves media validation results after safe workspace checks", async () => {
+    const loadResult = { ok: false as const, error: "Image file not found." };
+    const getImageByPath = vi.fn(async () => loadResult);
+    await expect(routeImageByPathSafely(route({ isIdle: () => true, getWorkspaceRoot: () => "/workspace", getImageByPath }), "missing.png")).resolves.toEqual({ kind: "success", result: loadResult });
+    expect(getImageByPath).toHaveBeenCalledWith("missing.png");
   });
 
   it("handles abort outcomes and rollback", () => {
