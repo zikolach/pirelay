@@ -190,6 +190,18 @@ This inventory captures the high-risk fallible `route.actions.*` and existing na
 - `getLatestImagesForTelegram(route)` first resolves `liveContextForRoute(route)` and returns no images when the requested route is stale/unavailable, preventing old route cache reads after a route switch.
 - New shared media helpers add an availability/workspace probe before adapters/broker render media or requester-file operations.
 
+## Task 7.2: Remaining direct route action usage review
+
+Remaining direct `route.actions.*` calls after migration fall into these reviewed categories:
+
+- Shared safety core wrappers in `extensions/relay/core/route-actions.ts`: direct calls to `isIdle`, `getModel`, `getWorkspaceRoot`, `sendUserMessage`, `abort`, `compact`, `getLatestImages`, and `getImageByPath` are intentionally quarantined behind typed outcome helpers.
+- Pairing approval: `promptLocalConfirmation()` remains direct in Telegram, Discord, Slack, and broker pairing paths because it is authorization/pairing UI, not a post-authorization route action; the stale-context implementation returns `deny` safely when unavailable.
+- Audit/local diagnostics: `appendAudit()`, `notifyLocal()`, `setLocalStatus()`, and `refreshLocalStatus()` remain best-effort side effects whose route implementations already suppress stale local context/API failures.
+- Binding persistence: `persistBinding()` remains direct for pairing/pause/resume/disconnect state transitions; this belongs to binding authority and existing stale-context persistence guards, not route-action execution rollback.
+- Summary formatting: Telegram `summarizeText()` remains a notification-output helper invoked after completed output, not a prompt/control/media route mutation; failures continue through existing notification error handling.
+
+No adapter or broker path now calls deprecated `route.actions.context` directly; only shared compatibility helpers read it as a fallback.
+
 ### Audit and persistence timing
 
 - Prompt audit entries should occur after prompt acceptance, not after unavailable outcomes.
