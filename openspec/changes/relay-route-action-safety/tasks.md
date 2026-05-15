@@ -41,7 +41,7 @@
 
 ## 6. Media, Workspace, and Requester File Safety
 
-- [ ] 6.1 Implement shared workspace/media route safety helpers for latest-image retrieval, explicit image lookup, and requester-scoped workspace file lookup.
+- [x] 6.1 Implement shared workspace/media route safety helpers for latest-image retrieval, explicit image lookup, and requester-scoped workspace file lookup.
 - [ ] 6.2 Ensure latest-turn media caches are route/session scoped or cleared on route switch and cannot cross sessions.
 - [ ] 6.3 Migrate Telegram latest-image, send-image, and requester file paths to shared workspace/media safety outcomes.
 - [ ] 6.4 Migrate Discord and Slack latest-image, send-image, and requester file paths to shared workspace/media safety outcomes.

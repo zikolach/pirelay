@@ -1,6 +1,6 @@
 import type { Model } from "@mariozechner/pi-ai";
 import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
-import type { DeliveryMode, SessionRoute, TelegramPromptContent } from "./types.js";
+import type { DeliveryMode, ImageFileLoadResult, LatestTurnImage, SessionRoute, TelegramPromptContent } from "./types.js";
 
 const STALE_EXTENSION_REFERENCE_PATTERNS = [
   "extension ctx is stale",
@@ -171,6 +171,35 @@ export async function compactRouteSafely(route: SessionRoute, options: { safeFai
     return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not request compaction.");
   }
   return routeActionSuccess(undefined);
+}
+
+export type RouteWorkspaceOperationOutcome<T> = RouteActionOutcome<T>;
+
+export function routeWorkspaceRootSafely(route: SessionRoute): RouteWorkspaceOperationOutcome<string> {
+  const probe = probeRouteAvailability(route, { includeWorkspace: true });
+  if (probe.kind === "unavailable") return probe;
+  if (!probe.workspaceRoot) return routeActionUnavailable();
+  return routeActionSuccess(probe.workspaceRoot);
+}
+
+export async function latestRouteImagesSafely(route: SessionRoute): Promise<RouteWorkspaceOperationOutcome<LatestTurnImage[]>> {
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return probe;
+  try {
+    return routeActionSuccess(await route.actions.getLatestImages());
+  } catch (error) {
+    return routeActionOutcomeFromError(error, "Could not load latest Pi images.");
+  }
+}
+
+export async function routeImageByPathSafely(route: SessionRoute, relativePath: string): Promise<RouteWorkspaceOperationOutcome<ImageFileLoadResult>> {
+  const probe = probeRouteAvailability(route, { includeWorkspace: true });
+  if (probe.kind === "unavailable") return probe;
+  try {
+    return routeActionSuccess(await route.actions.getImageByPath(relativePath));
+  } catch (error) {
+    return routeActionOutcomeFromError(error, "Could not load the requested Pi image.");
+  }
 }
 
 export function isStaleExtensionReferenceError(error: unknown): boolean {
