@@ -7,6 +7,8 @@ import {
   routeActionAlreadyIdle,
   routeActionDisplayMessage,
   routeActionFailed,
+  abortRouteSafely,
+  compactRouteSafely,
   deliverRoutePrompt,
   routeActionOutcomeFromError,
   routeActionSuccess,
@@ -89,6 +91,30 @@ describe("route action lifetime helpers", () => {
     expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
     expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
     expect(isStaleExtensionReferenceError(new Error("network down"))).toBe(false);
+  });
+
+  it("handles abort outcomes and rollback", () => {
+    const abort = vi.fn();
+    const busy = route({ isIdle: () => false, abort });
+    expect(abortRouteSafely(busy)).toEqual({ kind: "success", result: undefined });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(busy.notification.abortRequested).toBe(true);
+
+    const idle = route({ isIdle: () => true, abort: vi.fn() });
+    expect(abortRouteSafely(idle)).toEqual({ kind: "already-idle", message: "The Pi session is already idle." });
+    expect(idle.actions.abort).not.toHaveBeenCalled();
+
+    const unavailable = route({ isIdle: () => false, abort: () => { throw routeUnavailableError(); } });
+    expect(abortRouteSafely(unavailable)).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(unavailable.notification.abortRequested).toBe(false);
+  });
+
+  it("contains compact unavailable races", async () => {
+    const unavailable = route({ isIdle: () => false, compact: async () => { throw routeUnavailableError(); } });
+    await expect(compactRouteSafely(unavailable)).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    const compact = vi.fn(async () => undefined);
+    await expect(compactRouteSafely(route({ isIdle: () => true, compact }))).resolves.toEqual({ kind: "success", result: undefined });
+    expect(compact).toHaveBeenCalledOnce();
   });
 
   it("rolls back prompt reservations and hooks on unavailable delivery", async () => {

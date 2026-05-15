@@ -37,7 +37,7 @@
 - [x] 5.4 Migrate Discord abort and compact command paths to shared control helpers.
 - [x] 5.5 Migrate Slack abort and compact command paths to shared control helpers.
 - [x] 5.6 Migrate broker abort and compact actions to shared control helpers or a thin equivalent wrapper.
-- [ ] 5.7 Add tests proving abort unavailable races roll back `abortRequested`, compact unavailable races return safe unavailable responses, and successful/idle control behavior remains unchanged.
+- [x] 5.7 Add tests proving abort unavailable races roll back `abortRequested`, compact unavailable races return safe unavailable responses, and successful/idle control behavior remains unchanged.
 
 ## 6. Media, Workspace, and Requester File Safety
 
