@@ -1123,6 +1123,7 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(callbacks).toEqual(["Selected 2"]);
     expect(deliveries).toEqual([{ text: "Answer to: Choose:\nSelected option 2: skip", deliverAs: undefined }]);
+    expect(route.remoteRequester?.messageId).toBeUndefined();
   });
 
   it("does not answer callback as unavailable for non-unavailable prompt failures", async () => {

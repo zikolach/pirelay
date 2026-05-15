@@ -53,7 +53,8 @@ export function isRouteUnavailableOutcome(outcome: RouteActionOutcome<unknown>):
 }
 
 export function routeActionOutcomeFromError(error: unknown, safeMessage: string): Extract<RouteActionOutcome<never>, { kind: "unavailable" | "failed" }> {
-  if (isRouteUnavailableError(error)) return routeActionUnavailable();
+  if (error instanceof RouteUnavailableError) return routeActionUnavailable(error.message);
+  if (isStaleExtensionReferenceError(error)) return routeActionUnavailable();
   return routeActionFailed(error, safeMessage);
 }
 

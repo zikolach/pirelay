@@ -1271,7 +1271,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       userId: String(message.user.id),
       sessionKey: route.sessionKey,
       safeLabel: `Telegram ${getTelegramUserLabel(message.user)}`,
-      messageId: String(message.messageId),
+      ...(message.messageId !== undefined ? { messageId: String(message.messageId) } : {}),
       conversationKind: message.chat.type,
       createdAt: Date.now(),
     };

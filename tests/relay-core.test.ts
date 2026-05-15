@@ -46,6 +46,14 @@ describe("relay core route helpers", () => {
     });
   });
 
+  it("preserves model details when transport online state is false", () => {
+    expect(statusSnapshotForRoute(route(), { online: false, busy: false })).toMatchObject({
+      online: false,
+      busy: false,
+      modelId: "test/model-with-image",
+    });
+  });
+
   it("marks unavailable routes offline when busy is not supplied", () => {
     const unavailable = route();
     unavailable.actions.isIdle = () => undefined;

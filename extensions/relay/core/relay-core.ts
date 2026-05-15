@@ -28,7 +28,7 @@ export function statusSnapshotForRoute(route: SessionRoute, options: { online: b
     sessionFile: route.sessionFile,
     online,
     busy: online ? options.busy ?? probe.busy : false,
-    modelId: online ? formatModelId(model) : undefined,
+    modelId: probe.kind === "available" ? formatModelId(model) : undefined,
     lastActivityAt: route.lastActivityAt,
     binding: route.binding,
     notification: route.notification,

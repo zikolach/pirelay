@@ -84,6 +84,7 @@ describe("route action lifetime helpers", () => {
 
   it("converts unavailable errors without hiding non-unavailable failures", () => {
     expect(routeActionOutcomeFromError(new Error(STALE_EXTENSION_ERROR), "safe failure")).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(routeActionOutcomeFromError(routeUnavailableError("Custom safe unavailable."), "safe failure")).toEqual({ kind: "unavailable", message: "Custom safe unavailable." });
     const error = new Error("platform failure");
     expect(routeActionOutcomeFromError(error, "safe failure")).toEqual({ kind: "failed", error, safeMessage: "safe failure" });
     expect(routeActionDisplayMessage(routeActionUnavailable())).toBe(unavailableRouteMessage());
