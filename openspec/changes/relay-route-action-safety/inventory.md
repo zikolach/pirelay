@@ -182,6 +182,14 @@ This inventory captures the high-risk fallible `route.actions.*` and existing na
 - Runtime route replacement and stale context invalidation should prevent previous-session image candidates/workspace roots from being reused.
 - Risk: workspace/media helpers must fail closed and must not fall back to another route, stale workspace root, or another requester.
 
+## Task 6.2: Media cache route/session scoping
+
+- `extension-runtime.ts` stores latest image content and file candidates in the active extension-runtime closure, not in global adapter state.
+- `syncRoute()` calls `clearTurnImageCaches()` when `currentRoute.sessionKey` changes, so a replacement route starts with empty latest-turn media caches.
+- `agent_start` also calls `clearTurnImageCaches()` and clears `currentRoute.notification.latestImages`, so a new turn cannot inherit previous-turn media candidates.
+- `getLatestImagesForTelegram(route)` first resolves `liveContextForRoute(route)` and returns no images when the requested route is stale/unavailable, preventing old route cache reads after a route switch.
+- New shared media helpers add an availability/workspace probe before adapters/broker render media or requester-file operations.
+
 ### Audit and persistence timing
 
 - Prompt audit entries should occur after prompt acceptance, not after unavailable outcomes.
