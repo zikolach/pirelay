@@ -1835,7 +1835,6 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", {}, first.context);
     const staleRoute = registeredRoutes.at(-1)!;
     await pi.emit("session_start", {}, second.context);
-    const statusCount = second.statuses.length;
 
     let closeCount = 0;
     let customRendered = false;
@@ -1856,6 +1855,8 @@ describe("PiRelay integration behavior", () => {
     }));
     const connectPromise = pi.runCommand("relay", "connect telegram", second.context);
     await waitFor(() => customRendered);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const statusCount = second.statuses.length;
 
     staleRoute.actions.setLocalStatus?.("stale-route", "should not update active context");
     staleRoute.actions.notifyLocal?.("stale route notification");

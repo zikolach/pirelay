@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 - 2026-05-15
+
+- Added unified messenger file delivery and requester-scoped remote safe file requests for Telegram, Discord, and Slack. #41 #43
+- Hardened revoked and disconnected bindings so stale routes, timers, and duplicate runtimes do not send protected session feedback after disconnect. #44
+- Improved stale route/context safety so unavailable sessions remain offline, pairing screens are not closed by stale routes, and prompts, controls, media, and status snapshots use coherent route availability checks. #46 #47 #49
+- Centralized binding authority resolution so broker, adapter, and runtime delivery paths consistently suppress stale or unauthorized bindings. #52
+- Added OpenSpec designs for approval gates and messenger command surfaces to guide upcoming safe remote-control UX. #15 #51
+
 ## 0.5.0 - 2026-05-12
 
 - Added lifecycle notifications so paired Telegram, Discord, and Slack conversations are notified when a Pi session goes offline, comes back online, or is disconnected locally. #38
