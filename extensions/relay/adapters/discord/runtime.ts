@@ -10,6 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
+import { routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -21,6 +22,12 @@ const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
 const DISCORD_TYPING_REFRESH_MS = 7_000;
 const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
 const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
+function discordRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
+  const idle = routeIdleState(route);
+  if (idle === undefined) return { online: false, busy: false };
+  return { online: true, busy: !idle };
+}
+
 const DISCORD_HELP_TEXT = buildHelpText({
   title: "PiRelay Discord commands:",
   commandPrefix: "relay",
@@ -452,9 +459,16 @@ export class DiscordRuntime {
     }
 
     const imageAttachments = message.attachments.filter((attachment) => attachment.kind === "image");
-    if (imageAttachments.length > 0 && !modelSupportsImages(route.actions.getModel())) {
-      await this.sendText(message, "The current Pi model does not support image input. Switch to an image-capable model and retry.");
-      return;
+    if (imageAttachments.length > 0) {
+      const modelState = routeModelState(route);
+      if (!modelState.available) {
+        await this.sendText(message, unavailableRouteMessage());
+        return;
+      }
+      if (!modelSupportsImages(modelState.model)) {
+        await this.sendText(message, "The current Pi model does not support image input. Switch to an image-capable model and retry.");
+        return;
+      }
     }
 
     const promptText = message.text.trim() || (imageAttachments.length > 0 ? IMAGE_PROMPT_FALLBACK : "");
@@ -521,19 +535,45 @@ export class DiscordRuntime {
         await this.handlePromptCommand(message, binding, route, command.args, "followUp");
         return;
       case "abort":
-        if (route.actions.context.isIdle()) {
+        const idle = routeIdleState(route);
+        if (idle === undefined) {
+          await this.sendText(message, unavailableRouteMessage());
+          return;
+        }
+        if (idle) {
           await this.sendText(message, "The Pi session is already idle.");
           return;
         }
         route.notification.abortRequested = true;
         this.stopTypingActivity(route.sessionKey);
-        route.actions.abort();
+        try {
+          route.actions.abort();
+        } catch (error) {
+          route.notification.abortRequested = false;
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.sendText(message, error.message);
+            return;
+          }
+          throw error;
+        }
         route.actions.appendAudit("Discord requested abort.");
         await this.sendText(message, "Abort requested.");
         return;
       case "compact":
+        if (routeIdleState(route) === undefined) {
+          await this.sendText(message, unavailableRouteMessage());
+          return;
+        }
         route.actions.appendAudit("Discord requested compaction.");
-        await route.actions.compact();
+        try {
+          await route.actions.compact();
+        } catch (error) {
+          if (error instanceof Error && error.message === unavailableRouteMessage()) {
+            await this.sendText(message, error.message);
+            return;
+          }
+          throw error;
+        }
         await this.sendText(message, "Compaction requested.");
         return;
       case "pause":
@@ -583,13 +623,18 @@ export class DiscordRuntime {
       if (source === "remote-command") await this.sendText(message, error);
       return error;
     }
+    const workspaceRoot = routeWorkspaceRoot(route);
+    if (!workspaceRoot) {
+      if (source === "remote-command") await this.sendText(message, unavailableRouteMessage());
+      return unavailableRouteMessage();
+    }
     const requester = this.discordRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
       adapter: this.adapter,
-      workspaceRoot: route.actions.context.cwd,
+      workspaceRoot: workspaceRoot,
       relativePath: request.relativePath,
       caption: request.caption,
       source,
@@ -605,11 +650,13 @@ export class DiscordRuntime {
 
   async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
     if (!this.adapter) return "Discord file delivery is not configured for this instance.";
+    const workspaceRoot = routeWorkspaceRoot(route);
+    if (!workspaceRoot) return unavailableRouteMessage();
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
       adapter: this.adapter,
-      workspaceRoot: route.actions.context.cwd,
+      workspaceRoot: workspaceRoot,
       relativePath,
       caption,
       source: "assistant-tool",
@@ -629,14 +676,22 @@ export class DiscordRuntime {
     options: { deliverAs?: "followUp" | "steer"; idleAck?: string; busyAck?: string; auditAction?: string } = {},
   ): Promise<void> {
     const content = buildImagePromptContent(promptText, []);
+    const wasIdle = routeIdleState(route);
+    if (wasIdle === undefined) {
+      await this.sendText(message, unavailableRouteMessage());
+      return;
+    }
     this.startTypingActivity(route, bindingAddress(binding));
-    const wasIdle = route.actions.context.isIdle();
     const deliverAs = wasIdle ? undefined : options.deliverAs ?? this.config.busyDeliveryMode;
     try {
       route.remoteRequester = this.discordRequester(route, message);
       route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
     } catch (error) {
       this.stopTypingActivity(route.sessionKey);
+      if (error instanceof Error && error.message === unavailableRouteMessage()) {
+        await this.sendText(message, error.message);
+        return;
+      }
       const safeMessage = safeDiscordRuntimeError(error);
       this.lastError = safeMessage;
       await this.sendText(message, `Could not deliver the Discord prompt to Pi: ${safeMessage}`);
@@ -665,7 +720,11 @@ export class DiscordRuntime {
       await this.sendText(message, `Usage: /${deliverAs === "steer" ? "steer" : "followup"} <text>`);
       return;
     }
-    const idle = route.actions.context.isIdle();
+    const idle = routeIdleState(route);
+    if (idle === undefined) {
+      await this.sendText(message, unavailableRouteMessage());
+      return;
+    }
     await this.deliverDiscordPrompt(message, binding, route, args, {
       deliverAs: idle ? undefined : deliverAs,
       auditAction: deliverAs === "steer" ? "steering instruction" : "follow-up",
@@ -787,17 +846,18 @@ export class DiscordRuntime {
     for (const binding of bindings) {
       const route = this.routes.get(binding.sessionKey);
       if (route) {
-        const busy = !route.actions.context.isIdle();
+        const availability = discordRouteAvailability(route);
+        const snapshot = statusSnapshotForRoute(route, availability);
         byKey.set(binding.sessionKey, {
           sessionKey: route.sessionKey,
           sessionId: route.sessionId,
           sessionFile: route.sessionFile,
           sessionLabel: route.sessionLabel,
           alias: channelAlias(binding),
-          online: true,
-          busy,
+          online: snapshot.online,
+          busy: snapshot.busy,
           paused: Boolean(binding.paused),
-          modelId: statusSnapshotForRoute(route, { online: true, busy }).modelId,
+          modelId: snapshot.modelId,
           lastActivityAt: route.lastActivityAt,
         });
         continue;
@@ -848,10 +908,10 @@ export class DiscordRuntime {
   }
 
   private statusTextForRoute(route: SessionRoute, binding: ChannelPersistedBindingRecord, online: boolean): string {
-    const busy = !route.actions.context.isIdle();
+    const availability = discordRouteAvailability(route);
     return formatRelayStatusForRoute(route, {
-      online,
-      busy,
+      online: online && availability.online,
+      busy: online && availability.busy,
       binding,
       progressMode: channelProgressMode(binding) ?? this.config.progressMode,
       includeLastStatus: true,

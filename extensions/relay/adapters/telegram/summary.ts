@@ -1,6 +1,7 @@
 import { complete, type UserMessage } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { SummaryMode } from "../../core/types.js";
+import { isStaleExtensionReferenceError } from "../../core/route-actions.js";
 import { summarizeTextDeterministically } from "../../core/utils.js";
 
 const SUMMARY_PROMPT = [
@@ -13,14 +14,25 @@ const SUMMARY_PROMPT = [
 export async function summarizeForTelegram(
   text: string,
   mode: SummaryMode,
-  ctx: ExtensionContext,
+  ctx: ExtensionContext | undefined,
+  onStaleContext?: () => void,
 ): Promise<string> {
-  if (mode !== "llm" || !ctx.model) {
+  let model: ExtensionContext["model"] | undefined;
+  try {
+    model = ctx?.model;
+  } catch (error) {
+    if (isStaleExtensionReferenceError(error)) {
+      onStaleContext?.();
+      return summarizeTextDeterministically(text);
+    }
+    throw error;
+  }
+  if (mode !== "llm" || !ctx || !model) {
     return summarizeTextDeterministically(text);
   }
 
   try {
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) {
       return summarizeTextDeterministically(text);
     }
@@ -30,7 +42,7 @@ export async function summarizeForTelegram(
       timestamp: Date.now(),
     };
     const response = await complete(
-      ctx.model,
+      model,
       {
         systemPrompt: SUMMARY_PROMPT,
         messages: [userMessage],
@@ -44,7 +56,8 @@ export async function summarizeForTelegram(
       .trim();
 
     return rendered || summarizeTextDeterministically(text);
-  } catch {
+  } catch (error) {
+    if (isStaleExtensionReferenceError(error)) onStaleContext?.();
     return summarizeTextDeterministically(text);
   }
 }

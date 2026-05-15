@@ -617,6 +617,9 @@ describe("SlackRuntime foundations", () => {
     expect(testRoute.actions.abort).toHaveBeenCalled();
     await send("/compact", "50");
     expect(testRoute.actions.compact).toHaveBeenCalled();
+    vi.mocked(testRoute.actions.compact).mockRejectedValueOnce(new Error("The Pi session is unavailable. Resume it locally, then try again."));
+    await send("/compact", "50.5");
+    expect(operations.posts.at(-1)?.text).toContain("The Pi session is unavailable");
     await send("/recent", "51");
     expect(operations.posts.at(-1)?.text).toContain("No recent activity");
     await send("/unknown", "52");
@@ -843,6 +846,14 @@ describe("SlackRuntime foundations", () => {
     await sendChannelMessage("pirelay to Docs session-only prompt", "75");
     expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith("session-only prompt", undefined);
     await expect(store.getActiveChannelSelection("slack", "C1", "U_DRIVER")).resolves.toBeUndefined();
+
+    testRoute.remoteRequester = undefined;
+    testRoute.actions.isIdle = () => undefined;
+    const callsBeforeUnavailableTarget = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
+    await sendChannelMessage("pirelay to Docs unavailable target", "75.5");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(callsBeforeUnavailableTarget);
+    expect(testRoute.remoteRequester).toBeUndefined();
+    expect(operations.posts.at(-1)?.text).toContain("offline");
 
     const callsBeforeRemoteTarget = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
     await sendChannelMessage("pirelay to remote Docs should not route", "76");

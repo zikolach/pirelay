@@ -945,6 +945,34 @@ describe("DiscordRuntime", () => {
     expect(runtime.getStatus().error).toBe("typing unavailable");
   });
 
+  it("reports unavailable Discord prompt delivery without marking runtime unhealthy", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    sendUserMessage.mockImplementation(() => {
+      throw new Error("The Pi session is unavailable. Resume it locally, then try again.");
+    });
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("hello"));
+
+    expect(ops.messages.at(-1)?.content).toContain("The Pi session is unavailable");
+    expect(runtime.getStatus().error).toBeUndefined();
+  });
+
   it("reports Discord prompt delivery failures to the chat", async () => {
     const cfg = await config();
     const ops = new FakeDiscordOperations();
@@ -1114,6 +1142,57 @@ describe("DiscordRuntime", () => {
     expect(sendUserMessage).toHaveBeenCalledWith("one shot", undefined);
     expect(ops.files.map((file) => file.fileName)).toEqual(["render.png", "render-path.png", "report.md"]);
     expect(ops.files.at(-1)).toMatchObject({ caption: "Report", mimeType: "text/markdown" });
+  });
+
+  it("reports Discord compact becoming unavailable after the idle check", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route().route;
+    session.actions.compact = vi.fn(async () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); });
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("relay compact"));
+
+    expect(ops.messages.at(-1)?.content).toContain("The Pi session is unavailable");
+  });
+
+  it("marks unavailable Discord routes offline in session lists", async () => {
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const first = route().route;
+    first.actions.isIdle = () => undefined;
+    await runtime.registerRoute(first);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: first.sessionKey,
+      sessionId: first.sessionId,
+      sessionLabel: first.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("relay sessions"));
+
+    expect(ops.messages.at(-1)?.content).toContain("offline");
+    expect(ops.messages.at(-1)?.content).not.toContain("busy");
   });
 
   it("renders Discord session lists through the same formatter as Telegram, including color markers", async () => {

@@ -258,13 +258,18 @@ export interface LatestTurnImageMetadata {
 }
 
 export interface SessionRouteActions {
+  /** @deprecated Prefer narrow lifetime-safe helpers on this object. */
   context: ExtensionContext;
+  isIdle?(): boolean | undefined;
+  getWorkspaceRoot?(): string | undefined;
   getModel(): Model<any> | undefined;
+  summarizeText?(text: string, mode: SummaryMode): Promise<string>;
   sendUserMessage(content: TelegramPromptContent, options?: { deliverAs?: DeliveryMode }): void;
   getLatestImages(): Promise<LatestTurnImage[]>;
   getImageByPath(relativePath: string): Promise<ImageFileLoadResult>;
   appendAudit(message: string): void;
   notifyLocal?(message: string, level?: "info" | "warning" | "error"): void;
+  setLocalStatus?(key: string, value: string): void;
   refreshLocalStatus?(): void;
   persistBinding(binding: TelegramBindingMetadata | null, revoked?: boolean): void;
   promptLocalConfirmation(identity: RelayPairingIdentity): Promise<PairingApprovalDecision | boolean>;

@@ -1458,6 +1458,114 @@ describe("InProcessTunnelRuntime", () => {
     expect(second.deliveries).toEqual([{ text: "hello selected session", deliverAs: undefined }]);
   });
 
+  it("reports unavailable routes before delivering Telegram prompts", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable:/tmp/session-unavailable.jsonl",
+      sessionId: "session-unavailable",
+      sessionFile: "/tmp/session-unavailable.jsonl",
+      sessionLabel: "unavailable.jsonl",
+      chatId: 1012,
+      userId: 32,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.isIdle = () => undefined;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({ updateId: 39, messageId: 39, text: "hello unavailable", chat: { id: 1012, type: "private" }, user: { id: 32, username: "owner" } });
+
+    expect(deliveries).toEqual([]);
+    expect(sent).toContain("The Pi session is unavailable. Resume it locally, then try again.");
+  });
+
+  it("stops Telegram activity indicators for unavailable routes", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-activity:/tmp/session-unavailable-activity.jsonl",
+      sessionId: "session-unavailable-activity",
+      sessionFile: "/tmp/session-unavailable-activity.jsonl",
+      sessionLabel: "unavailable-activity.jsonl",
+      chatId: 1016,
+      userId: 36,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.actions.isIdle = () => undefined;
+    route.notification.lastStatus = "running";
+    await store.upsertBinding(binding);
+
+    expect((runtime as any).shouldContinueActivityIndicator(route)).toBe(false);
+  });
+
+  it("reports Telegram prompt delivery becoming unavailable after the idle check", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-send:/tmp/session-unavailable-send.jsonl",
+      sessionId: "session-unavailable-send",
+      sessionFile: "/tmp/session-unavailable-send.jsonl",
+      sessionLabel: "unavailable-send.jsonl",
+      chatId: 1014,
+      userId: 34,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({ updateId: 44, messageId: 44, text: "hello unavailable after check", chat: { id: 1014, type: "private" }, user: { id: 34, username: "owner" } });
+
+    expect(deliveries).toEqual([]);
+    expect(sent).toContain("The Pi session is unavailable. Resume it locally, then try again.");
+  });
+
+  it("rolls back Telegram abort state when abort becomes unavailable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-abort:/tmp/session-unavailable-abort.jsonl",
+      sessionId: "session-unavailable-abort",
+      sessionFile: "/tmp/session-unavailable-abort.jsonl",
+      sessionLabel: "unavailable-abort.jsonl",
+      chatId: 1015,
+      userId: 35,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, setIdle } = createRoute(binding, true);
+    setIdle(false);
+    route.actions.abort = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({ updateId: 45, messageId: 45, text: "/abort", chat: { id: 1015, type: "private" }, user: { id: 35, username: "owner" } });
+
+    expect(route.notification.abortRequested).toBe(false);
+    expect(sent).toContain("The Pi session is unavailable. Resume it locally, then try again.");
+  });
+
   it("supports text /use, /to, and /forget session controls in-process", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -1518,6 +1626,31 @@ describe("InProcessTunnelRuntime", () => {
     expect(first.deliveries).toContainEqual({ text: "one shot", deliverAs: undefined });
     expect(sent.join("\n")).toContain("Forgot offline session offline.jsonl");
     expect((await store.getBindingBySessionKey(offlineBinding.sessionKey))?.status).toBe("revoked");
+  });
+
+  it("marks unavailable in-memory Telegram routes offline in session entries", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-list:/tmp/session-unavailable-list.jsonl",
+      sessionId: "session-unavailable-list",
+      sessionFile: "/tmp/session-unavailable-list.jsonl",
+      sessionLabel: "unavailable-list.jsonl",
+      chatId: 1013,
+      userId: 33,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.actions.isIdle = () => undefined;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const entries = await (runtime as any).sessionEntriesFromBindings([binding], () => true);
+
+    expect(entries).toContainEqual(expect.objectContaining({ sessionKey: route.sessionKey, online: false, busy: false }));
   });
 
   it("includes persisted offline sessions in the in-process session list", async () => {
@@ -1839,6 +1972,43 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(sent.at(-1)).toMatchObject({ chatId: -1003, text: expect.stringContaining("Shared prompt finished successfully") });
     expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
+  });
+
+  it("rolls back Telegram shared-room output destinations when delivery becomes unavailable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-unavailable:/tmp/session-group-unavailable.jsonl",
+      sessionId: "session-group-unavailable",
+      sessionFile: "/tmp/session-group-unavailable.jsonl",
+      sessionLabel: "group-unavailable.jsonl",
+      chatId: 2041,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: Array<{ chatId: number; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({ updateId: 58, messageId: 58, text: "/to@mini_builder_bot group-unavailable.jsonl ship it", chat: { id: -1005, type: "supergroup" }, user: { id: 42, username: "owner" } });
+
+    expect(sent).toContainEqual({ chatId: -1005, text: "The Pi session is unavailable. Resume it locally, then try again." });
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = "Later private output.";
+    await runtime.notifyTurnCompleted(route, "completed");
+    expect(sent).toContainEqual(expect.objectContaining({ chatId: 2041, text: expect.stringContaining("Later private output") }));
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: -1005, text: expect.stringContaining("Later private output") }));
   });
 
   it("uses Telegram shared-room output destinations for direct bound-chat sends", async () => {
