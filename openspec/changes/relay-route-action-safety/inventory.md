@@ -89,3 +89,54 @@ This inventory captures the high-risk fallible `route.actions.*` and existing na
 | File | Call site | Area | Current shape |
 | --- | --- | --- | --- |
 | `extensions/relay/core/requester-file-delivery.ts` | `route.remoteRequester` match | requester ownership | Validates requester identity/session before file delivery; assumes caller supplied safe workspace root. |
+
+## Task 1.3: Call-site classification
+
+### Prompt
+
+- Telegram: `sendPromptSafely()`, `deliverAuthorizedPrompt()`, `deliverPlainPrompt()`, callback answer-option/custom/guided/ambiguity flows, image prompt flows.
+- Discord: `deliverDiscordPrompt()`, `handlePromptCommand()`, `handleToCommand()`, ordinary bound messages, image prompt path after model validation.
+- Slack: ordinary bound messages, `pirelay to` target prompt, busy follow-up/steer delivery.
+- Broker: `deliverPrompt` request handling in `tunnel-runtime.ts`.
+- Extension runtime: `SessionRouteActions.sendUserMessage()` implementation; this is the final route action invoked by all prompt helpers.
+
+### Abort
+
+- Telegram: dashboard abort callback and `/abort` command.
+- Discord: `/abort` command.
+- Slack: `pirelay abort` command.
+- Broker: `abort` request handling in `tunnel-runtime.ts`.
+- Extension runtime: `SessionRouteActions.abort()` implementation.
+
+### Compact
+
+- Telegram: dashboard compact callback and `/compact` command.
+- Discord: `/compact` command.
+- Slack: `pirelay compact` command.
+- Broker: `compact` request handling in `tunnel-runtime.ts`.
+- Extension runtime: `SessionRouteActions.compact()` implementation.
+
+### Media/workspace
+
+- Workspace/file: Telegram `sendFileByPath()`, Discord/Slack `sendFileByPath()` and `sendFileToRequester()`, broker requester-file handling, requester-file-delivery core validation.
+- Explicit image: Telegram/Discord/Slack `sendImageByPath()`, broker `getImageByPath` request handling, extension runtime `getImageByPath()`.
+- Latest images: Telegram/Discord/Slack `sendLatestImages()`, broker `getLatestImages` request handling, extension runtime `getLatestImages()`.
+- Image model capability: Telegram `downloadAuthorizedImages()`, Discord image attachment handling.
+
+### Status/probe
+
+- Core: `routeIdleState()`, `routeModelState()`, `routeWorkspaceRoot()`, `statusSnapshotForRoute()`, `relayRouteStateForRoute()`.
+- Adapter status/session lists: Telegram, Discord, and Slack availability helpers plus session list/status render paths.
+- Broker status/session lists: broker route status and route state snapshots.
+
+### Audit/persist/local side effect
+
+- `actions.appendAudit()` after accepted prompts, pairings, control requests, file delivery results, pause/resume/disconnect events.
+- `actions.persistBinding()` on pairing, pause/resume, and local/remote disconnect state transitions.
+- `actions.notifyLocal()`, `actions.setLocalStatus()`, and `actions.refreshLocalStatus()` for local UI/status effects.
+- `actions.promptLocalConfirmation()` during Telegram/Discord/Slack/broker pairing approval.
+
+### Safe synchronous usage
+
+- Formatting-only reads from `route.notification`, `route.binding`, `route.session*`, and `route.lastActivityAt` are safe as immutable/route-owned metadata, provided they are not used to prove live Pi availability.
+- `route.actions.context` should remain quarantined inside compatibility helpers; adapter/broker long-lived code should not use it directly.
