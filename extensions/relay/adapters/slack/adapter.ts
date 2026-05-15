@@ -16,6 +16,7 @@ import type {
 import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "../../core/channel-adapter.js";
 import type { SlackRelayConfig } from "../../core/types.js";
 import type { SharedRoomAddressing } from "../../core/shared-room.js";
+import { slackRelayCommandSurface } from "../../commands/surfaces.js";
 
 export interface SlackApiOperations {
   startSocketMode?(handler: (event: SlackEnvelope) => Promise<void>): Promise<void>;
@@ -51,7 +52,7 @@ export interface SlackAuthTestResult {
 }
 
 export interface SlackEnvelope {
-  type: "event_callback" | "block_actions";
+  type: "event_callback" | "block_actions" | "slash_command";
   envelopeId?: string;
   eventId?: string;
   retryAttempt?: number;
@@ -62,6 +63,13 @@ export interface SlackEnvelope {
   channel?: { id: string };
   message?: { ts?: string; thread_ts?: string };
   trigger_id?: string;
+  command?: string;
+  text?: string;
+  channel_id?: string;
+  channel_name?: string;
+  user_id?: string;
+  user_name?: string;
+  team_id?: string;
   response_url?: string;
   team?: { id: string };
 }
@@ -276,6 +284,7 @@ export function verifySlackSignature(input: { body: string; timestamp: string; s
 }
 
 export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: SlackRelayConfig): ChannelInboundEvent | undefined {
+  if (envelope.type === "slash_command") return slackSlashCommandToChannelEvent(envelope);
   if (envelope.type === "block_actions") {
     const action = envelope.actions?.[0];
     const channelId = envelope.channel?.id ?? "";
@@ -304,7 +313,29 @@ export function isSlackIdentityAllowed(identity: ChannelIdentity, config: Pick<S
 }
 
 export function slackPairingCommand(code: string): string {
-  return `pirelay pair ${code}`;
+  return `relay pair ${code}`;
+}
+
+export function slackSlashCommandMetadata(): { command: string; description: string; usageHint: string } {
+  const surface = slackRelayCommandSurface();
+  return { command: surface.command, description: surface.description, usageHint: surface.usageHint };
+}
+
+function slackSlashCommandToChannelEvent(envelope: SlackEnvelope): ChannelInboundMessage | undefined {
+  if (envelope.command !== "/relay" || !envelope.channel_id || !envelope.user_id) return undefined;
+  const text = envelope.text?.trim();
+  const updateId = envelope.trigger_id ?? `${envelope.channel_id}:${Date.now()}`;
+  return {
+    kind: "message",
+    channel: SLACK_CHANNEL,
+    updateId,
+    messageId: updateId,
+    text: text ? `relay ${text}` : "relay help",
+    attachments: [],
+    conversation: slackConversationFromId(envelope.channel_id),
+    sender: slackIdentity(envelope.user_id, envelope.user_name, envelope.team_id ?? envelope.team?.id),
+    metadata: { teamId: envelope.team_id ?? envelope.team?.id, responseUrl: envelope.response_url, slashCommand: envelope.command },
+  };
 }
 
 export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
@@ -411,11 +442,49 @@ export function parseSlackWebhookBody(rawBody: string, parsedPayload?: unknown):
     const payload = (parsedPayload as { payload?: unknown }).payload;
     if (typeof payload === "string") return JSON.parse(payload) as SlackEnvelope;
     if (typeof (parsedPayload as { type?: unknown }).type === "string") return parsedPayload as SlackEnvelope;
+    if (typeof (parsedPayload as { command?: unknown }).command === "string") return slackSlashCommandEnvelopeFromRecord(parsedPayload as Record<string, unknown>);
   }
   const params = new URLSearchParams(rawBody);
   const formPayload = params.get("payload");
   if (formPayload) return JSON.parse(formPayload) as SlackEnvelope;
+  const command = params.get("command");
+  if (command) return slackSlashCommandEnvelopeFromForm(params);
   return JSON.parse(rawBody) as SlackEnvelope;
+}
+
+function slackSlashCommandEnvelopeFromForm(params: URLSearchParams): SlackEnvelope {
+  return {
+    type: "slash_command",
+    command: params.get("command") ?? undefined,
+    text: params.get("text") ?? undefined,
+    channel_id: params.get("channel_id") ?? undefined,
+    channel_name: params.get("channel_name") ?? undefined,
+    user_id: params.get("user_id") ?? undefined,
+    user_name: params.get("user_name") ?? undefined,
+    team_id: params.get("team_id") ?? undefined,
+    trigger_id: params.get("trigger_id") ?? undefined,
+    response_url: params.get("response_url") ?? undefined,
+  };
+}
+
+function slackSlashCommandEnvelopeFromRecord(record: Record<string, unknown>): SlackEnvelope {
+  return {
+    type: "slash_command",
+    command: stringField(record, "command"),
+    text: stringField(record, "text"),
+    channel_id: stringField(record, "channel_id"),
+    channel_name: stringField(record, "channel_name"),
+    user_id: stringField(record, "user_id"),
+    user_name: stringField(record, "user_name"),
+    team_id: stringField(record, "team_id"),
+    trigger_id: stringField(record, "trigger_id"),
+    response_url: stringField(record, "response_url"),
+  };
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function rawSlackBody(payload: unknown, headers: Record<string, string>): string {

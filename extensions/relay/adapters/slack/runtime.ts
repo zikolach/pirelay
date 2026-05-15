@@ -20,7 +20,7 @@ import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
   title: "PiRelay Slack commands:",
-  commandPrefix: "pirelay",
+  commandPrefix: "relay",
   includeSharedRoomHints: false,
   footerLines: ["", "Tip: do not prefix commands with `/` in Slack; Slack treats leading slash text as slash commands for apps."],
 });
@@ -393,7 +393,7 @@ export class SlackRuntime {
     if (!binding) {
       await this.sendText(message, message.conversation.kind === "private"
         ? "This Slack chat is not paired with a Pi session. Run /relay connect slack locally first."
-        : "This Slack channel/thread is not paired with a Pi session. To control Pi from this channel, enable slack.allowChannelMessages, run /relay connect slack locally, then send the highlighted `pirelay pair <pin>` command in this channel. Otherwise use the paired Slack app DM.");
+        : "This Slack channel/thread is not paired with a Pi session. To control Pi from this channel, enable slack.allowChannelMessages, run /relay connect slack locally, then send the highlighted `relay pair <pin>` command in this channel. Otherwise use the paired Slack app DM.");
       return;
     }
     const route = this.routes.get(binding.sessionKey);
@@ -461,7 +461,7 @@ export class SlackRuntime {
       return;
     }
     if (binding.paused) {
-      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` to re-enable prompts.");
+      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `relay resume` to re-enable prompts.");
       return;
     }
     const mode = this.config.busyDeliveryMode === "steer" ? "steer" : "followUp";
@@ -500,7 +500,7 @@ export class SlackRuntime {
 
   private async handleSlackCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: SlackCommand): Promise<void> {
     if (binding.paused && !commandAllowsWhilePaused(command.name)) {
-      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` first.");
+      await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `relay resume` first.");
       return;
     }
     switch (command.name) {
@@ -533,7 +533,7 @@ export class SlackRuntime {
           return;
         }
         if (!target.prompt) {
-          await this.sendText(message, "Usage: pirelay to <session> <prompt>");
+          await this.sendText(message, "Usage: relay to <session> <prompt>");
           return;
         }
         const targetRoute = this.routes.get(target.result.entry.sessionKey);
@@ -589,7 +589,7 @@ export class SlackRuntime {
         const mode = normalizeProgressMode(command.args);
         if (!mode) {
           const currentMode = displayProgressMode(progressModeFor({ progressMode: channelProgressMode(binding) }, this.config));
-          await this.sendText(message, `Progress mode: ${currentMode}\nUsage: pirelay progress <quiet|normal|verbose|completion-only>`);
+          await this.sendText(message, `Progress mode: ${currentMode}\nUsage: relay progress <quiet|normal|verbose|completion-only>`);
           return;
         }
         const next = await this.store.upsertChannelBinding({ ...binding, metadata: { ...binding.metadata, progressMode: mode }, instanceId: this.instanceId, lastSeenAt: new Date().toISOString() });
@@ -624,7 +624,7 @@ export class SlackRuntime {
       case "pause":
         await this.updateBinding(binding, { paused: true });
         route.actions.refreshLocalStatus?.();
-        await this.sendText(message, "Slack remote delivery paused. Use `pirelay resume` to re-enable it.");
+        await this.sendText(message, "Slack remote delivery paused. Use `relay resume` to re-enable it.");
         return;
       case "resume":
         await this.updateBinding(binding, { paused: false });
@@ -640,7 +640,7 @@ export class SlackRuntime {
         await this.sendText(message, "Slack binding disconnected for this Pi session.");
         return;
       default:
-        await this.sendText(message, `Unknown Slack command: ${command.name}. Send \`pirelay help\` for available commands.`);
+        await this.sendText(message, `Unknown Slack command: ${command.name}. Send \`relay help\` for available commands.`);
     }
   }
 
@@ -702,7 +702,7 @@ export class SlackRuntime {
     const pairedUser = binding.identity?.displayName ?? binding.userId;
     route.actions.appendAudit(`Slack paired with ${pairedUser}.`);
     route.actions.notifyLocal?.(`Slack paired with ${pairedUser} for ${route.sessionLabel}.`, "info");
-    await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send \`pirelay status\` or a prompt to control Pi.`);
+    await this.sendText(message, `Slack paired with ${route.sessionLabel}. Send \`relay status\` or a prompt to control Pi.`);
   }
 
   private slackRequester(route: SessionRoute, message: ChannelInboundMessage): RelayFileDeliveryRequester {
@@ -724,7 +724,7 @@ export class SlackRuntime {
   private async sendFileByPath(message: ChannelInboundMessage, route: SessionRoute, args: string, source: "remote-command" | "assistant-tool" = "remote-command"): Promise<string | undefined> {
     const request = parseRemoteSendFileArgs(args);
     if (!request) {
-      const usage = "Usage: pirelay send-file <relative-path> [caption]";
+      const usage = "Usage: relay send-file <relative-path> [caption]";
       if (source === "remote-command") await this.sendText(message, usage);
       return usage;
     }
@@ -791,7 +791,7 @@ export class SlackRuntime {
     }
     const images = imagesOutcome.result;
     if (images.length === 0) {
-      await this.sendText(message, formatLatestImageEmptyMessage().replaceAll("/images", "pirelay images").replaceAll("/send-image", "pirelay send-image"));
+      await this.sendText(message, formatLatestImageEmptyMessage().replaceAll("/images", "relay images").replaceAll("/send-image", "relay send-image"));
       return;
     }
     let sent = 0;
@@ -814,7 +814,7 @@ export class SlackRuntime {
   private async sendImageByPath(message: ChannelInboundMessage, route: SessionRoute, args: string): Promise<void> {
     const relativePath = args.trim();
     if (!relativePath) {
-      await this.sendText(message, "Usage: pirelay send-image <relative-image-path>");
+      await this.sendText(message, "Usage: relay send-image <relative-image-path>");
       return;
     }
     const imageOutcome = await routeImageByPathSafely(route, relativePath);
@@ -933,7 +933,12 @@ export class SlackRuntime {
     return undefined;
   }
 
-  private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender">, text: string): Promise<void> {
+  private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string): Promise<void> {
+    const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
+    if (responseUrl && this.operations?.postResponse) {
+      await this.operations.postResponse(responseUrl, { text, ephemeral: true }).catch(() => undefined);
+      return;
+    }
     await this.adapter?.sendText(slackAddress(message), text);
   }
 
@@ -1144,9 +1149,9 @@ function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent |
 
 function parseSlackPairingCode(text: string): string | undefined {
   const trimmed = text.trim();
-  const explicit = trimmed.match(/^pirelay\s+pair\s+(\S+)$/i);
+  const explicit = trimmed.match(/^relay\s+pair\s+(\S+)$/i);
   if (explicit) return explicit[1];
-  const legacy = trimmed.match(/^(?:\/pirelay|pirelay)\s+(\S+)$/i);
+  const legacy = trimmed.match(/^(?:\/relay|relay)\s+(\S+)$/i);
   const candidate = legacy?.[1];
   return candidate && isSlackPairingCodeCandidate(candidate) ? candidate : undefined;
 }
@@ -1162,7 +1167,7 @@ interface SlackCommand {
 
 function parseSlackCommand(text: string): SlackCommand | undefined {
   const cleaned = stripLeadingSlackMentions(text);
-  const parsed = parseRemoteCommandInvocation(cleaned, { prefixes: ["relay", "pirelay"] });
+  const parsed = parseRemoteCommandInvocation(cleaned, { prefixes: ["relay"] });
   return parsed ? { name: parsed.command, args: parsed.args } : undefined;
 }
 

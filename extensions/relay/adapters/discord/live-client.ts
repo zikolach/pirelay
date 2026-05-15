@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  ApplicationCommandOptionType,
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -25,7 +26,7 @@ import type {
 } from "./adapter.js";
 import { redactSecrets } from "../../config/setup.js";
 import type { DiscordRelayConfig } from "../../core/types.js";
-import { CANONICAL_REMOTE_COMMANDS } from "../../commands/remote.js";
+import { discordRelayCommandSurface } from "../../commands/surfaces.js";
 
 export interface DiscordLiveOperationsOptions {
   token: string;
@@ -79,7 +80,13 @@ interface DiscordChatInputInteractionLike {
   guildId: string | null;
   user: DiscordUserLike;
   commandName: string;
-  options?: { data?: ReadonlyArray<{ name: string; value?: unknown }> };
+  options?: { data?: ReadonlyArray<DiscordChatInputOptionLike> };
+}
+
+interface DiscordChatInputOptionLike {
+  name: string;
+  value?: unknown;
+  options?: ReadonlyArray<DiscordChatInputOptionLike>;
 }
 
 export class DiscordLiveOperations implements DiscordApiOperations {
@@ -101,6 +108,7 @@ export class DiscordLiveOperations implements DiscordApiOperations {
     });
     try {
       await this.client.login(this.token);
+      await this.syncNativeCommandsBestEffort();
     } catch (error) {
       throw new Error(`Discord login failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
     }
@@ -165,6 +173,17 @@ export class DiscordLiveOperations implements DiscordApiOperations {
     }
   }
 
+  private async syncNativeCommandsBestEffort(): Promise<void> {
+    const manager = this.client.application?.commands as DiscordApplicationCommandManagerLike | undefined;
+    if (!manager || typeof manager.set !== "function") return;
+    try {
+      await withTimeout(manager.set([discordRelayApplicationCommandData()]), 3_000);
+    } catch (error) {
+      const message = redactSecrets(error instanceof Error ? error.message : String(error));
+      console.warn(`Discord native /relay command sync skipped: ${message}`);
+    }
+  }
+
   private async fetchTextChannel(channelId: string): Promise<SendableDiscordTextChannel> {
     const channel = await this.client.channels.fetch(channelId);
     if (!isSendableTextChannel(channel)) throw new Error(`Discord channel ${channelId} is not a text channel.`);
@@ -173,9 +192,7 @@ export class DiscordLiveOperations implements DiscordApiOperations {
 }
 
 export const DISCORD_NATIVE_COMMAND_NAME = "relay";
-export const DISCORD_NATIVE_SUBCOMMAND_NAMES = CANONICAL_REMOTE_COMMANDS
-  .filter((definition) => !("aliasOf" in definition))
-  .map((definition) => definition.command);
+export const DISCORD_NATIVE_SUBCOMMAND_NAMES = discordRelayCommandSurface().subcommands.map((definition) => definition.surfaceName);
 
 // Backwards-compatible name for tests/imports that need the implemented
 // subcommand set without implying top-level Discord slash registrations.
@@ -238,7 +255,7 @@ function discordMentionValues(users: DiscordMentionUsersLike): DiscordUserLike[]
 
 export function discordJsChatInputInteractionToMessagePayload(interaction: DiscordChatInputInteractionLike): DiscordMessagePayload {
   const args = interaction.options?.data
-    ?.map((option) => option.value === undefined ? option.name : String(option.value))
+    ?.flatMap(discordOptionTokens)
     .filter(Boolean)
     .join(" ");
   return {
@@ -298,6 +315,51 @@ function discordButtonStyle(style: DiscordButtonComponent["style"]): ButtonStyle
 interface SendableDiscordTextChannel {
   send(options: MessageCreateOptions): Promise<unknown>;
   sendTyping(): Promise<unknown>;
+}
+
+interface DiscordApplicationCommandManagerLike {
+  set(commands: readonly unknown[]): Promise<unknown>;
+}
+
+export function discordRelayApplicationCommandData(): Record<string, unknown> {
+  const surface = discordRelayCommandSurface();
+  return {
+    name: surface.name,
+    description: surface.description,
+    options: surface.subcommands.map((subcommand) => ({
+      type: ApplicationCommandOptionType.Subcommand,
+      name: subcommand.surfaceName,
+      description: subcommand.description,
+      options: [{
+        type: ApplicationCommandOptionType.String,
+        name: "args",
+        description: "Arguments for this PiRelay command.",
+        required: false,
+      }],
+    })),
+  };
+}
+
+function discordOptionTokens(option: DiscordChatInputOptionLike): string[] {
+  const nested = option.options?.flatMap(discordOptionTokens) ?? [];
+  if (nested.length > 0) return [option.name, ...nested];
+  if (option.value === undefined) return [option.name];
+  return [String(option.value)];
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("native command sync timed out")), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function acknowledgeChatInputBestEffort(interaction: ChatInputCommandInteraction): Promise<void> {

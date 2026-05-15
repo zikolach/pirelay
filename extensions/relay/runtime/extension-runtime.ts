@@ -1275,7 +1275,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (channel === "slack" && slackAppId) {
       const appUrl = slackAppRedirectUrl(slackAppId, slackTeamId);
       const qrLines = renderQrLines(appUrl);
-      const pairingCommand = `pirelay pair ${nonce}`;
+      const pairingCommand = `relay pair ${nonce}`;
       const instructions = [
         "Choose one pairing path:",
         "A) DM: scan the QR code/open the link to Slack App Home, open the Messages tab, then send the highlighted command in the app DM.",
@@ -1306,7 +1306,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         "A) DM: open Slack App Home, use the Messages tab, then send the pairing command in the app DM.",
         "B) Channel: invite the app to the target Slack channel, enable slack.allowChannelMessages, then paste the pairing command in that channel/thread.",
         "If Slack says sending messages to this app is turned off, enable App Home > Messages Tab > Allow users to send messages to your app, add message.im with im:history/im:read scopes, add reactions:write for thinking indicators, reinstall the app, then retry.",
-        `Pairing command: pirelay pair ${nonce}`,
+        `Pairing command: relay pair ${nonce}`,
         `Expires in about ${expiryMinutes} minute(s).`,
       ].join("\n")), "info");
       return;

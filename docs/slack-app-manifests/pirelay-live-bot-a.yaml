@@ -10,6 +10,11 @@ features:
   bot_user:
     display_name: PiRelay Live A
     always_online: false
+  slash_commands:
+    - command: /relay
+      description: Control and monitor PiRelay sessions.
+      usage_hint: /relay <status|sessions|full|images|send-file|abort|compact|pause|resume|disconnect>
+      should_escape: false
 oauth_config:
   scopes:
     bot:

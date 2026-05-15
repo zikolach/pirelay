@@ -32,7 +32,7 @@ export function formatRelayLifecycleNotification(input: { kind: RelayLifecycleEv
       return `${subject} is back online.`;
     case "disconnected":
       return input.channel === "slack"
-        ? `PiRelay was disconnected locally for ${subject}. This chat is no longer paired; run \`pirelay pair <pin>\` from a fresh local pairing to reconnect.`
+        ? `PiRelay was disconnected locally for ${subject}. This chat is no longer paired; run \`relay pair <pin>\` from a fresh local pairing to reconnect.`
         : `PiRelay was disconnected locally for ${subject}. This chat is no longer paired; start a fresh local pairing to reconnect.`;
   }
 }

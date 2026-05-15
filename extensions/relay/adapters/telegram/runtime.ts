@@ -52,6 +52,8 @@ import type {
   TelegramUserSummary,
 } from "../../core/types.js";
 import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
+import { redactSecrets } from "../../config/setup.js";
+import { telegramBotCommands } from "../../commands/surfaces.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
 import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { channelTextChunks } from "../../core/channel-adapter.js";
@@ -176,6 +178,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     await ensureStateDir(this.config.stateDir);
     await this.acquireLock();
     await this.ensureSetup();
+    await this.registerBotCommandMenu();
     this.started = true;
     this.pollingTask = this.pollLoop();
   }
@@ -210,6 +213,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     };
     await this.store.setSetup(this.setupCache);
     return this.setupCache;
+  }
+
+  private async registerBotCommandMenu(): Promise<void> {
+    const setBotCommands = (this.api as Partial<Pick<TelegramApiClient, "setBotCommands">>).setBotCommands;
+    if (typeof setBotCommands !== "function") return;
+    try {
+      await setBotCommands.call(this.api, telegramBotCommands());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const route of this.routes.values()) {
+        route.actions.setLocalStatus?.("relay-runtime", `telegram command menu registration failed: ${redactSecrets(message)}`);
+      }
+    }
   }
 
   async registerRoute(route: SessionRoute): Promise<void> {
@@ -668,7 +684,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config: this.config });
-    const command = commandIntentFromPipeline(initialPipeline.result) ?? parseRemoteCommandInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseTelegramCommand(message.text);
+    const command = commandIntentFromPipeline(initialPipeline.result) ?? parseRemoteCommandInvocation(message.text, { prefixes: ["relay"] }) ?? parseTelegramCommand(message.text);
     if (command?.command === "start") {
       await this.handleStart(message, command.args);
       return;

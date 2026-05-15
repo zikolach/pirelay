@@ -276,7 +276,23 @@ function socketPayloadToSlackEnvelope(payload: unknown): SlackEnvelope | undefin
     };
   }
   if (payload.type === "block_actions") return payload as unknown as SlackEnvelope;
+  if (payload.type === "slash_commands" || payload.command === "/relay") return slackSocketSlashCommandEnvelope(payload);
   return undefined;
+}
+
+function slackSocketSlashCommandEnvelope(payload: Record<string, unknown>): SlackEnvelope {
+  return {
+    type: "slash_command",
+    command: stringField(payload, "command"),
+    text: stringField(payload, "text"),
+    channel_id: stringField(payload, "channel_id"),
+    channel_name: stringField(payload, "channel_name"),
+    user_id: stringField(payload, "user_id"),
+    user_name: stringField(payload, "user_name"),
+    team_id: stringField(payload, "team_id"),
+    trigger_id: stringField(payload, "trigger_id"),
+    response_url: stringField(payload, "response_url"),
+  };
 }
 
 function slackBlocks(rows: SlackPostMessagePayload["blocks"]): unknown[] | undefined {

@@ -1119,7 +1119,7 @@ export function parseDiscordPairingCode(text: string): string | undefined {
   const trimmed = text.trim();
   const start = trimmed.match(/^\/start\s+(.+)$/i);
   if (start?.[1]) return start[1].trim();
-  const pair = trimmed.match(/^(?:relay|pirelay)\s+pair\s+(.+)$/i);
+  const pair = trimmed.match(/^relay\s+pair\s+(.+)$/i);
   return pair?.[1]?.trim();
 }
 
@@ -1128,7 +1128,7 @@ function stripLeadingDiscordMentions(text: string): string {
 }
 
 export function parseDiscordCommand(text: string): DiscordCommand | undefined {
-  const parsed = parseRemoteCommandInvocation(text, { prefixes: ["relay", "pirelay"] });
+  const parsed = parseRemoteCommandInvocation(text, { prefixes: ["relay"] });
   if (!parsed) return undefined;
   const command = normalizeDiscordRelayCommand(parsed);
   const normalized = command.command === "sendimage" ? "sendimage" : command.command;
@@ -1143,7 +1143,7 @@ function normalizePairingApproval(value: PairingApprovalDecision | boolean): Pai
 }
 
 function normalizeDiscordRelayCommand(command: { command: string; args: string }): { command: string; args: string } {
-  if (command.command !== "relay" && command.command !== "pirelay") return command;
+  if (command.command !== "relay") return command;
   const [subcommand, ...rest] = command.args.split(/\s+/).filter(Boolean);
   return { command: subcommand?.replace(/^\/+/, "").toLowerCase() || "help", args: rest.join(" ").trim() };
 }

@@ -1288,6 +1288,8 @@ describe("DiscordRuntime", () => {
     });
 
     await ops.handler?.(discordMessage("/status"));
+    await ops.handler?.(discordMessage("/relay status"));
+    await ops.handler?.(discordMessage("/relay status", { userId: "u2" }));
     await ops.handler?.(discordMessage("/abort"));
     await ops.handler?.({ type: "interaction", payload: { id: "i1", token: "t1", channel_id: "dm1", user: { id: "u1" }, data: { custom_id: "x" } } });
     await ops.handler?.({ type: "interaction", payload: { id: "i2", token: "t2", channel_id: "dm1", user: { id: "u2" }, data: { custom_id: "x" } } });
@@ -1305,7 +1307,8 @@ describe("DiscordRuntime", () => {
     await ops.handler?.(discordMessage("ignored", { bot: true }));
     await ops.handler?.(discordMessage("/disconnect"));
 
-    expect(ops.messages.some((message) => message.content.includes("Session: Docs"))).toBe(true);
+    expect(ops.messages.filter((message) => message.content.includes("Session: Docs"))).toHaveLength(2);
+    expect(ops.messages.some((message) => message.content.includes("not paired with a Pi session"))).toBe(true);
     expect(abort).toHaveBeenCalled();
     expect(ops.answers).toContainEqual({ interactionId: "i1", text: "Action received.", alert: undefined });
     expect(ops.answers).toContainEqual({ interactionId: "i2", text: "This Discord action is not authorized.", alert: true });

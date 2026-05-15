@@ -4,7 +4,7 @@ Use this checklist when validating the PiRelay against a real Pi session and a r
 
 ## Preconditions
 
-- `TELEGRAM_BOT_TOKEN` or `~/.pi/agent/pirelay/config.json` is configured
+- `TELEGRAM_BOT_TOKEN` or `~/.pi/agent/relay/config.json` is configured
 - Pi is running with this package loaded
 - no stale broker process is running from an older checkout
 
@@ -22,9 +22,10 @@ Then restart Pi or run `/reload`.
 2. Run `/relay connect telegram`
 3. While the QR/link is visible, verify the local Pi session still accepts built-in commands
 4. Complete Telegram pairing and local confirmation
-5. Immediately submit a normal local Pi prompt
-6. Invoke a Pi skill locally, for example `/skill:relay`
-7. Verify both the prompt and the skill execute normally
+5. Confirm Telegram's bot menu shows safe entries such as `/status`, `/sendfile`, and `/sendimage` after startup; if menu registration is unavailable, send the commands as text.
+6. Immediately submit a normal local Pi prompt
+7. Invoke a Pi skill locally, for example `/skill:relay`
+8. Verify both the prompt and the skill execute normally
 
 Expected:
 - local Pi input remains responsive after connect and after pairing
@@ -114,14 +115,14 @@ These adapter foundations are DM-first and use channel-specific credentials/conf
 4. Run `/relay setup matrix` and `/relay connect matrix`; both should list supported channels and should not create pairing state.
 5. Discord config uses `discord.botToken` or `PI_RELAY_DISCORD_BOT_TOKEN`; Slack config uses `slack.botToken`, `slack.signingSecret`, and for Socket Mode `slack.appToken`/`slack.appTokenEnv` or the matching env vars. `slack.appId`/`PI_RELAY_SLACK_APP_ID` enables App Home QR/open links, and `slack.botUserId` is a non-secret fallback when auth discovery is unavailable.
 6. Run `/relay setup discord` with `discord.applicationId`/`PI_RELAY_DISCORD_APPLICATION_ID` (`clientId` aliases are accepted) and verify the interactive setup wizard uses tab-like navigation with diagnostics, env snippet, config snippet, links, and troubleshooting content separated; it includes a Discord invite URL/QR-ready link, Message Content Intent guidance, DM-first guidance, allow-list recommendations, placeholder snippets, and no secret values. Press `c` and verify the env snippet is copied to the clipboard (or falls back to the Pi editor when clipboard tools are unavailable); after exporting required env vars, press `w` and verify config is updated with env var references rather than resolved secrets. In a no-UI/headless run, verify the plain text fallback includes equivalent guidance and does not write config implicitly.
-7. In the Discord Developer Portal, ensure the app has a Bot user, enable **Message Content Intent**, copy the bot token/Application ID into PiRelay config, and invite with the `bot` scope plus `permissions=0`. The `applications.commands` scope is optional for a future native `/relay <subcommand>` UX and is not required for reliable `relay <command>` DM text controls.
+7. In the Discord Developer Portal, ensure the app has a Bot user, enable **Message Content Intent**, copy the bot token/Application ID into PiRelay config, and invite with the `bot applications.commands` scopes plus `permissions=0`. The native `/relay <subcommand>` UX is best-effort and is not required for reliable `relay <command>` DM text controls.
 8. Restart/reload Pi, run `/relay doctor`, and verify Discord shows the bot token configured for live Gateway login without printing the token.
 9. Run `/relay connect discord docs`, scan the QR bot profile/DM link when `discord.applicationId` is configured, then DM the bot `relay pair <pin>` before expiry (`/start <pin>` remains a compatibility alias). Confirm the pairing locally in Pi, optionally choosing to trust the Discord user. If the bot cannot be DM'd, check shared-server membership, server member DM privacy settings, and that the bot was already invited with the `bot` scope during setup.
-10. After pairing, send `relay status` and `relay sessions` in the Discord DM and verify the same core fields/semantics as Telegram: safe session label, online state, busy state, model, progress mode, last activity, active marker, and no raw session file path or binding storage key. Bare `/status` and `/sessions` may work when Discord delivers them as text, but smoke tests should not depend on those aliases.
+10. After pairing, send `relay status` and `relay sessions` in the Discord DM and verify the same core fields/semantics as Telegram: safe session label, online state, busy state, model, progress mode, last activity, active marker, and no raw session file path or binding storage key. If Discord command sync has completed, also try `/relay status`; bare `/status` and `/sessions` may work when Discord delivers them as text, but smoke tests should not depend on those aliases.
 11. Send a normal Discord DM prompt while Pi is idle and verify it reaches the current Pi session and the final Pi completion returns to Discord; repeat while busy and verify the configured busy delivery acknowledgement plus terminal completion/failure/abort notification.
 12. Exercise Discord command parity using the reliable prefix forms: `relay use`, `relay to`, `relay alias`, `relay progress`, `relay recent`, `relay summary`, `relay full`, `relay images`, `relay send-image`, `relay send-file`, `relay steer`, `relay followup`, `relay abort`, `relay compact`, `relay pause`, `relay resume`, and `relay disconnect`; verify commands either work with Telegram-equivalent semantics or return an explicit capability/configuration limitation, not generic unsupported-command help.
 13. Enable Discord guild-channel control without `allowGuildIds`; verify `/relay doctor` reports an actionable warning/error and `/relay connect discord` refuses pairing until fixed.
-14. Run `/relay setup slack` for `eventMode: "socket"` and verify it recommends Socket Mode, requires an app-level token with `connections:write`, exposes a copyable App manifest tab/action, explains App Home Messages Tab plus `message.im`/`im:history`/`im:read` for DMs, `reactions:write` for thinking indicators, and `files:write` for image/file delivery, and warns when workspace, App ID, or bot-user identity cannot be established; switch to `eventMode: "webhook"` without a signing secret and verify doctor reports the webhook signing requirement.
+14. Run `/relay setup slack` for `eventMode: "socket"` and verify it recommends Socket Mode, requires an app-level token with `connections:write`, exposes a copyable App manifest tab/action, includes interactivity and `/relay`, explains App Home Messages Tab plus `message.im`/`im:history`/`im:read` for DMs, `reactions:write` for thinking indicators, and `files:write` for image/file delivery, and warns when workspace, App ID, or bot-user identity cannot be established; switch to `eventMode: "webhook"` without a signing secret and verify doctor reports the webhook signing requirement.
 15. Run `/relay connect slack docs` with enabled mock config and verify the displayed pairing instruction is time-limited, channel-specific, short PIN-style, highlighted in the QR dialog, and copyable with `c`; when `slack.appId` is configured or discovered from `auth.test`, verify the TUI renders a Slack App Home QR/open link and clearly offers both paths: open App Home DM via QR/link or paste the command directly in an invited Slack channel/thread after enabling `slack.allowChannelMessages`.
 16. Discord DM messages normalize to `channel: discord`, private conversations, stable user ids, and supported image attachments.
 17. Discord guild-channel messages are rejected unless guild-channel control is explicitly enabled by the integration.
@@ -129,7 +130,7 @@ These adapter foundations are DM-first and use channel-specific credentials/conf
 19. Slack HTTP/event requests with invalid signature or stale timestamp are rejected before route lookup or prompt injection.
 20. Slack DM messages normalize to `channel: slack`, private conversations, workspace/user identity metadata, Socket Mode envelope/event ids for dedupe, and supported file/image attachments.
 21. Slack public/private channel events are rejected unless channel control is explicitly enabled by the integration.
-22. Slack long output is chunked, buttons map to Block Kit button values, and uploads respect configured size/MIME limits; `pirelay send-file README.md` uploads only to the authorized requesting DM/channel thread and rejects target-prefixed or unsafe paths.
+22. Slack long output is chunked, buttons map to Block Kit button values, and uploads respect configured size/MIME limits; `relay send-file README.md` and installed `/relay send-file README.md` upload only to the authorized requesting DM/channel thread and reject target-prefixed or unsafe paths.
 23. Simultaneous Telegram, Discord, and Slack adapters produce channel-qualified binding keys such as `telegram:<session>`, `discord:<session>`, and `slack:<session>`.
 24. Exported/shared session history contains only non-secret binding metadata, never bot tokens, Slack signing secrets, OAuth tokens, or active pairing secrets.
 25. Pair one Pi session to Telegram and Slack or Discord, send remote `/disconnect` from only one conversation, then complete a Pi turn from the still-paired messenger; verify the disconnected conversation receives no completion, progress, image/file, or button output while `/sessions` still returns safe no-paired-session guidance there.

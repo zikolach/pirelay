@@ -17,8 +17,8 @@ describe("relay lifecycle notifications", () => {
     expect(formatRelayLifecycleNotification({ kind: "online", sessionLabel: "Docs" })).toContain("back online");
     const disconnected = formatRelayLifecycleNotification({ kind: "disconnected", sessionLabel: "Docs", channel: "slack" });
     expect(disconnected).toContain("disconnected locally");
-    expect(disconnected).toContain("pirelay pair <pin>");
-    expect(disconnected).not.toContain("/pirelay");
+    expect(disconnected).toContain("relay pair <pin>");
+    expect(disconnected).not.toContain("/relay");
     expect(disconnected).not.toContain("C0");
     expect(formatRelayLifecycleNotification({ kind: "online", sessionLabel: "   " })).toBe("Pi session is back online.");
     expect(formatRelayLifecycleNotification({ kind: "offline", sessionLabel: "   " })).not.toContain("Pi session Pi session");

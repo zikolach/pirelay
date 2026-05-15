@@ -1498,14 +1498,14 @@ describe("PiRelay integration behavior", () => {
     expect(screenText).toContain("Slack relay pairing");
     expect(screenText).toContain("slack.com/app_redirect?app=A123&team=T123");
     expect(screenText).toContain("Command to send:");
-    expect(screenText).toContain("pirelay pair");
+    expect(screenText).toContain("relay pair");
     expect(screenText).toContain("c copy command");
     expect(screenText).toContain("Choose one pairing path");
     expect(screenText).toContain("A) DM");
     expect(screenText).toContain("B) Channel");
     expect(screenText).toContain("slack.allowChannelMessa");
     expect(screenText).toContain("sending messages to this app is turned off");
-    expect(clipboardTexts.at(-1)).toMatch(/^pirelay pair \d{3}-\d{3}\n$/);
+    expect(clipboardTexts.at(-1)).toMatch(/^relay pair \d{3}-\d{3}\n$/);
     expect(closeCount).toBe(0);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
     expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: ready unpaired" });

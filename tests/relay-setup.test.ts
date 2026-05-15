@@ -17,7 +17,7 @@ function baseConfig(): TelegramTunnelConfig {
   return {
     botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
     configPath: "/tmp/config.json",
-    stateDir: "/tmp/pirelay",
+    stateDir: "/tmp/relay",
     pairingExpiryMs: 300_000,
     busyDeliveryMode: "followUp",
     allowUserIds: [],
@@ -93,7 +93,7 @@ describe("relay setup wizard helpers", () => {
     expect(relaySetupFallbackGuidance("slack")).toContain("https://api.slack.com/apps");
     expect(relayPairingInstruction("discord", "abc")).toContain("relay pair abc");
     expect(relayPairingInstruction("discord", "abc")).toContain("/start abc");
-    expect(relayPairingInstruction("slack", "abc")).toContain("pirelay pair abc");
+    expect(relayPairingInstruction("slack", "abc")).toContain("relay pair abc");
   });
 
   it("builds Discord invite URLs from trimmed Application IDs for guild bot install", () => {
