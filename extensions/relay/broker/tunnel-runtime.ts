@@ -9,7 +9,7 @@ import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
-import { deliverRoutePrompt, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, routeActionDisplayMessage, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { normalizeBrokerNamespace } from "./supervisor.js";
@@ -313,21 +313,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "abort": {
-          const idle = routeIdleState(route);
-          if (idle === undefined) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const outcome = abortRouteSafely(route);
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
             return;
-          }
-          if (idle) {
-            await respond({ ok: false, error: "The Pi session is already idle." });
-            return;
-          }
-          route.notification.abortRequested = true;
-          try {
-            route.actions.abort();
-          } catch (error) {
-            route.notification.abortRequested = false;
-            throw error;
           }
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
@@ -336,11 +325,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "compact": {
-          if (routeIdleState(route) === undefined) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const outcome = await compactRouteSafely(route);
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
             return;
           }
-          await route.actions.compact();
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }
