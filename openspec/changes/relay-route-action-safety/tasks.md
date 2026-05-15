@@ -1,7 +1,7 @@
 ## 1. Baseline and Inventory
 
 - [x] 1.1 Rebase on or confirm the archived `fix-stale-extension-context` baseline so stale context/API handling is canonical before implementation.
-- [ ] 1.2 Inventory current fallible `route.actions.*` call sites in Telegram, Discord, Slack, broker, requester file delivery, media/image delivery, status/session listing, and local runtime callbacks.
+- [x] 1.2 Inventory current fallible `route.actions.*` call sites in Telegram, Discord, Slack, broker, requester file delivery, media/image delivery, status/session listing, and local runtime callbacks.
 - [ ] 1.3 Classify each call site as prompt, abort, compact, media/workspace, status/probe, audit/persist/local side effect, or safe synchronous usage.
 - [ ] 1.4 Identify state reserved before each fallible call site, including requester context, pending-turn flags, activity indicators, shared-room output destinations, abort flags, and adapter health fields.
 
