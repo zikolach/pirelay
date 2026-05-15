@@ -1038,7 +1038,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           this.setSharedRoomOutputDestination(targetRoute, { chatId: message.chat.id, userId: message.user.id });
           await this.startActivityIndicator(targetRoute);
         }
-        if (!await this.sendPromptSafely(targetRoute, message, resolution.prompt, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined)) return true;
+        if (!await this.sendPromptSafely(targetRoute, message, resolution.prompt, delivery.deliverAs ? { deliverAs: delivery.deliverAs } : undefined, async () => {
+          this.sharedRoomOutputDestinations.delete(targetRoute.sessionKey);
+          this.clearActivityIndicator(targetRoute);
+        })) return true;
         targetRoute.actions.appendAudit(`Telegram ${getTelegramUserLabel(message.user)} sent a shared-room one-shot prompt to ${targetRoute.sessionLabel}.`);
         await this.api.sendPlainText(message.chat.id, delivery.idle ? "Prompt delivered to Pi." : `Pi is busy; queued as ${this.config.busyDeliveryMode}.`);
         return true;

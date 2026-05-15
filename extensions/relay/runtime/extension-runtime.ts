@@ -538,10 +538,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     });
   }
 
-  async function getLatestImagesForTelegram(): Promise<LatestTurnImage[]> {
-    const ctx = liveContextForRoute(currentRoute);
+  async function getLatestImagesForTelegram(route: SessionRoute): Promise<LatestTurnImage[]> {
+    const ctx = liveContextForRoute(route);
+    if (!ctx) return [];
     const images = [...latestTurnImages];
-    if (!ctx) return images;
     const config = await ensureConfig();
     for (const candidate of latestTurnImageFileCandidates) {
       if (images.length >= config.maxLatestImages) break;
@@ -674,7 +674,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           }
           if (requester) route.remoteRequesterPendingTurn = true;
         },
-        getLatestImages: getLatestImagesForTelegram,
+        getLatestImages: () => getLatestImagesForTelegram(route),
         getImageByPath: async (relativePath) => {
           const live = liveContextForRoute(route);
           if (!live) return { ok: false, error: unavailableRouteMessage() };

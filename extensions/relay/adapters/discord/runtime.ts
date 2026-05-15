@@ -681,6 +681,10 @@ export class DiscordRuntime {
       route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
     } catch (error) {
       this.stopTypingActivity(route.sessionKey);
+      if (error instanceof Error && error.message === unavailableRouteMessage()) {
+        await this.sendText(message, error.message);
+        return;
+      }
       const safeMessage = safeDiscordRuntimeError(error);
       this.lastError = safeMessage;
       await this.sendText(message, `Could not deliver the Discord prompt to Pi: ${safeMessage}`);

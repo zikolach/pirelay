@@ -2332,6 +2332,10 @@ describe("PiRelay integration behavior", () => {
     const images = await route.actions.getLatestImages();
     expect(images).toHaveLength(1);
     expect(images[0]?.data).toBe(Buffer.from("output").toString("base64"));
+
+    const nextContext = createMockContext("other-image-session").context;
+    await pi.emit("session_start", { reason: "switch" }, nextContext);
+    await expect(route.actions.getLatestImages()).resolves.toEqual([]);
   }, 10_000);
 
   it("stages latest assistant image file references and loads them on demand", async () => {

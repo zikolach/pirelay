@@ -1974,6 +1974,43 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).not.toContainEqual(expect.objectContaining({ chatId: 2040 }));
   });
 
+  it("rolls back Telegram shared-room output destinations when delivery becomes unavailable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-group-unavailable:/tmp/session-group-unavailable.jsonl",
+      sessionId: "session-group-unavailable",
+      sessionFile: "/tmp/session-group-unavailable.jsonl",
+      sessionLabel: "group-unavailable.jsonl",
+      chatId: 2041,
+      userId: 42,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: Array<{ chatId: number; text: string }> = [];
+    (runtime as any).api = {
+      sendPlainText: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendPlainTextWithKeyboard: async (chatId: number, text: string) => sent.push({ chatId, text }),
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({ updateId: 58, messageId: 58, text: "/to@mini_builder_bot group-unavailable.jsonl ship it", chat: { id: -1005, type: "supergroup" }, user: { id: 42, username: "owner" } });
+
+    expect(sent).toContainEqual({ chatId: -1005, text: "The Pi session is unavailable. Resume it locally, then try again." });
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = "Later private output.";
+    await runtime.notifyTurnCompleted(route, "completed");
+    expect(sent).toContainEqual(expect.objectContaining({ chatId: 2041, text: expect.stringContaining("Later private output") }));
+    expect(sent).not.toContainEqual(expect.objectContaining({ chatId: -1005, text: expect.stringContaining("Later private output") }));
+  });
+
   it("uses Telegram shared-room output destinations for direct bound-chat sends", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
