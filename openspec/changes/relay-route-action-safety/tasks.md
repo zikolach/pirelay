@@ -31,7 +31,7 @@
 
 ## 5. Control Operation Safety
 
-- [ ] 5.1 Implement shared abort operation safety with availability precheck, idle outcome, abort-requested commit/rollback, and unavailable race handling.
+- [x] 5.1 Implement shared abort operation safety with availability precheck, idle outcome, abort-requested commit/rollback, and unavailable race handling.
 - [ ] 5.2 Implement shared compact operation safety with availability precheck and unavailable race handling.
 - [ ] 5.3 Migrate Telegram abort and compact command/callback paths to shared control helpers.
 - [ ] 5.4 Migrate Discord abort and compact command paths to shared control helpers.

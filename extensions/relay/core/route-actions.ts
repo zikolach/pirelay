@@ -145,6 +145,24 @@ export async function deliverRoutePrompt(route: SessionRoute, options: RouteProm
   return routeActionSuccess({ idle: probe.idle, deliverAs });
 }
 
+export type RouteControlOperationOutcome = RouteActionOutcome<void>;
+
+export function abortRouteSafely(route: SessionRoute, options: { alreadyIdleMessage?: string; safeFailureMessage?: string } = {}): RouteControlOperationOutcome {
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return probe;
+  if (probe.idle) return routeActionAlreadyIdle(options.alreadyIdleMessage ?? "The Pi session is already idle.");
+
+  const previousAbortRequested = route.notification.abortRequested;
+  route.notification.abortRequested = true;
+  try {
+    route.actions.abort();
+  } catch (error) {
+    route.notification.abortRequested = previousAbortRequested;
+    return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not request abort.");
+  }
+  return routeActionSuccess(undefined);
+}
+
 export function isStaleExtensionReferenceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
