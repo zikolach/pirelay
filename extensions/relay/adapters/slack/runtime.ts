@@ -12,6 +12,7 @@ import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../co
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
+import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
@@ -152,17 +153,28 @@ export class SlackRuntime {
     if (this.routes.size === 0) await this.stop();
   }
 
-  private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
-    const raw = await this.store.getChannelBindingRecordBySessionKey(SLACK_CHANNEL, route.sessionKey, this.instanceId);
-    if (raw) {
-      if (raw.status !== "revoked" && (options.includePaused || !raw.paused)) return raw;
+  private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean; address?: ChannelRouteAddress } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
+    const recent = this.recentBindingBySessionKey.get(route.sessionKey);
+    const outcome = resolveChannelBindingAuthority(
+      await this.store.loadBindingAuthoritySnapshot(),
+      {
+        channel: SLACK_CHANNEL,
+        instanceId: this.instanceId,
+        sessionKey: route.sessionKey,
+        conversationId: options.address?.conversationId ?? recent?.conversationId,
+        userId: options.address?.userId ?? recent?.userId,
+        includePaused: options.includePaused,
+        allowVolatileFallback: true,
+      },
+      recent,
+    );
+    if (authorityOutcomeAllowsDelivery(outcome) && "status" in outcome.binding) return outcome.binding;
+    if (outcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+    if (outcome.kind === "revoked" || outcome.kind === "moved" || outcome.kind === "state-unavailable") {
       this.ownedBindingSessionKeys.delete(route.sessionKey);
       this.recentBindingBySessionKey.delete(route.sessionKey);
-      return undefined;
     }
-    const recent = this.recentBindingBySessionKey.get(route.sessionKey);
-    if (!recent || recent.status === "revoked" || (!options.includePaused && recent.paused)) return undefined;
-    return recent;
+    return undefined;
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
@@ -741,6 +753,7 @@ export class SlackRuntime {
       maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
       maxImageBytes: this.adapter.capabilities.maxImageBytes,
       allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+      authoritySnapshot: await this.store.loadBindingAuthoritySnapshot(),
     });
     route.actions.appendAudit(`Slack send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
     const text = formatRequesterFileDeliveryResult(result);
@@ -764,6 +777,7 @@ export class SlackRuntime {
       maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
       maxImageBytes: this.adapter.capabilities.maxImageBytes,
       allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+      authoritySnapshot: await this.store.loadBindingAuthoritySnapshot(),
     });
     route.actions.appendAudit(`Slack assistant send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
     return formatRequesterFileDeliveryResult(result);
@@ -875,35 +889,46 @@ export class SlackRuntime {
   }
 
   private async activeSelectionRecordForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<{ sessionKey: string; machineId?: string } | undefined> {
-    const persisted = await this.store.getActiveChannelSelection(SLACK_CHANNEL, message.conversation.id, message.sender.userId);
-    if (persisted) return persisted;
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
     const key = this.activeSelectionKey(message);
+    if (snapshot.kind === "state-unavailable") {
+      this.activeSessionByConversationUser.delete(key);
+      return undefined;
+    }
+    const persisted = snapshot.data.activeChannelSelections[`${SLACK_CHANNEL}:${message.conversation.id}:${message.sender.userId}`];
+    if (persisted) return persisted;
     const inMemorySessionKey = this.activeSessionByConversationUser.get(key);
     if (!inMemorySessionKey) return undefined;
-    const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, inMemorySessionKey, this.instanceId);
-    if (binding && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId) return { sessionKey: inMemorySessionKey };
+    const recent = this.recentBindingBySessionKey.get(inMemorySessionKey);
+    const outcome = resolveChannelBindingAuthority(
+      snapshot,
+      { channel: SLACK_CHANNEL, instanceId: this.instanceId, sessionKey: inMemorySessionKey, conversationId: message.conversation.id, userId: message.sender.userId, allowVolatileFallback: true },
+      recent,
+    );
+    if (authorityOutcomeAllowsDelivery(outcome)) return { sessionKey: inMemorySessionKey };
     this.activeSessionByConversationUser.delete(key);
     return undefined;
   }
 
   private async findSlackBinding(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord | undefined> {
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
+    if (snapshot.kind === "state-unavailable") return undefined;
     const active = await this.activeSelectionRecordForMessage(message);
     if (active) {
-      const binding = await this.store.getChannelBindingBySessionKey(SLACK_CHANNEL, active.sessionKey, this.instanceId);
-      if (binding && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId) return binding;
+      const outcome = resolveChannelBindingAuthority(
+        snapshot,
+        { channel: SLACK_CHANNEL, instanceId: this.instanceId, sessionKey: active.sessionKey, conversationId: message.conversation.id, userId: message.sender.userId },
+      );
+      if (authorityOutcomeAllowsDelivery(outcome) && "status" in outcome.binding) return outcome.binding;
     }
-    const binding = await this.store.getChannelBinding(SLACK_CHANNEL, message.conversation.id, message.sender.userId, this.instanceId);
-    if (binding) {
-      this.recentBindingBySessionKey.set(binding.sessionKey, binding);
-      return binding;
-    }
-    if (message.conversation.kind !== "private" && this.configForInstance()?.allowChannelMessages) {
-      const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
-      const latest = latestChannelBinding(bindings.filter((candidate) => candidate.userId === message.sender.userId));
-      if (latest) {
-        this.recentBindingBySessionKey.set(latest.sessionKey, latest);
-        return latest;
-      }
+    const bindings = Object.values(snapshot.data.channelBindings)
+      .filter((binding) => binding.channel === SLACK_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.conversationId === message.conversation.id && binding.userId === message.sender.userId && binding.status !== "revoked");
+    const latest = message.conversation.kind !== "private" && this.configForInstance()?.allowChannelMessages
+      ? latestChannelBinding(bindings)
+      : latestChannelBinding(bindings.filter((binding) => binding.userId === message.sender.userId));
+    if (latest) {
+      this.recentBindingBySessionKey.set(latest.sessionKey, latest);
+      return latest;
     }
     return undefined;
   }
@@ -938,7 +963,7 @@ export class SlackRuntime {
 
   private progressKey(route: SessionRoute): string | undefined {
     const binding = this.recentBindingBySessionKey.get(route.sessionKey);
-    return binding ? `${route.sessionKey}:${binding.conversationId}:${binding.userId}` : undefined;
+    return binding ? channelDestinationKey({ channel: SLACK_CHANNEL, instanceId: this.instanceId, sessionKey: route.sessionKey, conversationId: binding.conversationId, userId: binding.userId }) : undefined;
   }
 
   private clearAllProgressStates(): void {
@@ -963,8 +988,9 @@ export class SlackRuntime {
   }
 
   private clearProgressStateBySessionKey(sessionKey: string): void {
+    const prefix = `${SLACK_CHANNEL}:${this.instanceId}:${sessionKey}:`;
     for (const [key] of this.progressStates) {
-      if (!key.startsWith(`${sessionKey}:`)) continue;
+      if (!key.startsWith(prefix)) continue;
       this.clearProgressStateByKey(key);
     }
   }
@@ -1007,7 +1033,7 @@ export class SlackRuntime {
     if (!state) return;
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
-    const binding = route ? await this.activeBindingForRoute(route, { includePaused: true }) : undefined;
+    const binding = route ? await this.activeBindingForRoute(route, { includePaused: true, address: bindingAddress(expectedBinding) }) : undefined;
     if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
       this.clearProgressStateByKey(key);
       return;

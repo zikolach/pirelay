@@ -12,6 +12,7 @@ import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../co
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
+import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
@@ -118,16 +119,25 @@ export class DiscordRuntime {
     if (this.routes.size === 0) await this.stop();
   }
 
-  private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
-    const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, route.sessionKey, this.instanceId);
-    if (raw) {
-      if (raw.status !== "revoked" && (options.includePaused || !raw.paused)) return raw;
-      this.recentBindingBySessionKey.delete(route.sessionKey);
-      return undefined;
-    }
+  private async activeBindingForRoute(route: SessionRoute, options: { includePaused?: boolean; address?: ChannelRouteAddress } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
     const recent = this.recentBindingBySessionKey.get(route.sessionKey);
-    if (!recent || recent.status === "revoked" || (!options.includePaused && recent.paused)) return undefined;
-    return recent;
+    const outcome = resolveChannelBindingAuthority(
+      await this.store.loadBindingAuthoritySnapshot(),
+      {
+        channel: DISCORD_CHANNEL,
+        instanceId: this.instanceId,
+        sessionKey: route.sessionKey,
+        conversationId: options.address?.conversationId ?? recent?.conversationId,
+        userId: options.address?.userId ?? recent?.userId,
+        includePaused: options.includePaused,
+        allowVolatileFallback: true,
+      },
+      recent,
+    );
+    if (authorityOutcomeAllowsDelivery(outcome) && "status" in outcome.binding) return outcome.binding;
+    if (outcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+    if (outcome.kind === "revoked" || outcome.kind === "moved" || outcome.kind === "state-unavailable") this.recentBindingBySessionKey.delete(route.sessionKey);
+    return undefined;
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
@@ -624,6 +634,7 @@ export class DiscordRuntime {
       maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
       maxImageBytes: this.adapter.capabilities.maxImageBytes,
       allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+      authoritySnapshot: await this.store.loadBindingAuthoritySnapshot(),
     });
     route.actions.appendAudit(`Discord send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
     const text = formatRequesterFileDeliveryResult(result);
@@ -647,6 +658,7 @@ export class DiscordRuntime {
       maxDocumentBytes: this.adapter.capabilities.maxDocumentBytes,
       maxImageBytes: this.adapter.capabilities.maxImageBytes,
       allowedImageMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+      authoritySnapshot: await this.store.loadBindingAuthoritySnapshot(),
     });
     route.actions.appendAudit(`Discord assistant send-file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
     return formatRequesterFileDeliveryResult(result);
@@ -874,7 +886,9 @@ export class DiscordRuntime {
   }
 
   private async discordBindingsForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<ChannelPersistedBindingRecord[]> {
-    const channelBindings = Object.values((await this.store.load()).channelBindings);
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
+    if (snapshot.kind === "state-unavailable") return [];
+    const channelBindings = Object.values(snapshot.data.channelBindings);
     const persisted = channelBindings
       .filter((binding) => binding.channel === DISCORD_CHANNEL && (binding.instanceId ?? "default") === this.instanceId && binding.userId === message.sender.userId && binding.status !== "revoked");
     const persistedSessionKeys = new Set(channelBindings
@@ -911,8 +925,25 @@ export class DiscordRuntime {
   }
 
   private async activeSelectionForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<string | undefined> {
-    const persisted = await this.store.getActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId);
-    return persisted?.sessionKey ?? this.activeSessionByConversationUser.get(this.activeSelectionKey(message));
+    const snapshot = await this.store.loadBindingAuthoritySnapshot();
+    const key = this.activeSelectionKey(message);
+    if (snapshot.kind === "state-unavailable") {
+      this.activeSessionByConversationUser.delete(key);
+      return undefined;
+    }
+    const persisted = snapshot.data.activeChannelSelections[`${DISCORD_CHANNEL}:${message.conversation.id}:${message.sender.userId}`];
+    if (persisted) return persisted.sessionKey;
+    const inMemorySessionKey = this.activeSessionByConversationUser.get(key);
+    if (!inMemorySessionKey) return undefined;
+    const recent = this.recentBindingBySessionKey.get(inMemorySessionKey);
+    const outcome = resolveChannelBindingAuthority(
+      snapshot,
+      { channel: DISCORD_CHANNEL, instanceId: this.instanceId, sessionKey: inMemorySessionKey, conversationId: message.conversation.id, userId: message.sender.userId, allowVolatileFallback: true },
+      recent,
+    );
+    if (authorityOutcomeAllowsDelivery(outcome)) return inMemorySessionKey;
+    this.activeSessionByConversationUser.delete(key);
+    return undefined;
   }
 
   private async setActiveSelection(message: Pick<ChannelInboundMessage, "conversation" | "sender">, sessionKey: string, options: { machineId?: string; machineDisplayName?: string } = {}): Promise<void> {
@@ -998,10 +1029,7 @@ export class DiscordRuntime {
   private async refreshTypingActivity(sessionKey: string): Promise<void> {
     const current = this.typingStates.get(sessionKey);
     const route = this.routes.get(sessionKey);
-    const raw = await this.store.getChannelBindingRecordBySessionKey(DISCORD_CHANNEL, sessionKey, this.instanceId);
-    const binding = raw?.status === "revoked"
-      ? undefined
-      : matchingRecentBinding(raw, current?.address) ?? (!raw ? matchingRecentBinding(this.recentBindingBySessionKey.get(sessionKey), current?.address) : undefined);
+    const binding = route && current ? await this.activeBindingForRoute(route, { includePaused: true, address: current.address }) : undefined;
     if (!current || !route || !binding || binding.paused || isTerminalStatus(route.notification.lastStatus)) {
       this.stopTypingActivity(sessionKey);
       return;

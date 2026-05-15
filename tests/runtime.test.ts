@@ -1817,6 +1817,38 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toEqual([]);
   });
 
+  it("suppresses Telegram completion delivery when state is unavailable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-corrupt-completion:/tmp/session-corrupt-completion.jsonl",
+      sessionId: "session-corrupt-completion",
+      sessionFile: "/tmp/session-corrupt-completion.jsonl",
+      sessionLabel: "corrupt-completion.jsonl",
+      chatId: 4545,
+      userId: 45,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastStatus = "completed";
+    route.notification.lastAssistantText = "This output must not be sent.";
+    route.notification.lastTurnId = "turn-corrupt";
+    await writeFile(join(config.stateDir, "state.json"), "{not-json", "utf8");
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendDocumentData: async () => sent.push("document"),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(sent).toEqual([]);
+  });
+
   it("lists private-paired sessions for bot-authored addressed Telegram group commands without stale keyboards", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);

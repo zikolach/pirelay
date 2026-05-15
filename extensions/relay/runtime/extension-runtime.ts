@@ -14,6 +14,7 @@ import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
+import { authorityOutcomeAllowsDelivery, resolveChannelBindingAuthority, resolveTelegramBindingAuthority } from "../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../notifications/lifecycle.js";
 import { formatRelayStatusLine, type RelayStatusLineBindingState, type RelayStatusLineChannel } from "./status-line.js";
 import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, parseRelayLocalCommand, redactSecrets, relayChannelReady, relayPairingInstruction, relaySetupDiagnostics, relaySetupFallbackGuidance, relaySetupGuidance, renderRelayDoctorReport, slackAppRedirectUrl, supportedRelayChannels, type RelaySetupChannel } from "../config/setup.js";
@@ -406,12 +407,21 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   async function currentStatusBinding(config: TelegramTunnelConfig, channel: RelayStatusLineChannel, instanceId = "default"): Promise<RelayStatusLineBindingState | undefined> {
     if (!currentRoute) return undefined;
     const store = new TunnelStateStore(config.stateDir);
+    const snapshot = await store.loadBindingAuthoritySnapshot();
     if (channel === "telegram") {
-      const active = await store.getActiveBindingForSession(currentRoute.sessionKey, { includePaused: true });
-      if (active) return telegramStatusBinding(active);
-      return telegramStatusBinding(await store.getBindingBySessionKey(currentRoute.sessionKey) ? undefined : currentRoute.binding);
+      const routeBinding = currentRoute.binding;
+      const outcome = resolveTelegramBindingAuthority(
+        snapshot,
+        { sessionKey: currentRoute.sessionKey, chatId: routeBinding?.chatId, userId: routeBinding?.userId, includePaused: true, allowVolatileFallback: true },
+        routeBinding,
+      );
+      return authorityOutcomeAllowsDelivery(outcome) ? telegramStatusBinding(outcome.binding) : undefined;
     }
-    return channelStatusBinding(await store.getActiveChannelBindingForSession(channel, currentRoute.sessionKey, { instanceId, includePaused: true }));
+    const outcome = resolveChannelBindingAuthority(
+      snapshot,
+      { channel, sessionKey: currentRoute.sessionKey, instanceId, includePaused: true },
+    );
+    return authorityOutcomeAllowsDelivery(outcome) && "status" in outcome.binding ? channelStatusBinding(outcome.binding) : undefined;
   }
 
   async function setMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, state: Omit<Parameters<typeof formatRelayStatusLine>[0], "channel" | "binding"> & { binding?: RelayStatusLineBindingState }, instanceId = "default"): Promise<void> {
@@ -814,7 +824,12 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   async function notifyTelegramLifecycle(config: TelegramTunnelConfig, route: SessionRoute, kind: RelayLifecycleEventKind): Promise<void> {
     if (!runtime || !route.binding) return;
     const store = new TunnelStateStore(config.stateDir);
-    const binding = await store.getActiveBindingForSession(route.sessionKey, { chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true });
+    const outcome = resolveTelegramBindingAuthority(
+      await store.loadBindingAuthoritySnapshot(),
+      { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: true },
+      route.binding,
+    );
+    const binding = authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
     if (!binding || binding.paused) return;
     const decision = await store.recordLifecycleNotification({
       channel: "telegram",
@@ -1357,20 +1372,26 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const parsed = parseSendFileTargetRef(targetRef);
     if (!parsed) return [];
     const store = new TunnelStateStore(config.stateDir);
+    const snapshot = await store.loadBindingAuthoritySnapshot();
+    if (snapshot.kind === "state-unavailable") return [];
     const targets: LocalSendFileTarget[] = [];
     const includeChannel = (channel: RelaySetupChannel, instanceId = "default") => parsed.all || (parsed.channel === channel && parsed.instanceId === instanceId);
 
     if (parsed.all || includeChannel("telegram")) {
-      const binding = currentRoute.binding ?? await store.getBindingBySessionKey(currentRoute.sessionKey);
-      if (binding && (!("status" in binding) || binding.status !== "revoked")) {
-        targets.push({ channel: "telegram", instanceId: "default", label: "Telegram", paused: binding.paused, binding });
+      const routeBinding = currentRoute.binding;
+      const outcome = resolveTelegramBindingAuthority(
+        snapshot,
+        { sessionKey: currentRoute.sessionKey, chatId: routeBinding?.chatId, userId: routeBinding?.userId, includePaused: true, allowVolatileFallback: true },
+        routeBinding,
+      );
+      if (authorityOutcomeAllowsDelivery(outcome)) {
+        targets.push({ channel: "telegram", instanceId: "default", label: "Telegram", paused: outcome.binding.paused, binding: outcome.binding });
       } else if (!parsed.all && parsed.channel === "telegram") {
         targets.push({ channel: "telegram", instanceId: "default", label: "Telegram" });
       }
     }
 
-    const state = await store.load();
-    const channelBindings = Object.values(state.channelBindings).filter((binding) => binding.sessionKey === currentRoute!.sessionKey && binding.status !== "revoked");
+    const channelBindings = Object.values(snapshot.data.channelBindings).filter((binding) => binding.sessionKey === currentRoute!.sessionKey && binding.status !== "revoked");
     for (const binding of channelBindings) {
       if (binding.channel !== "discord" && binding.channel !== "slack") continue;
       const channel = binding.channel as "discord" | "slack";
@@ -1436,6 +1457,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const workspaceRoot = currentRoute.actions.getWorkspaceRoot?.();
       if (!workspaceRoot) return unavailableRouteMessage();
       const adapter = new TelegramChannelAdapter(config);
+      const store = new TunnelStateStore(config.stateDir);
       const result = await deliverWorkspaceFileToRequester({
         route: currentRoute,
         requester,
@@ -1447,6 +1469,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         maxDocumentBytes: DEFAULT_TELEGRAM_LOCAL_DOCUMENT_MAX_BYTES,
         maxImageBytes: config.maxOutboundImageBytes,
         allowedImageMimeTypes: config.allowedImageMimeTypes,
+        authoritySnapshot: await store.loadBindingAuthoritySnapshot(),
       });
       currentRoute.actions.appendAudit(`relay_send_file ${result.ok ? "delivered" : "failed"}: ${result.ok ? result.relativePath : result.error}`);
       return formatRequesterFileDeliveryResult(result);
