@@ -11,6 +11,7 @@ import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progr
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
@@ -937,7 +938,8 @@ export class SlackRuntime {
       const binding = await this.activeBindingForRoute(route, { includePaused: true });
       if (!binding || binding.conversationId !== message.conversation.id || binding.userId !== message.sender.userId) continue;
       const availability = slackRouteAvailability(route);
-      entries.push(sessionEntryForRoute(route, { online: availability.online, busy: availability.busy, binding, modelId: route.actions.getModel()?.id }));
+      const snapshot = statusSnapshotForRoute(route, availability);
+      entries.push(sessionEntryForRoute(route, { online: snapshot.online, busy: snapshot.busy, binding, modelId: snapshot.modelId }));
     }
     return entries;
   }

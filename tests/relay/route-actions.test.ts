@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStaleExtensionReferenceError, routeIdleState, routeWorkspaceRoot } from "../../extensions/relay/core/route-actions.js";
+import { isStaleExtensionReferenceError, routeIdleState, routeModelState, routeWorkspaceRoot } from "../../extensions/relay/core/route-actions.js";
 import type { SessionRoute, TelegramBindingMetadata } from "../../extensions/relay/core/types.js";
 
 const STALE_EXTENSION_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
@@ -58,6 +58,12 @@ describe("route action lifetime helpers", () => {
     const session = route({ isIdle: () => undefined, getWorkspaceRoot: () => undefined });
     expect(routeIdleState(session)).toBeUndefined();
     expect(routeWorkspaceRoot(session)).toBeUndefined();
+  });
+
+  it("distinguishes unavailable model lookup from no model selected", () => {
+    expect(routeModelState(route({ getModel: () => undefined, isIdle: () => true }))).toEqual({ available: true, model: undefined });
+    expect(routeModelState(route({ getModel: () => undefined, isIdle: () => undefined }))).toEqual({ available: false });
+    expect(routeModelState(route({ getModel: () => { throw new Error(STALE_EXTENSION_ERROR); } }))).toEqual({ available: false });
   });
 
   it("contains stale raw context failures", () => {

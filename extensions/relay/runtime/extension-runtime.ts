@@ -679,7 +679,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             throw error;
           }
         },
-        summarizeText: async (text, mode) => summarizeForTelegram(text, mode, liveContextForRoute(route)),
+        summarizeText: async (text, mode) => summarizeForTelegram(text, mode, liveContextForRoute(route), () => invalidateLiveContextForRoute(route)),
         sendUserMessage: (text, options) => {
           const requester = route.remoteRequester;
           if (!liveContextForRoute(route)) {

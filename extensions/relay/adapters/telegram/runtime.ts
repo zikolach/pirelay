@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
 import { summarizeForTelegram } from "./summary.js";
-import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
@@ -1166,7 +1166,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return undefined;
     }
 
-    if (!modelSupportsImages(route.actions.getModel())) {
+    const modelState = routeModelState(route);
+    if (!modelState.available) {
+      await this.api.sendPlainText(message.chat.id, unavailableRouteMessage());
+      return undefined;
+    }
+    if (!modelSupportsImages(modelState.model)) {
       await this.api.sendPlainText(
         message.chat.id,
         "The current Pi model does not support image input. Switch to an image-capable model or resend text only.",

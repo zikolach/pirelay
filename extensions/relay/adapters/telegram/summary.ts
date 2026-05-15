@@ -15,12 +15,16 @@ export async function summarizeForTelegram(
   text: string,
   mode: SummaryMode,
   ctx: ExtensionContext | undefined,
+  onStaleContext?: () => void,
 ): Promise<string> {
   let model: ExtensionContext["model"] | undefined;
   try {
     model = ctx?.model;
   } catch (error) {
-    if (isStaleExtensionReferenceError(error)) return summarizeTextDeterministically(text);
+    if (isStaleExtensionReferenceError(error)) {
+      onStaleContext?.();
+      return summarizeTextDeterministically(text);
+    }
     throw error;
   }
   if (mode !== "llm" || !ctx || !model) {
@@ -52,7 +56,8 @@ export async function summarizeForTelegram(
       .trim();
 
     return rendered || summarizeTextDeterministically(text);
-  } catch {
+  } catch (error) {
+    if (isStaleExtensionReferenceError(error)) onStaleContext?.();
     return summarizeTextDeterministically(text);
   }
 }

@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -459,9 +459,16 @@ export class DiscordRuntime {
     }
 
     const imageAttachments = message.attachments.filter((attachment) => attachment.kind === "image");
-    if (imageAttachments.length > 0 && !modelSupportsImages(route.actions.getModel())) {
-      await this.sendText(message, "The current Pi model does not support image input. Switch to an image-capable model and retry.");
-      return;
+    if (imageAttachments.length > 0) {
+      const modelState = routeModelState(route);
+      if (!modelState.available) {
+        await this.sendText(message, unavailableRouteMessage());
+        return;
+      }
+      if (!modelSupportsImages(modelState.model)) {
+        await this.sendText(message, "The current Pi model does not support image input. Switch to an image-capable model and retry.");
+        return;
+      }
     }
 
     const promptText = message.text.trim() || (imageAttachments.length > 0 ? IMAGE_PROMPT_FALLBACK : "");

@@ -1,3 +1,4 @@
+import type { Model } from "@mariozechner/pi-ai";
 import type { SessionRoute } from "./types.js";
 
 const STALE_EXTENSION_REFERENCE_PATTERNS = [
@@ -25,6 +26,20 @@ export function routeIdleState(route: SessionRoute): boolean | undefined {
 
 export function routeIsBusy(route: SessionRoute): boolean {
   return routeIdleState(route) === false;
+}
+
+export type RouteModelState =
+  | { available: true; model: Model<any> | undefined }
+  | { available: false };
+
+export function routeModelState(route: SessionRoute): RouteModelState {
+  try {
+    const model = route.actions.getModel();
+    return routeIdleState(route) === undefined ? { available: false } : { available: true, model };
+  } catch (error) {
+    if (isStaleExtensionReferenceError(error)) return { available: false };
+    throw error;
+  }
 }
 
 export function routeWorkspaceRoot(route: SessionRoute): string | undefined {
