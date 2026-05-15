@@ -5,7 +5,7 @@ The setup wizard SHALL present setup content in a tab-like layout that keeps eac
 
 #### Scenario: Setup wizard shows tab-like navigation
 - **WHEN** the setup wizard is rendered for any supported messenger
-- **THEN** it shows tab labels for Diagnostics, Env snippet, Config snippet, Links, and Troubleshooting
+- **THEN** it shows tab labels for Diagnostics, Env snippet, Config snippet, Links, and Troubleshooting, plus messenger-specific tabs such as Slack App manifest when applicable
 - **AND** it renders only the selected tab's content in the body
 - **AND** it does not also render a duplicate vertical panel list, duplicate next-step section, or duplicate action section in the body
 

@@ -7,7 +7,7 @@
 
 ## 2. Telegram Command Menu
 
-- [ ] 2.1 Extend the Telegram API client with a non-secret-safe BotCommand registration operation.
+- [ ] 2.1 Extend the Telegram API client with a secret-safe BotCommand registration operation.
 - [ ] 2.2 Register Telegram menu commands after bot setup validation during runtime startup, with non-fatal failure handling.
 - [ ] 2.3 Map Telegram-safe menu names such as `sendfile`/`sendimage` or underscore forms back to canonical command handlers.
 - [ ] 2.4 Add Telegram runtime tests for menu registration success, registration failure continuing startup, and sanitized command parsing.
