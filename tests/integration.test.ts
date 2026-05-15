@@ -1851,6 +1851,10 @@ describe("PiRelay integration behavior", () => {
     pi.api.appendEntry.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => staleRoute.actions.persistBinding(null, true)).not.toThrow();
     expect(activeRoute.actions.isIdle?.()).toBe(true);
+
+    second.context.ui.notify = vi.fn(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    await expect(pi.runCommand("relay", "setup signal", second.context)).resolves.toBeUndefined();
+    expect(activeRoute.actions.isIdle?.()).toBeUndefined();
   });
 
   it("refuses workspace image lookup when the live context is stale", async () => {

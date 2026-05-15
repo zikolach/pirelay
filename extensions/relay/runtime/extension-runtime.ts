@@ -796,7 +796,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     await Promise.all(registrations);
     const live = liveContextForRoute(route);
     if (live) await refreshRelayStatuses(live).catch((error) => {
-      if (!isStaleExtensionReferenceError(error)) throw error;
+      if (isStaleExtensionReferenceError(error)) {
+        if (latestContext === live) latestContext = undefined;
+        return;
+      }
+      throw error;
     });
   }
 
@@ -916,7 +920,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       safeSetStatus("relay-sync", `telegram sync error: ${redactSecrets(message)}`, ctx);
     }
     await refreshRelayStatuses(ctx).catch((error) => {
-      if (!isStaleExtensionReferenceError(error)) throw error;
+      if (isStaleExtensionReferenceError(error)) {
+        if (latestContext === ctx) latestContext = undefined;
+        return;
+      }
+      throw error;
     });
     await notifyRelayLifecycle(ctx, "online", currentRoute, { telegram: telegramStarted, discordInstances: startedDiscordInstances, slackInstances: startedSlackInstances });
   }
@@ -1534,13 +1542,21 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     currentRoute = disconnectedRoute;
     await refreshRelayStatuses(ctx).catch((error) => {
-      if (!isStaleExtensionReferenceError(error)) throw error;
+      if (isStaleExtensionReferenceError(error)) {
+        if (latestContext === ctx) latestContext = undefined;
+        return;
+      }
+      throw error;
     });
     try {
       ctx.ui.setWidget(CONNECT_WIDGET_KEY, undefined);
       ctx.ui.notify("PiRelay disconnected for this session.", "info");
     } catch (error) {
-      if (!isStaleExtensionReferenceError(error)) throw error;
+      if (isStaleExtensionReferenceError(error)) {
+        if (latestContext === ctx) latestContext = undefined;
+        return;
+      }
+      throw error;
     }
     appendAudit("PiRelay disconnected locally.");
   }
@@ -1616,7 +1632,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           try {
             ctx.ui.notify(redactSecrets(message), "error");
           } catch (notifyError) {
-            if (!isStaleExtensionReferenceError(notifyError)) throw notifyError;
+            if (isStaleExtensionReferenceError(notifyError)) {
+              if (latestContext === ctx) latestContext = undefined;
+              return;
+            }
+            throw notifyError;
           }
         }
       },

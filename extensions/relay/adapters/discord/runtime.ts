@@ -847,16 +847,17 @@ export class DiscordRuntime {
       const route = this.routes.get(binding.sessionKey);
       if (route) {
         const availability = discordRouteAvailability(route);
+        const snapshot = statusSnapshotForRoute(route, availability);
         byKey.set(binding.sessionKey, {
           sessionKey: route.sessionKey,
           sessionId: route.sessionId,
           sessionFile: route.sessionFile,
           sessionLabel: route.sessionLabel,
           alias: channelAlias(binding),
-          online: availability.online,
-          busy: availability.busy,
+          online: snapshot.online,
+          busy: snapshot.busy,
           paused: Boolean(binding.paused),
-          modelId: statusSnapshotForRoute(route, availability).modelId,
+          modelId: snapshot.modelId,
           lastActivityAt: route.lastActivityAt,
         });
         continue;

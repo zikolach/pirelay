@@ -1879,16 +1879,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const route = this.routes.get(binding.sessionKey);
       if (route) {
         const availability = routeAvailability(route);
+        const snapshot = statusSnapshotForRoute(route, availability);
         byKey.set(binding.sessionKey, {
           sessionKey: route.sessionKey,
           sessionId: route.sessionId,
           sessionFile: route.sessionFile,
           sessionLabel: route.sessionLabel,
           alias: route.binding?.alias ?? binding.alias,
-          online: availability.online,
-          busy: availability.busy,
+          online: snapshot.online,
+          busy: snapshot.busy,
           paused: Boolean(route.binding?.paused ?? binding.paused),
-          modelId: statusSnapshotForRoute(route, availability).modelId,
+          modelId: snapshot.modelId,
           lastActivityAt: route.lastActivityAt,
         });
         continue;
@@ -1916,16 +1917,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       if (active) route.binding = active;
       if (!includeUnpersistedRoute(route) || byKey.has(route.sessionKey)) continue;
       const availability = routeAvailability(route);
+      const snapshot = statusSnapshotForRoute(route, availability);
       byKey.set(route.sessionKey, {
         sessionKey: route.sessionKey,
         sessionId: route.sessionId,
         sessionFile: route.sessionFile,
         sessionLabel: route.sessionLabel,
         alias: route.binding?.alias,
-        online: availability.online,
-        busy: availability.busy,
+        online: snapshot.online,
+        busy: snapshot.busy,
         paused: Boolean(route.binding?.paused),
-        modelId: statusSnapshotForRoute(route, availability).modelId,
+        modelId: snapshot.modelId,
         lastActivityAt: route.lastActivityAt,
       });
     }
