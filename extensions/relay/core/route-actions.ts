@@ -18,16 +18,42 @@ export function routeActionSuccess<T = void>(result: T): RouteActionOutcome<T> {
   return { kind: "success", result };
 }
 
-export function routeActionUnavailable(message = unavailableRouteMessage()): RouteActionOutcome<never> {
+export function routeActionUnavailable(message = unavailableRouteMessage()): Extract<RouteActionOutcome<never>, { kind: "unavailable" }> {
   return { kind: "unavailable", message };
 }
 
-export function routeActionAlreadyIdle(message: string): RouteActionOutcome<never> {
+export function routeActionAlreadyIdle(message: string): Extract<RouteActionOutcome<never>, { kind: "already-idle" }> {
   return { kind: "already-idle", message };
 }
 
-export function routeActionFailed(error: unknown, safeMessage: string): RouteActionOutcome<never> {
+export function routeActionFailed(error: unknown, safeMessage: string): Extract<RouteActionOutcome<never>, { kind: "failed" }> {
   return { kind: "failed", error, safeMessage };
+}
+
+export class RouteUnavailableError extends Error {
+  readonly name = "RouteUnavailableError";
+  readonly routeUnavailable = true;
+
+  constructor(message = unavailableRouteMessage(), options?: { cause?: unknown }) {
+    super(message, options);
+  }
+}
+
+export function routeUnavailableError(message = unavailableRouteMessage(), cause?: unknown): RouteUnavailableError {
+  return new RouteUnavailableError(message, cause === undefined ? undefined : { cause });
+}
+
+export function isRouteUnavailableError(error: unknown): boolean {
+  return error instanceof RouteUnavailableError || isStaleExtensionReferenceError(error);
+}
+
+export function isRouteUnavailableOutcome(outcome: RouteActionOutcome<unknown>): outcome is Extract<RouteActionOutcome<unknown>, { kind: "unavailable" }> {
+  return outcome.kind === "unavailable";
+}
+
+export function routeActionOutcomeFromError(error: unknown, safeMessage: string): Extract<RouteActionOutcome<never>, { kind: "unavailable" | "failed" }> {
+  if (isRouteUnavailableError(error)) return routeActionUnavailable();
+  return routeActionFailed(error, safeMessage);
 }
 
 export function isStaleExtensionReferenceError(error: unknown): boolean {
