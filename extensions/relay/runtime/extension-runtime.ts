@@ -24,7 +24,7 @@ import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractIma
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
 import { parseMessengerRef } from "../core/messenger-ref.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult } from "../core/requester-file-delivery.js";
-import { isStaleExtensionReferenceError, unavailableRouteMessage } from "../core/route-actions.js";
+import { isStaleExtensionReferenceError, routeUnavailableError, unavailableRouteMessage } from "../core/route-actions.js";
 import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
@@ -685,7 +685,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           if (!liveContextForRoute(route)) {
             route.remoteRequesterPendingTurn = false;
             if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
-            throw new Error(unavailableRouteMessage());
+            throw routeUnavailableError();
           }
           try {
             pi.sendUserMessage(text, options);
@@ -694,7 +694,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
             if (isStaleExtensionReferenceError(error)) {
               invalidateLiveContextForRoute(route);
-              throw new Error(unavailableRouteMessage());
+              throw routeUnavailableError();
             }
             throw error;
           }
@@ -742,13 +742,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         },
         abort: () => {
           const live = liveContextForRoute(route);
-          if (!live) throw new Error(unavailableRouteMessage());
+          if (!live) throw routeUnavailableError();
           try {
             live.abort();
           } catch (error) {
             if (isStaleExtensionReferenceError(error)) {
               invalidateLiveContextForRoute(route);
-              throw new Error(unavailableRouteMessage());
+              throw routeUnavailableError();
             }
             throw error;
           }
@@ -757,7 +757,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           new Promise<void>((resolve, reject) => {
             const live = liveContextForRoute(route);
             if (!live) {
-              reject(new Error(unavailableRouteMessage()));
+              reject(routeUnavailableError());
               return;
             }
             try {
@@ -766,7 +766,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
                 onError: (error) => {
                   if (isStaleExtensionReferenceError(error)) {
                     invalidateLiveContextForRoute(route);
-                    reject(new Error(unavailableRouteMessage()));
+                    reject(routeUnavailableError());
                     return;
                   }
                   reject(error);
@@ -775,7 +775,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             } catch (error) {
               if (isStaleExtensionReferenceError(error)) {
                 invalidateLiveContextForRoute(route);
-                reject(new Error(unavailableRouteMessage()));
+                reject(routeUnavailableError());
                 return;
               }
               reject(error);

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackReactionPayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
 import { SlackLiveOperations } from "../extensions/relay/adapters/slack/live-client.js";
 import { SlackRuntime } from "../extensions/relay/adapters/slack/runtime.js";
+import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 
@@ -614,10 +615,11 @@ describe("SlackRuntime foundations", () => {
     await send("/resume", "48");
     expect(operations.posts.at(-1)?.text).toContain("resumed");
     await send("/abort", "49");
-    expect(testRoute.actions.abort).toHaveBeenCalled();
+    expect(operations.posts.at(-1)?.text).toContain("already idle");
+    expect(testRoute.actions.abort).not.toHaveBeenCalled();
     await send("/compact", "50");
     expect(testRoute.actions.compact).toHaveBeenCalled();
-    vi.mocked(testRoute.actions.compact).mockRejectedValueOnce(new Error("The Pi session is unavailable. Resume it locally, then try again."));
+    vi.mocked(testRoute.actions.compact).mockRejectedValueOnce(routeUnavailableError());
     await send("/compact", "50.5");
     expect(operations.posts.at(-1)?.text).toContain("The Pi session is unavailable");
     await send("/recent", "51");

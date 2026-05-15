@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -23,9 +23,9 @@ const DISCORD_TYPING_REFRESH_MS = 7_000;
 const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
 const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
 function discordRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
-  const idle = routeIdleState(route);
-  if (idle === undefined) return { online: false, busy: false };
-  return { online: true, busy: !idle };
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return { online: false, busy: false };
+  return { online: true, busy: probe.busy };
 }
 
 const DISCORD_HELP_TEXT = buildHelpText({
@@ -534,48 +534,29 @@ export class DiscordRuntime {
       case "followup":
         await this.handlePromptCommand(message, binding, route, command.args, "followUp");
         return;
-      case "abort":
-        const idle = routeIdleState(route);
-        if (idle === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
-          return;
-        }
-        if (idle) {
-          await this.sendText(message, "The Pi session is already idle.");
-          return;
-        }
-        route.notification.abortRequested = true;
+      case "abort": {
         this.stopTypingActivity(route.sessionKey);
-        try {
-          route.actions.abort();
-        } catch (error) {
-          route.notification.abortRequested = false;
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
+        const outcome = abortRouteSafely(route);
+        if (outcome.kind === "unavailable" || outcome.kind === "already-idle") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
+          return;
         }
+        if (outcome.kind === "failed") throw outcome.error;
         route.actions.appendAudit("Discord requested abort.");
         await this.sendText(message, "Abort requested.");
         return;
-      case "compact":
-        if (routeIdleState(route) === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+      }
+      case "compact": {
+        const outcome = await compactRouteSafely(route);
+        if (outcome.kind === "unavailable") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
+        if (outcome.kind === "failed") throw outcome.error;
         route.actions.appendAudit("Discord requested compaction.");
-        try {
-          await route.actions.compact();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
         await this.sendText(message, "Compaction requested.");
         return;
+      }
       case "pause":
         this.stopTypingActivity(route.sessionKey);
         await this.setPaused(message, binding, route, true);
@@ -623,11 +604,13 @@ export class DiscordRuntime {
       if (source === "remote-command") await this.sendText(message, error);
       return error;
     }
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) {
-      if (source === "remote-command") await this.sendText(message, unavailableRouteMessage());
-      return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") {
+      const text = routeActionDisplayMessage(workspace);
+      if (source === "remote-command") await this.sendText(message, text);
+      return text;
     }
+    const workspaceRoot = workspace.result;
     const requester = this.discordRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
@@ -650,8 +633,9 @@ export class DiscordRuntime {
 
   async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
     if (!this.adapter) return "Discord file delivery is not configured for this instance.";
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") return routeActionDisplayMessage(workspace);
+    const workspaceRoot = workspace.result;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
@@ -676,27 +660,26 @@ export class DiscordRuntime {
     options: { deliverAs?: "followUp" | "steer"; idleAck?: string; busyAck?: string; auditAction?: string } = {},
   ): Promise<void> {
     const content = buildImagePromptContent(promptText, []);
-    const wasIdle = routeIdleState(route);
-    if (wasIdle === undefined) {
-      await this.sendText(message, unavailableRouteMessage());
+    const outcome = await deliverRoutePrompt(route, {
+      content,
+      deliverAs: options.deliverAs ?? this.config.busyDeliveryMode,
+      requester: this.discordRequester(route, message),
+      passUndefinedOptions: true,
+      onStart: () => this.startTypingActivity(route, bindingAddress(binding)),
+      onRollback: () => this.stopTypingActivity(route.sessionKey),
+      safeFailureMessage: "Could not deliver the Discord prompt to Pi.",
+    });
+    if (outcome.kind === "unavailable") {
+      await this.sendText(message, routeActionDisplayMessage(outcome));
       return;
     }
-    this.startTypingActivity(route, bindingAddress(binding));
-    const deliverAs = wasIdle ? undefined : options.deliverAs ?? this.config.busyDeliveryMode;
-    try {
-      route.remoteRequester = this.discordRequester(route, message);
-      route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
-    } catch (error) {
-      this.stopTypingActivity(route.sessionKey);
-      if (error instanceof Error && error.message === unavailableRouteMessage()) {
-        await this.sendText(message, error.message);
-        return;
-      }
-      const safeMessage = safeDiscordRuntimeError(error);
+    if (outcome.kind === "failed") {
+      const safeMessage = safeDiscordRuntimeError(outcome.error);
       this.lastError = safeMessage;
       await this.sendText(message, `Could not deliver the Discord prompt to Pi: ${safeMessage}`);
       return;
     }
+    if (outcome.kind !== "success") return;
     route.lastActivityAt = Date.now();
     try {
       await this.store.upsertChannelBinding({ ...binding, lastSeenAt: new Date().toISOString() });
@@ -706,7 +689,7 @@ export class DiscordRuntime {
     }
     const auditAction = options.auditAction ?? "prompt";
     route.actions.appendAudit(`Discord ${auditAction} from ${message.sender.displayName ?? message.sender.userId}: ${summarizeTextDeterministically(promptText, 120)}`);
-    await this.sendText(message, wasIdle ? options.idleAck ?? "Prompt delivered to Pi." : options.busyAck ?? `Pi is busy; queued as ${deliverAs}.`);
+    await this.sendText(message, outcome.result.idle ? options.idleAck ?? "Prompt delivered to Pi." : options.busyAck ?? `Pi is busy; queued as ${outcome.result.deliverAs}.`);
   }
 
   private async handlePromptCommand(
@@ -720,16 +703,11 @@ export class DiscordRuntime {
       await this.sendText(message, `Usage: /${deliverAs === "steer" ? "steer" : "followup"} <text>`);
       return;
     }
-    const idle = routeIdleState(route);
-    if (idle === undefined) {
-      await this.sendText(message, unavailableRouteMessage());
-      return;
-    }
     await this.deliverDiscordPrompt(message, binding, route, args, {
-      deliverAs: idle ? undefined : deliverAs,
+      deliverAs,
       auditAction: deliverAs === "steer" ? "steering instruction" : "follow-up",
-      idleAck: idle ? "Sent as a prompt." : undefined,
-      busyAck: idle ? undefined : deliverAs === "steer" ? "Steering queued." : "Follow-up queued.",
+      idleAck: "Sent as a prompt.",
+      busyAck: deliverAs === "steer" ? "Steering queued." : "Follow-up queued.",
     });
   }
 
@@ -806,7 +784,12 @@ export class DiscordRuntime {
   }
 
   private async sendLatestImages(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
-    const images = await route.actions.getLatestImages();
+    const imagesOutcome = await latestRouteImagesSafely(route);
+    if (imagesOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imagesOutcome));
+      return;
+    }
+    const images = imagesOutcome.result;
     if (images.length === 0) {
       await this.sendText(message, formatLatestImageEmptyMessage());
       return;
@@ -824,7 +807,12 @@ export class DiscordRuntime {
       await this.sendText(message, "Usage: /send-image <relative-image-path>");
       return;
     }
-    const result = await route.actions.getImageByPath(relativePath);
+    const imageOutcome = await routeImageByPathSafely(route, relativePath);
+    if (imageOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imageOutcome));
+      return;
+    }
+    const result = imageOutcome.result;
     if (!result.ok) {
       await this.sendText(message, result.error);
       return;

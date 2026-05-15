@@ -1,5 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStaleExtensionReferenceError, routeIdleState, routeModelState, routeWorkspaceRoot } from "../../extensions/relay/core/route-actions.js";
+import {
+  isRouteUnavailableError,
+  isRouteUnavailableOutcome,
+  isStaleExtensionReferenceError,
+  RouteUnavailableError,
+  routeActionAlreadyIdle,
+  routeActionDisplayMessage,
+  routeActionFailed,
+  abortRouteSafely,
+  compactRouteSafely,
+  deliverRoutePrompt,
+  latestRouteImagesSafely,
+  routeActionOutcomeFromError,
+  routeActionSuccess,
+  routeActionUnavailable,
+  probeRouteAvailability,
+  routeImageByPathSafely,
+  routeIdleState,
+  routeModelState,
+  routeUnavailableError,
+  routeWorkspaceRoot,
+  routeWorkspaceRootSafely,
+  unavailableRouteMessage,
+} from "../../extensions/relay/core/route-actions.js";
 import type { SessionRoute, TelegramBindingMetadata } from "../../extensions/relay/core/types.js";
 
 const STALE_EXTENSION_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
@@ -42,10 +65,138 @@ function route(overrides: Partial<SessionRoute["actions"]> = {}): SessionRoute {
 }
 
 describe("route action lifetime helpers", () => {
+  it("models typed route action outcomes", () => {
+    expect(routeActionSuccess("accepted")).toEqual({ kind: "success", result: "accepted" });
+    expect(routeActionUnavailable()).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(routeActionAlreadyIdle("already idle")).toEqual({ kind: "already-idle", message: "already idle" });
+    const error = new Error("boom");
+    expect(routeActionFailed(error, "safe failure")).toEqual({ kind: "failed", error, safeMessage: "safe failure" });
+  });
+
+  it("identifies unavailable route errors and outcomes without display string equality", () => {
+    const typedError = routeUnavailableError("custom unavailable text");
+    expect(typedError).toBeInstanceOf(RouteUnavailableError);
+    expect(isRouteUnavailableError(typedError)).toBe(true);
+    expect(isRouteUnavailableError(new Error(unavailableRouteMessage()))).toBe(false);
+    expect(isRouteUnavailableOutcome(routeActionUnavailable("custom unavailable text"))).toBe(true);
+    expect(isRouteUnavailableOutcome(routeActionFailed(new Error("boom"), "safe failure"))).toBe(false);
+  });
+
+  it("converts unavailable errors without hiding non-unavailable failures", () => {
+    expect(routeActionOutcomeFromError(new Error(STALE_EXTENSION_ERROR), "safe failure")).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(routeActionOutcomeFromError(routeUnavailableError("Custom safe unavailable."), "safe failure")).toEqual({ kind: "unavailable", message: "Custom safe unavailable." });
+    const error = new Error("platform failure");
+    expect(routeActionOutcomeFromError(error, "safe failure")).toEqual({ kind: "failed", error, safeMessage: "safe failure" });
+    expect(routeActionDisplayMessage(routeActionUnavailable())).toBe(unavailableRouteMessage());
+    expect(routeActionDisplayMessage(routeActionFailed(error, "safe failure"))).toBe("safe failure");
+  });
+
   it("detects stale extension reference errors", () => {
     expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
     expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
     expect(isStaleExtensionReferenceError(new Error("network down"))).toBe(false);
+  });
+
+  it("fails workspace and media operations closed when route context is unavailable", async () => {
+    const unavailableWorkspace = route({ isIdle: () => true, getWorkspaceRoot: () => { throw new Error(STALE_EXTENSION_ERROR); } });
+    expect(routeWorkspaceRootSafely(unavailableWorkspace)).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+
+    const getImageByPath = vi.fn(async () => ({ ok: false as const, error: "should not read" }));
+    await expect(routeImageByPathSafely(route({ isIdle: () => true, getWorkspaceRoot: () => undefined, getImageByPath }), "out.png")).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(getImageByPath).not.toHaveBeenCalled();
+
+    await expect(latestRouteImagesSafely(route({ isIdle: () => undefined }))).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+  });
+
+  it("preserves media validation results after safe workspace checks", async () => {
+    const loadResult = { ok: false as const, error: "Image file not found." };
+    const getImageByPath = vi.fn(async () => loadResult);
+    await expect(routeImageByPathSafely(route({ isIdle: () => true, getWorkspaceRoot: () => "/workspace", getImageByPath }), "missing.png")).resolves.toEqual({ kind: "success", result: loadResult });
+    expect(getImageByPath).toHaveBeenCalledWith("missing.png");
+  });
+
+  it("handles abort outcomes and rollback", () => {
+    const abort = vi.fn();
+    const busy = route({ isIdle: () => false, abort });
+    expect(abortRouteSafely(busy)).toEqual({ kind: "success", result: undefined });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(busy.notification.abortRequested).toBe(true);
+
+    const idle = route({ isIdle: () => true, abort: vi.fn() });
+    expect(abortRouteSafely(idle)).toEqual({ kind: "already-idle", message: "The Pi session is already idle." });
+    expect(idle.actions.abort).not.toHaveBeenCalled();
+
+    const unavailable = route({ isIdle: () => false, abort: () => { throw routeUnavailableError(); } });
+    expect(abortRouteSafely(unavailable)).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(unavailable.notification.abortRequested).toBe(false);
+  });
+
+  it("contains compact unavailable races", async () => {
+    const unavailable = route({ isIdle: () => false, compact: async () => { throw routeUnavailableError(); } });
+    await expect(compactRouteSafely(unavailable)).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    const compact = vi.fn(async () => undefined);
+    await expect(compactRouteSafely(route({ isIdle: () => true, compact }))).resolves.toEqual({ kind: "success", result: undefined });
+    expect(compact).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back prompt reservations and hooks on unavailable delivery", async () => {
+    const session = route({ isIdle: () => true, sendUserMessage: () => { throw routeUnavailableError(); } });
+    const previousRequester = { channel: "telegram" as const, instanceId: "default", conversationId: "old", userId: "1", sessionKey: session.sessionKey, safeLabel: "old", createdAt: 1 };
+    const nextRequester = { ...previousRequester, conversationId: "new", safeLabel: "new" };
+    session.remoteRequester = previousRequester;
+    session.remoteRequesterPendingTurn = true;
+    const events: string[] = [];
+
+    await expect(deliverRoutePrompt(session, {
+      content: "hello",
+      requester: nextRequester,
+      onStart: () => { events.push("start"); },
+      onRollback: () => { events.push("rollback"); },
+    })).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+
+    expect(session.remoteRequester).toBe(previousRequester);
+    expect(session.remoteRequesterPendingTurn).toBe(true);
+    expect(events).toEqual(["start", "rollback"]);
+  });
+
+  it("commits accepted prompt operations without rollback", async () => {
+    const sendUserMessage = vi.fn();
+    const session = route({ isIdle: () => false, sendUserMessage });
+    const requester = { channel: "telegram" as const, instanceId: "default", conversationId: "new", userId: "1", sessionKey: session.sessionKey, safeLabel: "new", createdAt: 1 };
+    const events: string[] = [];
+
+    await expect(deliverRoutePrompt(session, {
+      content: "hello",
+      deliverAs: "followUp",
+      requester,
+      onStart: () => { events.push("start"); },
+      onRollback: () => { events.push("rollback"); },
+      onCommit: () => { events.push("commit"); },
+    })).resolves.toEqual({ kind: "success", result: { idle: false, deliverAs: "followUp" } });
+
+    expect(sendUserMessage).toHaveBeenCalledWith("hello", { deliverAs: "followUp" });
+    expect(session.remoteRequester).toBe(requester);
+    expect(events).toEqual(["start", "commit"]);
+  });
+
+  it("probes route availability coherently", () => {
+    expect(probeRouteAvailability(route({ isIdle: () => false }), { includeModel: true })).toMatchObject({ kind: "available", idle: false, busy: true });
+    expect(probeRouteAvailability(route({ isIdle: () => undefined }))).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(probeRouteAvailability(route({ isIdle: () => true, getModel: () => { throw new Error(STALE_EXTENSION_ERROR); } }), { includeModel: true })).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(probeRouteAvailability(route({ isIdle: () => true, getWorkspaceRoot: () => undefined }), { includeWorkspace: true })).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+  });
+
+  it("uses the post-model idle state for coherent probes", () => {
+    let idle = true;
+    const session = route({
+      isIdle: () => idle,
+      getModel: () => {
+        idle = false;
+        return undefined;
+      },
+    });
+
+    expect(probeRouteAvailability(session, { includeModel: true })).toMatchObject({ kind: "available", idle: false, busy: true });
   });
 
   it("prefers narrow action helpers over raw context", () => {

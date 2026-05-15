@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
@@ -26,9 +26,9 @@ const SLACK_HELP_TEXT = buildHelpText({
 const SLACK_THINKING_REACTION = "thinking_face";
 
 function slackRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
-  const idle = routeIdleState(route);
-  if (idle === undefined) return { online: false, busy: false };
-  return { online: true, busy: !idle };
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return { online: false, busy: false };
+  return { online: true, busy: probe.busy };
 }
 
 export interface SlackRuntimeOptions {
@@ -452,44 +452,37 @@ export class SlackRuntime {
       await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `pirelay resume` to re-enable prompts.");
       return;
     }
-    const idle = routeIdleState(route);
-    if (idle === undefined) {
-      await this.sendText(message, unavailableRouteMessage());
+    const mode = this.config.busyDeliveryMode === "steer" ? "steer" : "followUp";
+    const outcome = await deliverRoutePrompt(route, {
+      content: message.text,
+      deliverAs: mode,
+      requester: this.slackRequester(route, message),
+      onStart: async ({ idle }) => {
+        if (idle) {
+          await this.rememberThreadContext(binding, message);
+          await this.startThinkingReaction(route, message);
+        } else {
+          this.sendActivityBestEffort(slackAddress(message));
+        }
+      },
+      onRollback: () => this.stopThinkingReaction(route.sessionKey),
+      onCommit: async () => {
+        route.lastActivityAt = Date.now();
+        await this.setActiveSelection(message, route.sessionKey);
+      },
+    });
+    if (outcome.kind === "unavailable") {
+      await this.sendText(message, routeActionDisplayMessage(outcome));
       return;
     }
-    if (!idle) {
-      const mode = this.config.busyDeliveryMode === "steer" ? "steer" : "followUp";
-      this.sendActivityBestEffort(slackAddress(message));
-      route.remoteRequester = this.slackRequester(route, message);
-      try {
-        route.actions.sendUserMessage(message.text, { deliverAs: mode });
-      } catch (error) {
-        if (error instanceof Error && error.message === unavailableRouteMessage()) {
-          await this.sendText(message, error.message);
-          return;
-        }
-        throw error;
-      }
-      await this.sendText(message, mode === "steer"
+    if (outcome.kind === "failed") throw outcome.error;
+    if (outcome.kind !== "success") return;
+    if (!outcome.result.idle) {
+      await this.sendText(message, outcome.result.deliverAs === "steer"
         ? "Slack steering queued for the active Pi run."
         : "Slack follow-up queued for after the active Pi run. The current turn may complete separately before this prompt runs.");
       return;
     }
-    await this.rememberThreadContext(binding, message);
-    await this.startThinkingReaction(route, message);
-    route.remoteRequester = this.slackRequester(route, message);
-    try {
-      route.actions.sendUserMessage(message.text);
-    } catch (error) {
-      if (error instanceof Error && error.message === unavailableRouteMessage()) {
-        await this.stopThinkingReaction(route.sessionKey);
-        await this.sendText(message, error.message);
-        return;
-      }
-      throw error;
-    }
-    route.lastActivityAt = Date.now();
-    await this.setActiveSelection(message, route.sessionKey);
     await this.sendText(message, `Sent to ${route.sessionLabel}.`);
   }
 
@@ -536,36 +529,23 @@ export class SlackRuntime {
           await this.sendText(message, `Pi session ${target.result.entry.alias || target.result.entry.sessionLabel} is offline.`);
           return;
         }
-        const idle = routeIdleState(targetRoute);
-        if (idle === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+        const outcome = await deliverRoutePrompt(targetRoute, {
+          content: target.prompt,
+          deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp",
+          requester: this.slackRequester(targetRoute, message),
+          passUndefinedOptions: true,
+          onStart: async ({ idle }) => {
+            if (idle) await this.startThinkingReaction(targetRoute, message);
+            else this.sendActivityBestEffort(slackAddress(message));
+          },
+          onRollback: () => this.stopThinkingReaction(targetRoute.sessionKey),
+        });
+        if (outcome.kind === "unavailable") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
-        targetRoute.remoteRequester = this.slackRequester(targetRoute, message);
-        if (idle) {
-          await this.startThinkingReaction(targetRoute, message);
-          try {
-            targetRoute.actions.sendUserMessage(target.prompt, undefined);
-          } catch (error) {
-            if (error instanceof Error && error.message === unavailableRouteMessage()) {
-              await this.stopThinkingReaction(targetRoute.sessionKey);
-              await this.sendText(message, error.message);
-              return;
-            }
-            throw error;
-          }
-        } else {
-          this.sendActivityBestEffort(slackAddress(message));
-          try {
-            targetRoute.actions.sendUserMessage(target.prompt, { deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp" });
-          } catch (error) {
-            if (error instanceof Error && error.message === unavailableRouteMessage()) {
-              await this.sendText(message, error.message);
-              return;
-            }
-            throw error;
-          }
-        }
+        if (outcome.kind === "failed") throw outcome.error;
+        if (outcome.kind !== "success") return;
         await this.sendText(message, `Sent to ${target.result.entry.alias || target.result.entry.sessionLabel}.`);
         return;
       }
@@ -610,38 +590,25 @@ export class SlackRuntime {
         await this.sendText(message, formatRelayRecentActivity(route, this.config));
         return;
       case "abort": {
-        if (routeIdleState(route) === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+        const outcome = abortRouteSafely(route);
+        if (outcome.kind === "unavailable" || outcome.kind === "already-idle") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
-        try {
-          route.actions.abort();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
+        if (outcome.kind === "failed") throw outcome.error;
         await this.sendText(message, "Abort requested.");
         return;
       }
-      case "compact":
-        if (routeIdleState(route) === undefined) {
-          await this.sendText(message, unavailableRouteMessage());
+      case "compact": {
+        const outcome = await compactRouteSafely(route);
+        if (outcome.kind === "unavailable") {
+          await this.sendText(message, routeActionDisplayMessage(outcome));
           return;
         }
-        try {
-          await route.actions.compact();
-        } catch (error) {
-          if (error instanceof Error && error.message === unavailableRouteMessage()) {
-            await this.sendText(message, error.message);
-            return;
-          }
-          throw error;
-        }
+        if (outcome.kind === "failed") throw outcome.error;
         await this.sendText(message, "Compaction requested.");
         return;
+      }
       case "pause":
         await this.updateBinding(binding, { paused: true });
         route.actions.refreshLocalStatus?.();
@@ -754,11 +721,13 @@ export class SlackRuntime {
       if (source === "remote-command") await this.sendText(message, error);
       return error;
     }
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) {
-      if (source === "remote-command") await this.sendText(message, unavailableRouteMessage());
-      return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") {
+      const text = routeActionDisplayMessage(workspace);
+      if (source === "remote-command") await this.sendText(message, text);
+      return text;
     }
+    const workspaceRoot = workspace.result;
     const requester = this.slackRequester(route, message);
     route.remoteRequester = requester;
     const result = await deliverWorkspaceFileToRequester({
@@ -781,8 +750,9 @@ export class SlackRuntime {
 
   async sendFileToRequester(route: SessionRoute, requester: RelayFileDeliveryRequester, relativePath: string, caption?: string): Promise<string> {
     if (!this.adapter) return "Slack file delivery is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.";
-    const workspaceRoot = routeWorkspaceRoot(route);
-    if (!workspaceRoot) return unavailableRouteMessage();
+    const workspace = routeWorkspaceRootSafely(route);
+    if (workspace.kind !== "success") return routeActionDisplayMessage(workspace);
+    const workspaceRoot = workspace.result;
     const result = await deliverWorkspaceFileToRequester({
       route,
       requester,
@@ -800,7 +770,12 @@ export class SlackRuntime {
   }
 
   private async sendLatestImages(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
-    const images = await route.actions.getLatestImages();
+    const imagesOutcome = await latestRouteImagesSafely(route);
+    if (imagesOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imagesOutcome));
+      return;
+    }
+    const images = imagesOutcome.result;
     if (images.length === 0) {
       await this.sendText(message, formatLatestImageEmptyMessage().replaceAll("/images", "pirelay images").replaceAll("/send-image", "pirelay send-image"));
       return;
@@ -828,7 +803,12 @@ export class SlackRuntime {
       await this.sendText(message, "Usage: pirelay send-image <relative-image-path>");
       return;
     }
-    const result = await route.actions.getImageByPath(relativePath);
+    const imageOutcome = await routeImageByPathSafely(route, relativePath);
+    if (imageOutcome.kind !== "success") {
+      await this.sendText(message, routeActionDisplayMessage(imageOutcome));
+      return;
+    }
+    const result = imageOutcome.result;
     if (!result.ok) {
       await this.sendText(message, result.error);
       return;

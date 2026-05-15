@@ -9,7 +9,7 @@ import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { ensureStateDir } from "../state/paths.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
-import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { normalizeBrokerNamespace } from "./supervisor.js";
@@ -256,12 +256,17 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             ? request.content as TelegramPromptContent
             : String(request.text ?? "");
           const deliverAs = request.deliverAs as "steer" | "followUp" | undefined;
-          if (routeIdleState(route) === undefined) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const outcome = await deliverRoutePrompt(route, {
+            content,
+            deliverAs,
+            requester: isRecord(request.requester) ? request.requester as unknown as RelayFileDeliveryRequester : undefined,
+            passUndefinedOptions: true,
+            safeFailureMessage: "Could not deliver the broker prompt to Pi.",
+          });
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
             return;
           }
-          if (isRecord(request.requester)) route.remoteRequester = request.requester as unknown as RelayFileDeliveryRequester;
-          route.actions.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }
@@ -273,11 +278,12 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             await respond({ ok: false, error: "Missing requester context." });
             return;
           }
-          const workspaceRoot = routeWorkspaceRoot(route);
-          if (!workspaceRoot) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const workspace = routeWorkspaceRootSafely(route);
+          if (workspace.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(workspace) });
             return;
           }
+          const workspaceRoot = workspace.result;
           const requester = request.requester as unknown as RelayFileDeliveryRequester;
           route.remoteRequester = requester;
           const adapter = new TelegramChannelAdapter(this.config);
@@ -298,31 +304,28 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "getLatestImages": {
-          const images: LatestTurnImage[] = await route.actions.getLatestImages();
-          await respond({ ok: true, result: images });
+          const outcome = await latestRouteImagesSafely(route);
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
+            return;
+          }
+          await respond({ ok: true, result: outcome.result });
           return;
         }
         case "getImageByPath": {
-          const result: ImageFileLoadResult = await route.actions.getImageByPath(String(request.path ?? ""));
-          await respond({ ok: true, result });
+          const outcome = await routeImageByPathSafely(route, String(request.path ?? ""));
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
+            return;
+          }
+          await respond({ ok: true, result: outcome.result });
           return;
         }
         case "abort": {
-          const idle = routeIdleState(route);
-          if (idle === undefined) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const outcome = abortRouteSafely(route);
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
             return;
-          }
-          if (idle) {
-            await respond({ ok: false, error: "The Pi session is already idle." });
-            return;
-          }
-          route.notification.abortRequested = true;
-          try {
-            route.actions.abort();
-          } catch (error) {
-            route.notification.abortRequested = false;
-            throw error;
           }
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
@@ -331,11 +334,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "compact": {
-          if (routeIdleState(route) === undefined) {
-            await respond({ ok: false, error: unavailableRouteMessage() });
+          const outcome = await compactRouteSafely(route);
+          if (outcome.kind !== "success") {
+            await respond({ ok: false, error: routeActionDisplayMessage(outcome) });
             return;
           }
-          await route.actions.compact();
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }

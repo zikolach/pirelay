@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordGatewayEvent, DiscordMentionPayload, DiscordSendFilePayload, DiscordSendMessagePayload } from "../extensions/relay/adapters/discord/adapter.js";
 import { createDiscordRuntime, DiscordRuntime, getOrCreateDiscordRuntime } from "../extensions/relay/adapters/discord/runtime.js";
+import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 import { formatSessionList } from "../extensions/relay/core/session-selection.js";
@@ -860,6 +861,37 @@ describe("DiscordRuntime", () => {
     expect(ops.typing).toEqual(["dm1"]);
   });
 
+  it("stops Discord typing refresh when abort becomes unavailable", async () => {
+    vi.useFakeTimers();
+    const cfg = await config();
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session } = route({ idle: false });
+    session.notification.lastStatus = "running";
+    session.actions.abort = vi.fn(() => { throw routeUnavailableError(); });
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("relay followup keep typing"));
+    expect(ops.typing).toEqual(["dm1"]);
+    await ops.handler?.(discordMessage("relay abort"));
+    expect(ops.messages.at(-1)?.content).toContain("The Pi session is unavailable");
+    await vi.advanceTimersByTimeAsync(14_000);
+
+    expect(ops.typing).toEqual(["dm1"]);
+  });
+
   it("stops Discord typing refresh on pause, disconnect, route unregister, and runtime stop", async () => {
     vi.useFakeTimers();
     const cfg = await config();
@@ -951,7 +983,7 @@ describe("DiscordRuntime", () => {
     const runtime = new DiscordRuntime(cfg, { operations: ops });
     const { route: session, sendUserMessage } = route();
     sendUserMessage.mockImplementation(() => {
-      throw new Error("The Pi session is unavailable. Resume it locally, then try again.");
+      throw routeUnavailableError();
     });
     await runtime.registerRoute(session);
     await runtime.start();

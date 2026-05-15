@@ -6,6 +6,7 @@ import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
 import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
 import { InProcessTunnelRuntime, sendSessionNotification } from "../extensions/relay/adapters/telegram/runtime.js";
+import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
 
@@ -1122,6 +1123,50 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(callbacks).toEqual(["Selected 2"]);
     expect(deliveries).toEqual([{ text: "Answer to: Choose:\nSelected option 2: skip", deliverAs: undefined }]);
+    expect(route.remoteRequester?.messageId).toBeUndefined();
+  });
+
+  it("does not answer callback as unavailable for non-unavailable prompt failures", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-callback-failure:/tmp/session-callback-failure.jsonl",
+      sessionId: "session-callback-failure",
+      sessionFile: "/tmp/session-callback-failure.jsonl",
+      sessionLabel: "session-callback-failure.jsonl",
+      chatId: 1002,
+      userId: 22,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route } = createRoute(binding, true);
+    route.actions.sendUserMessage = () => { throw new Error("non-unavailable prompt failure"); };
+    route.notification.lastStatus = "completed";
+    route.notification.lastTurnId = "turn-callback-failure";
+    route.notification.lastAssistantText = ["Choose:", "1. sync", "2. skip"].join("\n");
+    route.notification.structuredAnswer = extractStructuredAnswerMetadata(route.notification.lastAssistantText, { turnId: "turn-callback-failure" });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async () => undefined,
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await expect((runtime as any).processInbound({
+      kind: "callback",
+      updateId: 111,
+      callbackQueryId: "cb-failure",
+      data: buildAnswerOptionCallbackData("turn-callback-failure", "2"),
+      chat: { id: 1002, type: "private" },
+      user: { id: 22, username: "owner" },
+    })).rejects.toThrow("non-unavailable prompt failure");
+
+    expect(callbacks).toEqual([]);
   });
 
   it("captures custom answers after an inline custom-answer callback and lets commands bypass capture", async () => {
@@ -1525,7 +1570,7 @@ describe("InProcessTunnelRuntime", () => {
       lastSeenAt: new Date().toISOString(),
     };
     const { route, deliveries } = createRoute(binding, true);
-    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    route.actions.sendUserMessage = () => { throw routeUnavailableError(); };
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: string[] = [];
@@ -1554,7 +1599,7 @@ describe("InProcessTunnelRuntime", () => {
     };
     const { route, setIdle } = createRoute(binding, true);
     setIdle(false);
-    route.actions.abort = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    route.actions.abort = () => { throw routeUnavailableError(); };
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: string[] = [];
@@ -1991,7 +2036,7 @@ describe("InProcessTunnelRuntime", () => {
       lastSeenAt: new Date().toISOString(),
     };
     const { route } = createRoute(binding, true);
-    route.actions.sendUserMessage = () => { throw new Error("The Pi session is unavailable. Resume it locally, then try again."); };
+    route.actions.sendUserMessage = () => { throw routeUnavailableError(); };
     await store.upsertBinding(binding);
     (runtime as any).routes.set(route.sessionKey, route);
     const sent: Array<{ chatId: number; text: string }> = [];

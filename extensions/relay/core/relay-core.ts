@@ -1,5 +1,5 @@
 import type { ChannelAdapterKind } from "./channel-adapter.js";
-import { routeIdleState, routeModelState } from "./route-actions.js";
+import { probeRouteAvailability } from "./route-actions.js";
 import type { SessionRoute, SessionStatusSnapshot } from "./types.js";
 import { formatModelId } from "./utils.js";
 
@@ -18,17 +18,17 @@ export interface RelayRouteState {
 }
 
 export function statusSnapshotForRoute(route: SessionRoute, options: { online: boolean; busy?: boolean }): SessionStatusSnapshot {
-  const modelState = routeModelState(route);
-  const idle = modelState.available && options.busy === undefined ? routeIdleState(route) : undefined;
-  const online = modelState.available && !(options.busy === undefined && idle === undefined) ? options.online : false;
+  const probe = probeRouteAvailability(route, { includeModel: true });
+  const online = options.online && probe.kind === "available";
+  const model = probe.kind === "available" ? probe.model : undefined;
   return {
     sessionKey: route.sessionKey,
     sessionLabel: route.sessionLabel,
     sessionId: route.sessionId,
     sessionFile: route.sessionFile,
     online,
-    busy: online ? options.busy ?? (idle === false) : false,
-    modelId: modelState.available ? formatModelId(modelState.model) : undefined,
+    busy: online ? options.busy ?? probe.busy : false,
+    modelId: probe.kind === "available" ? formatModelId(model) : undefined,
     lastActivityAt: route.lastActivityAt,
     binding: route.binding,
     notification: route.notification,
@@ -36,10 +36,9 @@ export function statusSnapshotForRoute(route: SessionRoute, options: { online: b
 }
 
 export function relayRouteStateForRoute(route: SessionRoute, options: { channel: ChannelAdapterKind; busy?: boolean }): RelayRouteState {
-  const modelState = routeModelState(route);
-  const idle = modelState.available && options.busy === undefined ? routeIdleState(route) : undefined;
-  const available = modelState.available && !(options.busy === undefined && idle === undefined);
-  const model = modelState.available ? modelState.model : undefined;
+  const probe = probeRouteAvailability(route, { includeModel: true });
+  const available = probe.kind === "available";
+  const model = available ? probe.model : undefined;
   return {
     channel: options.channel,
     sessionKey: route.sessionKey,
@@ -47,7 +46,7 @@ export function relayRouteStateForRoute(route: SessionRoute, options: { channel:
     sessionFile: route.sessionFile,
     sessionLabel: route.sessionLabel,
     binding: route.binding,
-    busy: available ? options.busy ?? (idle === false) : false,
+    busy: available ? options.busy ?? probe.busy : false,
     modelId: available ? formatModelId(model) : undefined,
     imageInputSupported: available ? Boolean(model?.input?.includes("image")) : false,
     lastActivityAt: route.lastActivityAt,

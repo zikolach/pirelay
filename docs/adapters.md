@@ -22,6 +22,12 @@ Runtime code is being organized under `extensions/relay/`:
 
 Shared folders must not import concrete adapter or runtime side-effect modules; adapters import shared contracts and keep platform SDK/network calls at the edge.
 
+## Route-action safety versus binding authority
+
+After an inbound event has passed messenger authorization and binding selection, adapters and broker code must execute fallible Pi route operations through shared route-action safety helpers in `extensions/relay/core/route-actions.ts`. These helpers provide typed outcomes for available, unavailable, already-idle, and failed operations; probe route liveness/model/workspace coherently; and roll back requester context, activity/typing/reaction hooks, shared-room output destinations, and abort flags when a route becomes unavailable.
+
+Route-action safety does **not** decide whether a chat/channel is authorized, paused, revoked, moved, or paired. Those binding-authority decisions stay in state/config/middleware and the active binding resolution paths. In short: binding authority chooses whether a messenger event may target a route; route-action safety controls what happens when that selected route is stale, busy, idle, or fails during prompt/control/media execution.
+
 ## Adapter contract
 
 Adapters declare capabilities so the relay core can choose safe fallbacks:
