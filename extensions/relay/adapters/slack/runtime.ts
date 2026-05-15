@@ -25,6 +25,7 @@ const SLACK_HELP_TEXT = buildHelpText({
   footerLines: ["", "Tip: do not prefix commands with `/` in Slack; Slack treats leading slash text as slash commands for apps."],
 });
 const SLACK_THINKING_REACTION = "thinking_face";
+const SLACK_RESPONSE_URL_TTL_MS = 30 * 60 * 1000;
 
 function slackRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
   const probe = probeRouteAvailability(route);
@@ -58,7 +59,7 @@ export class SlackRuntime {
   private historyPollInFlight = false;
   private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
   private readonly seenEventKeys = new Map<string, number>();
-  private readonly consumedResponseUrls = new Set<string>();
+  private readonly consumedResponseUrls = new Map<string, number>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
   private botIdentity?: SlackAuthTestResult;
@@ -936,7 +937,7 @@ export class SlackRuntime {
 
   private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string): Promise<void> {
     const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
-    if (responseUrl && this.operations?.postResponse && !this.consumedResponseUrls.has(responseUrl)) {
+    if (responseUrl && this.operations?.postResponse && !this.wasResponseUrlConsumed(responseUrl)) {
       this.rememberConsumedResponseUrl(responseUrl);
       try {
         await this.operations.postResponse(responseUrl, { text, ephemeral: true });
@@ -948,11 +949,21 @@ export class SlackRuntime {
     await this.adapter?.sendText(slackAddress(message), text);
   }
 
+  private wasResponseUrlConsumed(responseUrl: string): boolean {
+    const expiresAt = this.consumedResponseUrls.get(responseUrl);
+    if (!expiresAt) return false;
+    if (expiresAt <= Date.now()) {
+      this.consumedResponseUrls.delete(responseUrl);
+      return false;
+    }
+    return true;
+  }
+
   private rememberConsumedResponseUrl(responseUrl: string): void {
-    this.consumedResponseUrls.add(responseUrl);
-    if (this.consumedResponseUrls.size <= 100) return;
-    const [first] = this.consumedResponseUrls;
-    if (first) this.consumedResponseUrls.delete(first);
+    this.consumedResponseUrls.set(responseUrl, Date.now() + SLACK_RESPONSE_URL_TTL_MS);
+    for (const [url, expiresAt] of this.consumedResponseUrls) {
+      if (expiresAt <= Date.now()) this.consumedResponseUrls.delete(url);
+    }
   }
 
   private async sessionEntriesForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<SessionListEntry[]> {

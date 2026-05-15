@@ -329,6 +329,10 @@ interface DiscordApplicationCommandLike {
   name: string;
 }
 
+interface DiscordCommandsCollection {
+  values(): Iterable<DiscordApplicationCommandLike>;
+}
+
 export function discordRelayApplicationCommandData(): Record<string, unknown> {
   const surface = discordRelayCommandSurface();
   return {
@@ -370,12 +374,15 @@ async function upsertDiscordRelayCommand(manager: DiscordApplicationCommandManag
 async function fetchDiscordApplicationCommands(manager: DiscordApplicationCommandManagerLike): Promise<DiscordApplicationCommandLike[]> {
   if (!manager.fetch) return [];
   const commands = await manager.fetch();
+  if (typeof (commands as DiscordCommandsCollection).values === "function") {
+    return [...(commands as DiscordCommandsCollection).values()];
+  }
   if (Symbol.iterator in Object(commands)) return [...commands as Iterable<DiscordApplicationCommandLike>];
-  return [...(commands as { values(): Iterable<DiscordApplicationCommandLike> }).values()];
+  return [];
 }
 
-function discordSubcommandTakesArgs(usage: string): boolean {
-  return /[<[].+[>\]]/.test(usage);
+export function discordSubcommandTakesArgs(usage: string): boolean {
+  return /<[^>]+>|\[[^\]]+\]/.test(usage);
 }
 
 function discordOptionTokens(option: DiscordChatInputOptionLike): string[] {

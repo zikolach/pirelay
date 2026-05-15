@@ -1034,6 +1034,52 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts).toEqual([]);
   });
 
+  it("only uses a Slack response_url once and reuses it after TTL expiry", async () => {
+    vi.useFakeTimers();
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    const send = async (responseUrl: string, ts: string, text = "status") => operations.handler!({
+      type: "slash_command",
+      command: "/relay",
+      text,
+      channel_id: "D1",
+      user_id: "U_DRIVER",
+      user_name: "driver",
+      team_id: "T1",
+      trigger_id: "slash-expiring",
+      response_url: responseUrl,
+    });
+
+    await send("https://hooks.slack.test/repeat", "60");
+    expect(operations.responses).toEqual([expect.objectContaining({ url: "https://hooks.slack.test/repeat" })]);
+
+    await send("https://hooks.slack.test/repeat", "61");
+    expect(operations.responses).toHaveLength(1);
+
+    vi.advanceTimersByTime(31 * 60 * 1000);
+
+    await send("https://hooks.slack.test/repeat", "62");
+    expect(operations.responses).toHaveLength(2);
+    expect(operations.responses.at(-1)?.url).toBe("https://hooks.slack.test/repeat");
+  });
+
   it("rejects workspace mismatch during startup", async () => {
     const operations = new FakeSlackOperations();
     vi.spyOn(operations, "authTest").mockResolvedValue({ teamId: "T2", userId: "U_BOT" });
