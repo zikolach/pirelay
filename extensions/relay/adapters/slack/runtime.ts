@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { probeRouteAvailability, routeIdleState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
@@ -26,9 +26,9 @@ const SLACK_HELP_TEXT = buildHelpText({
 const SLACK_THINKING_REACTION = "thinking_face";
 
 function slackRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
-  const idle = routeIdleState(route);
-  if (idle === undefined) return { online: false, busy: false };
-  return { online: true, busy: !idle };
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return { online: false, busy: false };
+  return { online: true, busy: probe.busy };
 }
 
 export interface SlackRuntimeOptions {

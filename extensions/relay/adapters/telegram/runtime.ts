@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
 import { summarizeForTelegram } from "./summary.js";
-import { routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { probeRouteAvailability, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
@@ -131,9 +131,10 @@ function isEffectivelyIdle(route: SessionRoute): boolean | undefined {
 }
 
 function routeAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
-  const idle = isEffectivelyIdle(route);
-  if (idle === undefined) return { online: false, busy: false };
-  return { online: true, busy: !idle };
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return { online: false, busy: false };
+  if (isTerminalStatus(route.notification.lastStatus)) return { online: true, busy: false };
+  return { online: true, busy: probe.busy };
 }
 
 function hasAnswerableLatestOutput(route: SessionRoute): boolean {

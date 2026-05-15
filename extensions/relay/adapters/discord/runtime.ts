@@ -10,7 +10,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
+import { probeRouteAvailability, routeIdleState, routeModelState, routeWorkspaceRoot, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
@@ -23,9 +23,9 @@ const DISCORD_TYPING_REFRESH_MS = 7_000;
 const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
 const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
 function discordRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
-  const idle = routeIdleState(route);
-  if (idle === undefined) return { online: false, busy: false };
-  return { online: true, busy: !idle };
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return { online: false, busy: false };
+  return { online: true, busy: probe.busy };
 }
 
 const DISCORD_HELP_TEXT = buildHelpText({

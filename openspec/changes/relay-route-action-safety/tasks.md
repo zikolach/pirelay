@@ -16,7 +16,7 @@
 
 - [x] 3.1 Implement a shared route availability probe that preserves unavailable state across idle, model, and optional workspace checks.
 - [x] 3.2 Update `statusSnapshotForRoute` and `relayRouteStateForRoute` to use the coherent probe instead of independent liveness/model calls.
-- [ ] 3.3 Update Telegram, Discord, Slack, and broker session-list/status paths to use the shared probe or snapshot helpers.
+- [x] 3.3 Update Telegram, Discord, Slack, and broker session-list/status paths to use the shared probe or snapshot helpers.
 - [ ] 3.4 Add tests proving stale idle, model, or workspace probes render routes offline/unavailable rather than online idle, online busy, or online with missing model only.
 
 ## 4. Prompt Operation Safety
