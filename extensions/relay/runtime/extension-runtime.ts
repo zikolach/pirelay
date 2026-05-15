@@ -709,10 +709,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         },
         appendAudit: (message) => appendAudit(message, route),
         notifyLocal: (message, level = "info") => {
-          closeConnectQrScreen?.();
-          closeConnectQrScreen = undefined;
           const live = liveContextForRoute(route);
           if (!live) return;
+          closeConnectQrScreen?.();
+          closeConnectQrScreen = undefined;
           safeNotifyLocal(message, level, route);
           refreshRelayStatusesSoon(live);
         },
