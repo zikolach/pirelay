@@ -1,5 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStaleExtensionReferenceError, routeIdleState, routeModelState, routeWorkspaceRoot } from "../../extensions/relay/core/route-actions.js";
+import {
+  isRouteUnavailableError,
+  isRouteUnavailableOutcome,
+  isStaleExtensionReferenceError,
+  RouteUnavailableError,
+  routeActionAlreadyIdle,
+  routeActionDisplayMessage,
+  routeActionFailed,
+  routeActionOutcomeFromError,
+  routeActionSuccess,
+  routeActionUnavailable,
+  routeIdleState,
+  routeModelState,
+  routeUnavailableError,
+  routeWorkspaceRoot,
+  unavailableRouteMessage,
+} from "../../extensions/relay/core/route-actions.js";
 import type { SessionRoute, TelegramBindingMetadata } from "../../extensions/relay/core/types.js";
 
 const STALE_EXTENSION_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
@@ -42,6 +58,31 @@ function route(overrides: Partial<SessionRoute["actions"]> = {}): SessionRoute {
 }
 
 describe("route action lifetime helpers", () => {
+  it("models typed route action outcomes", () => {
+    expect(routeActionSuccess("accepted")).toEqual({ kind: "success", result: "accepted" });
+    expect(routeActionUnavailable()).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    expect(routeActionAlreadyIdle("already idle")).toEqual({ kind: "already-idle", message: "already idle" });
+    const error = new Error("boom");
+    expect(routeActionFailed(error, "safe failure")).toEqual({ kind: "failed", error, safeMessage: "safe failure" });
+  });
+
+  it("identifies unavailable route errors and outcomes without display string equality", () => {
+    const typedError = routeUnavailableError("custom unavailable text");
+    expect(typedError).toBeInstanceOf(RouteUnavailableError);
+    expect(isRouteUnavailableError(typedError)).toBe(true);
+    expect(isRouteUnavailableError(new Error(unavailableRouteMessage()))).toBe(false);
+    expect(isRouteUnavailableOutcome(routeActionUnavailable("custom unavailable text"))).toBe(true);
+    expect(isRouteUnavailableOutcome(routeActionFailed(new Error("boom"), "safe failure"))).toBe(false);
+  });
+
+  it("converts unavailable errors without hiding non-unavailable failures", () => {
+    expect(routeActionOutcomeFromError(new Error(STALE_EXTENSION_ERROR), "safe failure")).toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    const error = new Error("platform failure");
+    expect(routeActionOutcomeFromError(error, "safe failure")).toEqual({ kind: "failed", error, safeMessage: "safe failure" });
+    expect(routeActionDisplayMessage(routeActionUnavailable())).toBe(unavailableRouteMessage());
+    expect(routeActionDisplayMessage(routeActionFailed(error, "safe failure"))).toBe("safe failure");
+  });
+
   it("detects stale extension reference errors", () => {
     expect(isStaleExtensionReferenceError(new Error(STALE_EXTENSION_ERROR))).toBe(true);
     expect(isStaleExtensionReferenceError(new Error("ordinary stale cache entry"))).toBe(false);
