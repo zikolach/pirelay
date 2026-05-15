@@ -57,7 +57,7 @@
 
 ## 8. Validation
 
-- [ ] 8.1 Run targeted unit tests for route-action helpers and status probes.
+- [x] 8.1 Run targeted unit tests for route-action helpers and status probes.
 - [ ] 8.2 Run targeted Telegram, Discord, Slack, broker, requester-file, and media runtime tests affected by the migration.
 - [ ] 8.3 Run `npm run typecheck`.
 - [ ] 8.4 Run `npm test`.
