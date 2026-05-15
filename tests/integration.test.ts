@@ -1837,6 +1837,26 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", {}, second.context);
     const statusCount = second.statuses.length;
 
+    let closeCount = 0;
+    let customRendered = false;
+    type TestCustomScreen = { render?: (width: number) => string[] };
+    type TestCustomFactory = (
+      terminal: Record<string, never>,
+      theme: { fg: (name: string, text: string) => string },
+      keymap: Record<string, never>,
+      done: (value: unknown) => void,
+    ) => TestCustomScreen | undefined;
+    second.context.ui.custom = vi.fn((factory: TestCustomFactory) => new Promise((resolve) => {
+      const screen = factory({}, { fg: (_name: string, text: string) => text }, {}, (value: unknown) => {
+        closeCount += 1;
+        resolve(value);
+      });
+      screen?.render?.(100);
+      customRendered = true;
+    }));
+    const connectPromise = pi.runCommand("relay", "connect telegram", second.context);
+    await waitFor(() => customRendered);
+
     staleRoute.actions.setLocalStatus?.("stale-route", "should not update active context");
     staleRoute.actions.notifyLocal?.("stale route notification");
     staleRoute.actions.refreshLocalStatus?.();
@@ -1845,8 +1865,12 @@ describe("PiRelay integration behavior", () => {
     expect(second.statuses).toHaveLength(statusCount);
     expect(second.statuses).not.toContainEqual({ key: "stale-route", value: "should not update active context" });
     expect(second.notifications).toEqual([]);
+    expect(closeCount).toBe(0);
 
     const activeRoute = registeredRoutes.at(-1)!;
+    activeRoute.actions.notifyLocal?.("active route notification");
+    await connectPromise;
+    expect(closeCount).toBe(1);
     expect(activeRoute.actions.isIdle?.()).toBe(true);
     pi.api.appendEntry.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => staleRoute.actions.persistBinding(null, true)).not.toThrow();
