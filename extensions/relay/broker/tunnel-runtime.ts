@@ -61,6 +61,8 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private socket?: Socket;
   private buffer = "";
   private connecting?: Promise<void>;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconnectDelayMs = 250;
   private started = false;
   private setupCache?: SetupCache;
 
@@ -83,6 +85,8 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   async stop(): Promise<void> {
     this.started = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     this.rejectPending(new Error("Broker runtime stopped."));
     this.socket?.destroy();
     this.socket = undefined;
@@ -164,6 +168,9 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private attachSocket(socket: Socket): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.reconnectDelayMs = 250;
     this.socket = socket;
     this.buffer = "";
     socket.setEncoding("utf8");
@@ -182,6 +189,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     socket.on("close", () => {
       if (this.socket === socket) this.socket = undefined;
       this.rejectPending(new Error("Broker connection closed."));
+      this.scheduleReconnect();
     });
     socket.on("error", () => {
       // close handler covers recovery
@@ -432,14 +440,41 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       try {
-        await this.connectSocket();
-        this.socket?.destroy();
-        this.socket = undefined;
+        await this.probeSocket();
         return;
       } catch {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
       }
     }
     throw new Error("PiRelay broker did not start in time.");
+  }
+
+  private async probeSocket(): Promise<void> {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const socket = createConnection(this.socketPath);
+      const onError = (error: Error) => {
+        socket.destroy();
+        rejectPromise(error);
+      };
+      socket.once("error", onError);
+      socket.once("connect", () => {
+        socket.off("error", onError);
+        socket.end();
+        resolvePromise();
+      });
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.started || this.reconnectTimer || this.connecting) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (!this.started) return;
+      void this.ensureConnected().catch(() => {
+        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 5_000);
+        this.scheduleReconnect();
+      });
+    }, this.reconnectDelayMs);
+    this.reconnectTimer.unref?.();
   }
 }

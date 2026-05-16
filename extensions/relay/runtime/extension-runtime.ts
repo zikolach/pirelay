@@ -428,6 +428,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     safeSetStatus(statusKeyForChannel(channel, instanceId), formatRelayStatusLine({ channel, ...state }), ctx);
   }
 
+  function clearStatus(key: string, ctx = latestContext): void {
+    safeSetStatus(key, "", ctx);
+  }
+
   function discordStatusConfigured(config: DiscordRelayConfig | undefined): boolean {
     return Boolean(config?.enabled && config.botToken);
   }
@@ -731,6 +735,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           if (!live) return;
           safeSetStatus(key, value, live);
         },
+        clearLocalStatus: (key) => {
+          const live = liveContextForRoute(route);
+          if (!live) return;
+          clearStatus(key, live);
+        },
         refreshLocalStatus: () => {
           const live = liveContextForRoute(route);
           if (!live) return;
@@ -874,6 +883,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (rejected) {
       const message = rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason);
       safeSetStatus("relay-lifecycle", `relay lifecycle warning: ${redactSecrets(message)}`, ctx);
+    } else {
+      clearStatus("relay-lifecycle", ctx);
     }
   }
 

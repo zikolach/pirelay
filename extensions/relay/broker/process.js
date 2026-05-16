@@ -17,6 +17,7 @@ const [
   commandSurfacesModule,
   requesterFileDeliveryModule,
   bindingAuthorityModule,
+  telegramRouteBindingModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -30,6 +31,7 @@ const [
   jiti.import('../commands/surfaces.ts'),
   jiti.import('../core/requester-file-delivery.ts'),
   jiti.import('../core/binding-authority.ts'),
+  jiti.import('./telegram-route-binding.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -109,6 +111,7 @@ const bindingAuthorityStateFromData = requiredFunction(bindingAuthorityModule, '
 const resolveTelegramBindingAuthority = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'resolveTelegramBindingAuthority');
 const stateUnavailableBindingAuthority = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'stateUnavailableBindingAuthority');
 const telegramDestinationKey = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'telegramDestinationKey');
+const routeWithPersistedTelegramBinding = requiredFunction(telegramRouteBindingModule, './telegram-route-binding.ts', 'routeWithPersistedTelegramBinding');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
@@ -950,9 +953,24 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   await sendPlainText(chatId, `${sourcePrefixForRoute(route)}${text}`);
 }
 
-async function consumePendingPairing(nonce, expectedChannel = 'telegram') {
+async function pairingHashForCode(nonce) {
   const { createHash } = await import('node:crypto');
-  const nonceHash = createHash('sha256').update(nonce).digest('hex');
+  return createHash('sha256').update(nonce).digest('hex');
+}
+
+async function inspectPendingPairing(nonce, expectedChannel = 'telegram') {
+  const nonceHash = await pairingHashForCode(nonce);
+  const state = await loadState();
+  const pairing = state.pendingPairings[nonceHash];
+  if (!pairing) return { status: 'missing' };
+  if (expectedChannel && pairing.channel && pairing.channel !== expectedChannel) return { status: 'wrong-channel', pairing };
+  if (pairing.consumedAt) return { status: 'consumed', pairing };
+  if (Date.parse(pairing.expiresAt) <= Date.now()) return { status: 'expired', pairing };
+  return { status: 'active', pairing };
+}
+
+async function consumePendingPairing(nonce, expectedChannel = 'telegram') {
+  const nonceHash = await pairingHashForCode(nonce);
   let found;
   await updateState((state) => {
     const pairing = state.pendingPairings[nonceHash];
@@ -1005,20 +1023,39 @@ async function handlePairStart(message, nonce) {
     await sendPlainText(message.chat.id, 'Pairing only works from a private Telegram chat with the bot.');
     return;
   }
-  const pairing = await consumePendingPairing(nonce, 'telegram');
-  if (!pairing) {
-    await sendPlainText(message.chat.id, 'This pairing link is invalid or expired. Run /relay connect telegram again in Pi.');
+  const inspected = await inspectPendingPairing(nonce, 'telegram');
+  if (inspected.status !== 'active') {
+    const text = inspected.status === 'wrong-channel'
+      ? 'This pairing link belongs to a different messenger. Re-run /relay connect telegram in Pi.'
+      : 'This pairing link is invalid or expired. Run /relay connect telegram again in Pi.';
+    await sendPlainText(message.chat.id, text);
     return;
   }
+  const pairing = inspected.pairing;
   const route = routes.get(pairing.sessionKey);
   if (!route) {
-    await sendPlainText(message.chat.id, `The target Pi session (${pairing.sessionLabel}) is not online anymore. Re-run /relay connect telegram locally.`);
+    await sendPlainText(message.chat.id, `The target Pi session (${pairing.sessionLabel}) is not online right now. Keep Pi running and retry this pairing link before it expires, or run /relay connect telegram locally again.`);
     return;
   }
   const allowedByList = (config.allowUserIds || []).length > 0 && (config.allowUserIds || []).includes(message.user.id);
-  const approved = allowedByList || (await requestClient(route, 'confirmPairing', { identity: message.user }));
+  let approved = allowedByList;
   if (!approved) {
+    try {
+      approved = Boolean(await requestClient(route, 'confirmPairing', { identity: message.user }));
+    } catch (error) {
+      console.warn(`Telegram pairing approval failed for ${route.sessionLabel}: ${redact(error instanceof Error ? error.message : String(error))}`);
+      await sendPlainText(message.chat.id, 'Pi did not respond to the pairing approval request. Keep Pi running and retry this pairing link before it expires, or run /relay connect telegram locally again.');
+      return;
+    }
+  }
+  if (!approved) {
+    await consumePendingPairing(nonce, 'telegram');
     await sendPlainText(message.chat.id, 'Pairing was declined locally. Ask the Pi user to retry the connection flow.');
+    return;
+  }
+  const consumed = await consumePendingPairing(nonce, 'telegram');
+  if (!consumed) {
+    await sendPlainText(message.chat.id, 'This pairing link was already used or expired. Run /relay connect telegram again in Pi.');
     return;
   }
 
@@ -1039,8 +1076,12 @@ async function handlePairStart(message, nonce) {
   route.binding = binding;
   await upsertBinding(binding);
   activeSessionByChatId.set(String(message.chat.id), route.sessionKey);
-  await requestClient(route, 'persistBinding', { binding, revoked: false });
-  await requestClient(route, 'appendAudit', { message: `Telegram relay paired with ${getUserLabel(message.user)}.` });
+  await requestClient(route, 'persistBinding', { binding, revoked: false }).catch((error) => {
+    console.warn(`Telegram pairing persisted in broker state but client persist failed for ${route.sessionLabel}: ${redact(error instanceof Error ? error.message : String(error))}`);
+  });
+  await requestClient(route, 'appendAudit', { message: `Telegram relay paired with ${getUserLabel(message.user)}.` }).catch((error) => {
+    console.warn(`Telegram pairing audit failed for ${route.sessionLabel}: ${redact(error instanceof Error ? error.message : String(error))}`);
+  });
   await sendPlainText(message.chat.id, `Connected to Pi session ${route.sessionLabel}. Send text prompts directly, or use /help for tunnel commands.`);
 }
 
@@ -2107,7 +2148,8 @@ async function handleClientRequest(socket, message) {
         return;
       }
       case 'registerRoute': {
-        const route = await stripRevokedBindingFromRoute(message.route);
+        const state = await loadState();
+        const route = await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(message.route, state));
         if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set() });
         const client = clients.get(socket);
         client.clientId = message.clientId;
