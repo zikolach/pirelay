@@ -7,7 +7,7 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityStateFromData, resolveC
 import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../broker/channel-registry.js";
 import { decideRelayLifecycleNotification, relayLifecycleStorageKey, type RelayLifecycleEventKind, type RelayLifecycleNotificationDecision } from "../notifications/lifecycle.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
-import { markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord } from "../core/agent-delegation.js";
+import { expireDelegationTaskIfRunningTimedOut, markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord, type DelegationTaskRoomRef } from "../core/agent-delegation.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
 function emptyStore(): TunnelStoreData {
@@ -20,6 +20,7 @@ function emptyStore(): TunnelStoreData {
     lifecycleNotifications: {},
     delegationTasks: {},
     delegationAudit: [],
+    delegationHandledEvents: [],
   };
 }
 
@@ -35,6 +36,7 @@ function parseStoreData(raw: string): TunnelStoreData {
     lifecycleNotifications: parsed.lifecycleNotifications ?? {},
     delegationTasks: parsed.delegationTasks ?? {},
     delegationAudit: parsed.delegationAudit ?? [],
+    delegationHandledEvents: parsed.delegationHandledEvents ?? [],
   };
 }
 
@@ -408,18 +410,51 @@ export class TunnelStateStore {
     return task;
   }
 
-  async getDelegationTask(taskId: string): Promise<DelegationTaskRecord | undefined> {
-    return (await this.load()).delegationTasks[taskId];
+  async getDelegationTask(taskId: string, options: { runningTimeoutMs?: number; now?: string } = {}): Promise<DelegationTaskRecord | undefined> {
+    if (!options.runningTimeoutMs) return (await this.load()).delegationTasks[taskId];
+    let task: DelegationTaskRecord | undefined;
+    await this.update((data) => {
+      const current = data.delegationTasks[taskId];
+      if (!current) return;
+      const next = expireDelegationTaskIfRunningTimedOut(current, options.runningTimeoutMs!, options.now ?? toIsoNow());
+      if (next !== current) {
+        data.delegationTasks[taskId] = next;
+        data.delegationAudit = [...data.delegationAudit, ...next.audit.slice(current.audit.length)].slice(-200);
+      }
+      task = next;
+    });
+    return task;
   }
 
-  async listDelegationTasks(options: { roomConversationId?: string; sourceMachineId?: string; targetMachineId?: string; limit?: number } = {}): Promise<DelegationTaskRecord[]> {
+  async listDelegationTasks(options: { room?: DelegationTaskRoomRef; roomConversationId?: string; sourceMachineId?: string; targetMachineId?: string; limit?: number; runningTimeoutMs?: number; now?: string } = {}): Promise<DelegationTaskRecord[]> {
     const limit = Math.max(1, options.limit ?? 50);
-    return Object.values((await this.load()).delegationTasks)
+    const data = options.runningTimeoutMs ? await this.update((draft) => {
+      for (const [taskId, current] of Object.entries(draft.delegationTasks)) {
+        const next = expireDelegationTaskIfRunningTimedOut(current, options.runningTimeoutMs!, options.now ?? toIsoNow());
+        if (next === current) continue;
+        draft.delegationTasks[taskId] = next;
+        draft.delegationAudit = [...draft.delegationAudit, ...next.audit.slice(current.audit.length)].slice(-200);
+      }
+    }) : await this.load();
+    return Object.values(data.delegationTasks)
+      .filter((task) => !options.room || delegationRoomMatches(task.room, options.room))
       .filter((task) => !options.roomConversationId || task.room.conversationId === options.roomConversationId)
       .filter((task) => !options.sourceMachineId || task.sourceMachineId === options.sourceMachineId)
       .filter((task) => !options.targetMachineId || task.target.kind === "machine" && task.target.machineId === options.targetMachineId)
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || right.id.localeCompare(left.id))
       .slice(0, limit);
+  }
+
+  async rememberDelegationEvent(eventId: string, options: { maxEntries?: number } = {}): Promise<boolean> {
+    const normalized = eventId.trim();
+    if (!normalized) return false;
+    let duplicate = false;
+    const maxEntries = Math.max(1, options.maxEntries ?? 500);
+    await this.update((data) => {
+      duplicate = data.delegationHandledEvents.includes(normalized);
+      if (!duplicate) data.delegationHandledEvents = [...data.delegationHandledEvents, normalized].slice(-maxEntries);
+    });
+    return duplicate;
   }
 
   async appendDelegationAudit(event: DelegationTaskAuditEvent, options: { maxAuditEntries?: number } = {}): Promise<void> {
@@ -543,6 +578,13 @@ function trustedRelayUserStorageKey(channel: ChannelBinding["channel"], instance
 
 function channelSelectionStorageKey(channel: ChannelBinding["channel"], conversationId: string, userId: string): string {
   return `${channel}:${conversationId}:${userId}`;
+}
+
+function delegationRoomMatches(left: DelegationTaskRoomRef, right: DelegationTaskRoomRef): boolean {
+  return left.messenger === right.messenger
+    && left.instanceId === right.instanceId
+    && left.conversationId === right.conversationId
+    && left.threadId === right.threadId;
 }
 
 function activeTelegramBindingFromData(data: TunnelStoreData, sessionKey: string, expected: { chatId?: number; userId?: number; includePaused?: boolean }): PersistedBindingRecord | undefined {

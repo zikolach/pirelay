@@ -26,6 +26,7 @@ export interface RelayStoreData {
   migrations: RelayStateMigrationRecord[];
   delegationTasks: Record<string, DelegationTaskRecord>;
   delegationAudit: DelegationTaskAuditEvent[];
+  delegationHandledEvents: string[];
 }
 
 export function emptyRelayStore(): RelayStoreData {
@@ -39,6 +40,7 @@ export function emptyRelayStore(): RelayStoreData {
     migrations: [],
     delegationTasks: {},
     delegationAudit: [],
+    delegationHandledEvents: [],
   };
 }
 

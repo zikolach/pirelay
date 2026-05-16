@@ -15,6 +15,7 @@ import type {
 import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "../../core/channel-adapter.js";
 import type { DiscordRelayConfig } from "../../core/types.js";
 import type { SharedRoomAddressing } from "../../core/shared-room.js";
+import { parseDelegationInvocation } from "../../commands/delegation.js";
 
 export interface DiscordApiOperations {
   connect?(handler: (event: DiscordGatewayEvent) => Promise<void>): Promise<void>;
@@ -218,7 +219,7 @@ export function discordGatewayEventToChannelEvent(event: DiscordGatewayEvent, co
 
 export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes" | "applicationId" | "clientId" | "delegation">): ChannelInboundMessage | undefined {
   if (message.webhook_id) return undefined;
-  if (message.author.bot && !config.delegation?.enabled) return undefined;
+  if (message.author.bot && (!config.delegation?.enabled || !parseDelegationInvocation(message.content ?? "", { prefixes: ["relay"] }))) return undefined;
   const conversation = discordConversation(message.channel_id, message.guild_id);
   const sender = discordIdentity(message.author, message.guild_id);
   return {

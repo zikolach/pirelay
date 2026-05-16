@@ -29,6 +29,7 @@ export function normalizeRelayStore(value: unknown): RelayStoreData {
     migrations: Array.isArray(value.migrations) ? value.migrations as RelayStoreData["migrations"] : [],
     delegationTasks: isObject(value.delegationTasks) ? value.delegationTasks as RelayStoreData["delegationTasks"] : {},
     delegationAudit: Array.isArray(value.delegationAudit) ? value.delegationAudit as RelayStoreData["delegationAudit"] : [],
+    delegationHandledEvents: Array.isArray(value.delegationHandledEvents) ? value.delegationHandledEvents.filter((entry): entry is string => typeof entry === "string") : [],
   };
 }
 

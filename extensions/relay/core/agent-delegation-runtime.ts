@@ -40,7 +40,7 @@ export type DelegationIngressDecision =
 
 export interface DelegationTaskLookup {
   get(taskId: string): Promise<DelegationTaskRecord | undefined>;
-  list(options: { roomConversationId?: string; limit?: number }): Promise<DelegationTaskRecord[]>;
+  list(options: { room?: DelegationTaskRoomRef; roomConversationId?: string; limit?: number }): Promise<DelegationTaskRecord[]>;
 }
 
 export interface DelegationIngressInput {
@@ -94,7 +94,7 @@ export async function evaluateDelegationIngress(input: DelegationIngressInput): 
     const trust = isTrustedDelegationPeer({
       peerId: input.message.sender.userId,
       room: input.room,
-      action: input.command.kind === "claim" ? "claim" : "create",
+      action: input.command.kind === "create" ? "create" : input.command.kind === "claim" ? "claim" : "control",
       target: input.command.kind === "create" ? input.command.target : undefined,
       trustedPeers: policy.trustedPeers,
     });
@@ -124,7 +124,7 @@ export async function evaluateDelegationIngress(input: DelegationIngressInput): 
   if (!lookup) return { kind: "reject", message: "Delegation task state is unavailable." };
 
   if (input.command.kind === "history") {
-    const tasks = await lookup.list({ roomConversationId: input.room.conversationId, limit: policy.maxHistory });
+    const tasks = await lookup.list({ room: input.room, limit: policy.maxHistory });
     return { kind: "history", tasks, text: renderDelegationHistory(tasks) };
   }
 
@@ -162,10 +162,12 @@ export async function evaluateDelegationIngress(input: DelegationIngressInput): 
   }, input.now);
   if (!eligible.eligible) return { kind: "ignore", reason: "not-eligible", message: `Delegation task ${task.id} is not eligible locally: ${eligible.reason}.` };
   const route = input.eligibleRoutes?.[0];
+  const requiresHuman = eligible.requiresHuman && peerBot;
+  if (requiresHuman) return { kind: "claim", task, requiresHuman: true, prompt: buildDelegatedTaskPrompt(task) };
   const claimant = { machineId: input.localMachineId, sessionKey: route?.sessionKey, sessionLabel: route?.sessionLabel, botId: input.localBotUserId };
   const result = transitionDelegationTask(task, { kind: "claim", actor, claimant }, input.now);
   if (!result.ok) return { kind: "reject", message: result.message };
-  return { kind: "claim", task: result.task, requiresHuman: eligible.requiresHuman, prompt: buildDelegatedTaskPrompt(result.task) };
+  return { kind: "claim", task: result.task, requiresHuman: false, prompt: buildDelegatedTaskPrompt(result.task) };
 }
 
 export function delegationRoomFromMessage(message: ChannelInboundMessage | ChannelInboundAction, instanceId: string): DelegationTaskRoomRef {
@@ -176,6 +178,19 @@ export function delegationRoomFromMessage(message: ChannelInboundMessage | Chann
     threadId: typeof message.metadata?.threadId === "string" ? message.metadata.threadId : typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined,
     messageId: "messageId" in message ? message.messageId : undefined,
   };
+}
+
+export function delegationIngressEventKey(input: { message: ChannelInboundMessage; room: DelegationTaskRoomRef; command: DelegationCommand }): string {
+  const taskId = "taskId" in input.command ? input.command.taskId : undefined;
+  return [
+    input.room.messenger,
+    input.room.instanceId,
+    input.room.conversationId,
+    input.room.threadId ?? "root",
+    input.message.updateId || input.message.messageId,
+    input.command.kind,
+    taskId ?? "new",
+  ].join(":");
 }
 
 export function isSelfAuthoredDelegationEvent(sender: ChannelIdentity, localBotUserId: string | undefined): boolean {

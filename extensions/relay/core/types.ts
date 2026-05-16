@@ -207,6 +207,7 @@ export interface TunnelStoreData {
   lifecycleNotifications: Record<string, RelayLifecycleNotificationRecord>;
   delegationTasks: Record<string, DelegationTaskRecord>;
   delegationAudit: DelegationTaskAuditEvent[];
+  delegationHandledEvents: string[];
 }
 
 export interface ParsedTelegramCommand {

@@ -17,7 +17,7 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDest
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
-import { delegationCommandFromAction, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
+import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 
 const SLACK_CHANNEL = "slack" as const;
@@ -110,7 +110,8 @@ export class SlackRuntime {
       throw new Error(this.lastError);
     }
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.initializeRuntime()
+    this.startPromise = this.store.markInFlightDelegationTasksStaleAfterRestart()
+      .then(() => this.initializeRuntime())
       .then(() => this.operations!.startSocketMode!(async (envelope) => this.handleEnvelope(envelope)))
       .then(() => {
         this.started = true;
@@ -399,6 +400,7 @@ export class SlackRuntime {
     }
     const delegationCommand = parseDelegationInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseDelegationInvocation(stripLeadingSlackMentions(message.text), { prefixes: ["relay", "pirelay"] });
     if (delegationCommand && message.conversation.kind !== "private" && await this.handleDelegationMessage(message, delegationCommand)) return;
+    if (isPeerBotIdentity(message.sender)) return;
     if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) return;
     const routedMessage = await this.applySharedRoomPreRouting(message);
     if (!routedMessage) return;
@@ -489,18 +491,21 @@ export class SlackRuntime {
     if (!this.adapter || !slackConfig?.delegation?.enabled || !slackConfig.sharedRoom?.enabled || !slackConfig.allowChannelMessages) return false;
     const pairedBindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
     if (pairedBindings.length === 0) return false;
+    const room = delegationRoomFromMessage(message, this.instanceId);
+    const duplicate = await this.store.rememberDelegationEvent(delegationIngressEventKey({ message, room, command }));
     const decision = await evaluateDelegationIngress({
       command,
       message,
       policy: { ...slackConfig.delegation, localCapabilities: [...(this.config.machineCapabilities ?? []), ...(slackConfig.delegation.localCapabilities ?? [])] },
-      room: delegationRoomFromMessage(message, this.instanceId),
+      room,
       localMachineId: this.config.machineId ?? "local",
       localMachineLabel: this.config.machineDisplayName,
       localBotUserId: this.localBotUserId(),
       isAuthorizedHuman: isSlackIdentityAllowed(message.sender, slackConfig),
+      eventAlreadyHandled: duplicate,
       lookup: {
-        get: (taskId) => this.store.getDelegationTask(taskId),
-        list: (options) => this.store.listDelegationTasks(options),
+        get: (taskId) => this.store.getDelegationTask(taskId, { runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs }),
+        list: (options) => this.store.listDelegationTasks({ ...options, runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs }),
       },
       eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : [],
     });
@@ -539,6 +544,13 @@ export class SlackRuntime {
       return;
     }
     const route = task.claimedBy?.sessionKey ? this.routes.get(task.claimedBy.sessionKey) : this.routes.size === 1 ? [...this.routes.values()][0] : undefined;
+    if (route && this.activeDelegationTaskBySessionKey.has(route.sessionKey)) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "The target session already has active delegated work." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
     if (!route) {
       const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
       const next = blocked.ok ? blocked.task : task;

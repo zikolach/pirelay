@@ -105,13 +105,17 @@ describe("TunnelStateStore", () => {
     await store.upsertDelegationTask(task, { maxAuditEntries: 1 });
     expect(await store.getDelegationTask("task-1")).toMatchObject({ id: "task-1", goal: "Run tests with [redacted]" });
     expect(await store.listDelegationTasks({ roomConversationId: "C1" })).toHaveLength(1);
+    expect(await store.listDelegationTasks({ room: { messenger: "discord", instanceId: "default", conversationId: "C1" } })).toHaveLength(1);
+    expect(await store.listDelegationTasks({ room: { messenger: "slack", instanceId: "default", conversationId: "C1" } })).toHaveLength(0);
+    expect(await store.rememberDelegationEvent("discord:default:C1:m1:create:new")).toBe(false);
+    expect(await store.rememberDelegationEvent("discord:default:C1:m1:create:new")).toBe(true);
     expect(await store.listDelegationAudit()).toHaveLength(1);
     await store.upsertDelegationTask(task, { maxAuditEntries: 10 });
     expect(await store.listDelegationAudit()).toHaveLength(1);
     expect(JSON.stringify(await store.load())).not.toContain("secret-value");
   });
 
-  it("marks in-flight delegation tasks stale after restart", async () => {
+  it("marks in-flight delegation tasks stale after restart and expires running timeouts", async () => {
     const store = await createStore();
     const task = createDelegationTask({
       id: "task-running",
@@ -128,6 +132,18 @@ describe("TunnelStateStore", () => {
     expect(changed).toHaveLength(1);
     expect(await store.getDelegationTask("task-running")).toMatchObject({ status: "blocked" });
     expect(await store.listDelegationAudit({ taskId: "task-running" })).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "blocked" })]));
+
+    const timeoutTask = createDelegationTask({
+      id: "task-timeout",
+      sourceMachineId: "source",
+      target: { kind: "machine", machineId: "target" },
+      goal: "Run tests",
+      room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
+      expiryMs: 600000,
+      createdAt: "2026-05-15T00:00:00.000Z",
+    });
+    await store.upsertDelegationTask({ ...timeoutTask, status: "running", startedAt: "2026-05-15T00:00:00.000Z" });
+    expect(await store.getDelegationTask("task-timeout", { runningTimeoutMs: 60_000, now: "2026-05-15T00:02:00.000Z" })).toMatchObject({ status: "expired" });
   });
 
   it("serializes concurrent state updates so messenger bindings are not clobbered", async () => {

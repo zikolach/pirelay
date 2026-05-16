@@ -144,7 +144,7 @@ export interface TrustedDelegationPeer {
 export interface DelegationPeerCheckInput {
   peerId: string;
   room: DelegationTaskRoomRef;
-  action: "create" | "claim";
+  action: "create" | "claim" | "control";
   target?: DelegationTaskTarget;
   trustedPeers?: readonly TrustedDelegationPeer[];
 }
@@ -274,6 +274,16 @@ export function markDelegationTaskStaleAfterRestart(task: DelegationTaskRecord, 
   return result.ok ? result.task : task;
 }
 
+export function expireDelegationTaskIfRunningTimedOut(task: DelegationTaskRecord, runningTimeoutMs: number, now: Date | string | number = Date.now()): DelegationTaskRecord {
+  if (isDelegationTaskTerminal(task)) return task;
+  if (task.status !== "claimed" && task.status !== "running") return task;
+  const nowMs = typeof now === "number" ? now : Date.parse(now instanceof Date ? now.toISOString() : now);
+  const startedMs = Date.parse(task.startedAt ?? task.claimedBy?.claimedAt ?? task.updatedAt);
+  if (!Number.isFinite(startedMs) || nowMs - startedMs < Math.max(1, runningTimeoutMs)) return task;
+  const result = transitionDelegationTask(task, { kind: "expire", reason: "Delegated work exceeded the configured running timeout." }, now);
+  return result.ok ? result.task : task;
+}
+
 export function nextDelegationDepth(parentDepth: number | undefined): number {
   return Math.max(0, Math.floor(parentDepth ?? -1) + 1);
 }
@@ -346,6 +356,7 @@ export function isTrustedDelegationPeer(input: DelegationPeerCheckInput): Delega
   if (peer.revoked) return { trusted: false, reason: "revoked" };
   if (input.action === "create" && peer.allowCreate !== true) return { trusted: false, reason: "action-denied" };
   if (input.action === "claim" && peer.allowClaim !== true) return { trusted: false, reason: "action-denied" };
+  if (input.action === "control") return { trusted: false, reason: "action-denied" };
   if (peer.messenger && peer.messenger !== input.room.messenger) return { trusted: false, reason: "wrong-room" };
   if (peer.instanceId && peer.instanceId !== input.room.instanceId) return { trusted: false, reason: "wrong-room" };
   if (peer.conversationIds && !peer.conversationIds.includes(input.room.conversationId)) return { trusted: false, reason: "wrong-room" };

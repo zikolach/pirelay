@@ -258,8 +258,7 @@ describe("SlackRuntime foundations", () => {
     await operations.handler!(event);
     await operations.handler!({ ...event, envelopeId: "env-2", eventId: "ev-2", event: { ...event.event!, user: "U_BOT", bot_id: "B1", ts: "2" } });
 
-    expect(operations.posts).toHaveLength(1);
-    expect(operations.posts[0]).toMatchObject({ channel: "C1", text: expect.stringContaining("not paired") });
+    expect(operations.posts).toHaveLength(0);
   });
 
   it("prevents overlapping Slack history fallback polls", async () => {

@@ -568,24 +568,27 @@ describe("DiscordRuntime", () => {
     const { route: session, sendUserMessage } = route();
     await runtime.registerRoute(session);
     await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "channel" } });
 
     await ops.handler?.(discordMessage("relay delegate laptop run docs tests", { channelId: "room1", guildId: "g1" }));
     expect(ops.messages.some((message) => message.content.includes("Delegation task-"))).toBe(true);
     expect(ops.messages.at(-1)?.components?.[0]?.[0]).toMatchObject({ label: "Claim" });
 
-    const store = new TunnelStateStore(cfg.stateDir);
-    await store.upsertChannelBinding({ channel: "discord", conversationId: "dm-leak", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
     const [task] = await store.listDelegationTasks({ roomConversationId: "room1" });
     expect(task).toMatchObject({ status: "claimable", target: { kind: "machine", machineId: "laptop" } });
 
     await ops.handler?.(discordMessage(`relay task claim ${task!.id}`, { channelId: "room1", guildId: "g1" }));
     expect(sendUserMessage).toHaveBeenCalledWith(expect.stringContaining(`delegated task ${task!.id}`));
     expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "running", claimedBy: { sessionKey: session.sessionKey } });
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "dm-leak", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
 
     session.notification.lastAssistantText = "Docs tests passed.";
     await runtime.notifyTurnCompleted(session, "completed");
     expect(ops.messages.at(-1)?.content).toContain("Status: completed");
     expect(ops.messages.some((message) => message.channelId === "dm-leak" && message.content.includes("Docs tests passed"))).toBe(false);
+
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "channel" } });
 
     await ops.handler?.(discordMessage("relay delegate laptop should be ignored", { channelId: "room1", guildId: "g1", userId: "unknown-bot", bot: true }));
     expect((await store.listDelegationTasks({ roomConversationId: "room1" })).length).toBe(1);

@@ -83,7 +83,7 @@ describe("agent delegation runtime helpers", () => {
     expect(decision).toMatchObject({ kind: "render-task", task: { status: "claimable", goal: "run tests" } });
   });
 
-  it("keeps peer bot trust separate and rejects untrusted bot-authored tasks", async () => {
+  it("keeps peer bot trust action-scoped and rejects untrusted bot-authored tasks", async () => {
     expect(isPeerBotIdentity(botMessage.sender)).toBe(true);
     expect(await evaluateDelegationIngress({
       command: { kind: "create", target: { kind: "machine", machineId: "target" }, goal: "run tests", rawGoal: "run tests", awaitApproval: false },
@@ -103,6 +103,17 @@ describe("agent delegation runtime helpers", () => {
       isAuthorizedHuman: false,
     });
     expect(trusted).toMatchObject({ kind: "render-task", task: { status: "awaiting-approval", sourceMachineId: "bot-a" } });
+
+    const task = createDelegationTask({ id: "task-peer-control", sourceMachineId: "bot-a", target: { kind: "machine", machineId: "target" }, goal: "run tests", room, expiryMs: 60000, status: "claimable" });
+    expect(await evaluateDelegationIngress({
+      command: { kind: "cancel", taskId: task.id },
+      message: botMessage,
+      policy: { enabled: true, trustedPeers: [{ peerId: "bot-a", allowCreate: true, targetMachineIds: ["target"] }] },
+      room,
+      localMachineId: "target",
+      isAuthorizedHuman: false,
+      lookup: { get: async () => task, list: async () => [task] },
+    })).toMatchObject({ kind: "ignore", reason: "untrusted-peer" });
   });
 
   it("approves awaiting-approval tasks without leaking across rooms", async () => {
@@ -163,6 +174,21 @@ describe("agent delegation runtime helpers", () => {
       now: "2026-05-15T00:00:01.000Z",
     });
     expect(noRouteDecision).toMatchObject({ kind: "ignore", reason: "not-eligible", message: expect.stringContaining("ambiguous-session") });
+
+    const peerDecision = await evaluateDelegationIngress({
+      command: { kind: "claim", taskId: "task-1" },
+      message: botMessage,
+      policy: { enabled: true, autonomy: "propose-only", trustedPeers: [{ peerId: "bot-a", allowClaim: true, targetMachineIds: ["target"] }] },
+      room,
+      localMachineId: "target",
+      isAuthorizedHuman: false,
+      eligibleRoutes: [route()],
+      lookup: { get: async () => task, list: async () => [task] },
+      now: "2026-05-15T00:00:01.000Z",
+    });
+    expect(peerDecision).toMatchObject({ kind: "claim", requiresHuman: true, task: { status: "claimable" } });
+    if (peerDecision.kind !== "claim") throw new Error("not claim");
+    expect(peerDecision.task).not.toHaveProperty("claimedBy");
   });
 
   it("renders status/history and parses platform action ids", async () => {

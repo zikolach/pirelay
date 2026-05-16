@@ -19,6 +19,7 @@ function emptyState(): TunnelStoreData {
     lifecycleNotifications: {},
     delegationTasks: {},
     delegationAudit: [],
+    delegationHandledEvents: [],
   };
 }
 

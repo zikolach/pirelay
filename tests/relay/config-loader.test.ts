@@ -128,6 +128,16 @@ describe("relay config loader", () => {
     expect(telegram?.delegation).toMatchObject({ enabled: false, autonomy: "off", trustedPeers: [] });
   });
 
+  it("does not enable delegation from autonomy without explicit enabled flag", async () => {
+    const configPath = await writeConfig({
+      messengers: { discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", delegation: { autonomy: "auto-claim-targeted" } } } },
+    });
+
+    const loaded = await loadRelayConfig({ configPath, env: { DISCORD_TOKEN: "discord-token" }, supportedMessengers: ["discord"] });
+
+    expect(loaded.messengers[0]?.delegation).toMatchObject({ enabled: false, autonomy: "auto-claim-targeted" });
+  });
+
   it("rejects invalid delegation settings", async () => {
     const configPath = await writeConfig({
       messengers: { discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", delegation: { enabled: true, autonomy: "free-for-all" } } } },

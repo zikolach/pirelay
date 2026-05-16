@@ -18,7 +18,7 @@ import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
-import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
+import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 
 const DISCORD_CHANNEL = "discord" as const;
@@ -83,7 +83,8 @@ export class DiscordRuntime {
   async start(): Promise<void> {
     if (!this.adapter || this.started) return;
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.adapter.startPolling(async (event) => this.handleEvent(event))
+    this.startPromise = this.store.markInFlightDelegationTasksStaleAfterRestart()
+      .then(() => this.adapter!.startPolling(async (event) => this.handleEvent(event)))
       .then(() => {
         this.started = true;
         this.lastError = undefined;
@@ -397,8 +398,11 @@ export class DiscordRuntime {
 
   private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
     const discordConfig = this.config.discord;
-    if (!this.adapter || !discordConfig?.delegation?.enabled) return false;
+    if (!this.adapter || !discordConfig?.delegation?.enabled || !discordConfig.sharedRoom?.enabled || !discordConfig.allowGuildChannels || message.conversation.kind === "private") return false;
+    const pairedBindings = await this.store.getChannelBindingsForConversation(DISCORD_CHANNEL, message.conversation.id, this.instanceId);
+    if (pairedBindings.length === 0) return false;
     const room = delegationRoomFromMessage(message, this.instanceId);
+    const duplicate = await this.store.rememberDelegationEvent(delegationIngressEventKey({ message, room, command }));
     const decision = await evaluateDelegationIngress({
       command,
       message,
@@ -408,9 +412,10 @@ export class DiscordRuntime {
       localMachineLabel: this.config.machineDisplayName,
       localBotUserId: discordConfig.applicationId ?? discordConfig.clientId,
       isAuthorizedHuman: isDiscordIdentityAllowed(message.sender, discordConfig),
+      eventAlreadyHandled: duplicate,
       lookup: {
-        get: (taskId) => this.store.getDelegationTask(taskId),
-        list: (options) => this.store.listDelegationTasks(options),
+        get: (taskId) => this.store.getDelegationTask(taskId, { runningTimeoutMs: discordConfig.delegation?.runningTimeoutMs }),
+        list: (options) => this.store.listDelegationTasks({ ...options, runningTimeoutMs: discordConfig.delegation?.runningTimeoutMs }),
       },
       eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : [],
     });
@@ -451,6 +456,13 @@ export class DiscordRuntime {
       return;
     }
     const route = task.claimedBy?.sessionKey ? this.routes.get(task.claimedBy.sessionKey) : this.routes.size === 1 ? [...this.routes.values()][0] : undefined;
+    if (route && this.activeDelegationTaskBySessionKey.has(route.sessionKey)) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "The target session already has active delegated work." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
     if (!route) {
       const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
       await this.store.upsertDelegationTask(blocked.ok ? blocked.task : task);

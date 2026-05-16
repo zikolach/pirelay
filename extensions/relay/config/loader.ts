@@ -129,7 +129,7 @@ function resolveDelegationConfig(config: RelayAgentDelegationConfig | undefined,
   if (maxVisibleSummaryChars < 80) throw new RelayConfigError(`${messengerLabel} delegation.maxVisibleSummaryChars must be at least 80.`);
   if (maxHistory < 1) throw new RelayConfigError(`${messengerLabel} delegation.maxHistory must be positive.`);
   return {
-    enabled: config?.enabled ?? autonomy !== "off",
+    enabled: config?.enabled === true,
     autonomy,
     trustedPeers: config?.trustedPeers ?? [],
     localCapabilities: [...new Set([...(relay.capabilities ?? []), ...(config?.localCapabilities ?? [])].map((capability) => capability.trim()).filter(Boolean))],

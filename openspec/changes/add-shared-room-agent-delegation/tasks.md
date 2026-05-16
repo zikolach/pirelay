@@ -59,14 +59,14 @@
 
 ## 9. Delegation Control-Plane Hardening
 
-- [ ] 9.1 Centralize delegation admission checks so Telegram, Discord, and Slack require explicit shared-room opt-in, authorization, and pairing/binding before task handling.
-- [ ] 9.2 Make bot-authored non-delegation messages inert before normal prompt routing in all adapters/runtimes.
-- [ ] 9.3 Scope task lookup, listing, history, mutation, and result delivery by full room ref: messenger, instance id, conversation id, and thread/reply id when available.
-- [ ] 9.4 Enforce action-scoped peer trust so create-only peers cannot claim, approve, cancel, decline, or otherwise control tasks.
-- [ ] 9.5 Prevent claim-before-approval and overlapping active delegated tasks for the same session unless queued prompt task ids are implemented.
-- [ ] 9.6 Persist delegation event/action idempotency keys and apply them to create and mutation paths across messenger redelivery/retry.
-- [ ] 9.7 Mark unsafe in-flight delegation tasks stale on runtime/broker startup and enforce running timeouts.
-- [ ] 9.8 Add regression tests for the hardening invariants above across core helpers, state store, and Telegram/Discord/Slack runtimes.
+- [x] 9.1 Centralize delegation admission checks so Telegram, Discord, and Slack require explicit shared-room opt-in, authorization, and pairing/binding before task handling.
+- [x] 9.2 Make bot-authored non-delegation messages inert before normal prompt routing in all adapters/runtimes.
+- [x] 9.3 Scope task lookup, listing, history, mutation, and result delivery by full room ref: messenger, instance id, conversation id, and thread/reply id when available.
+- [x] 9.4 Enforce action-scoped peer trust so create-only peers cannot claim, approve, cancel, decline, or otherwise control tasks.
+- [x] 9.5 Prevent claim-before-approval and overlapping active delegated tasks for the same session unless queued prompt task ids are implemented.
+- [x] 9.6 Persist delegation event/action idempotency keys and apply them to create and mutation paths across messenger redelivery/retry.
+- [x] 9.7 Mark unsafe in-flight delegation tasks stale on runtime/broker startup and enforce running timeouts.
+- [x] 9.8 Add regression tests for the hardening invariants above across core helpers, state store, and Telegram/Discord/Slack runtimes.
 
 ## 10. Validation
 
