@@ -237,6 +237,12 @@ export class DiscordRuntime {
       return;
     }
     if (isPeerBotIdentity(message.sender)) return;
+    if (this.isSharedRoomMessage(message) && !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
+      if (this.shouldRejectUnauthorizedSharedRoomEvent(message, command)) {
+        await this.sendText(message, "This Discord identity is not authorized to control this PiRelay machine bot.");
+      }
+      return;
+    }
     const sharedRoomDecision = this.isSharedRoomMessage(message) ? await this.applySharedRoomPreRouting(message, command) : { kind: "continue" as const };
     if (sharedRoomDecision.kind === "silent") return;
     const routedMessage = sharedRoomDecision.kind === "continue" ? sharedRoomDecision.message ?? message : message;
@@ -380,6 +386,10 @@ export class DiscordRuntime {
     return active?.machineId && active.machineId !== this.sharedRoomMachineIdentity().machineId ? undefined : active?.sessionKey;
   }
 
+  private isDiscordDelegationSourceScopedToLocal(message: ChannelInboundMessage): boolean {
+    return this.sharedRoomAddressing(message)?.kind === "local";
+  }
+
   private async handleDelegationAction(action: ChannelInboundAction): Promise<boolean> {
     if (!this.adapter || action.conversation.kind === "private") return false;
     const command = delegationCommandFromAction(action);
@@ -403,6 +413,7 @@ export class DiscordRuntime {
   private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
     const discordConfig = this.config.discord;
     if (!this.adapter || !discordConfig?.delegation?.enabled || !discordConfig.sharedRoom?.enabled || !discordConfig.allowGuildChannels || message.conversation.kind === "private") return false;
+    const createSourceScoped = command.kind === "create" && command.target.kind === "capability" ? this.isDiscordDelegationSourceScopedToLocal(message) : undefined;
     if (command.kind === "create") {
       const target = resolveSharedRoomMachineTarget({ selector: command.target.kind === "machine" ? command.target.machineId : "", localMachine: this.sharedRoomMachineIdentity() });
       if (command.target.kind === "machine" && target.kind !== "local") return false;
@@ -421,6 +432,8 @@ export class DiscordRuntime {
       localBotUserId: discordConfig.applicationId ?? discordConfig.clientId,
       isAuthorizedHuman: isDiscordIdentityAllowed(message.sender, discordConfig),
       eventAlreadyHandled: duplicate,
+      requireCapabilityCreateSourceScope: true,
+      createSourceScoped,
       lookup: {
         get: (taskId) => this.store.getDelegationTask(taskId, { runningTimeoutMs: discordConfig.delegation?.runningTimeoutMs }),
         list: (options) => this.store.listDelegationTasks({ ...options, runningTimeoutMs: discordConfig.delegation?.runningTimeoutMs }),
@@ -508,7 +521,13 @@ export class DiscordRuntime {
       await this.sendDelegationTaskCard(message, next);
       return;
     }
-    if (outcome.kind === "failed") throw outcome.error;
+    if (outcome.kind === "failed") {
+      const blocked = transitionDelegationTask(claimedTask, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : claimedTask;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
     if (outcome.kind !== "success") return;
     const started = transitionDelegationTask(claimedTask, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
     const next = started.ok ? started.task : claimedTask;

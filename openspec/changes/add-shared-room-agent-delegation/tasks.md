@@ -70,6 +70,9 @@
 - [x] 9.9 Add compare-and-set style task persistence so stale lifecycle transitions cannot overwrite newer task state.
 - [x] 9.10 Normalize expired pending and running tasks on task lookup/listing before rendering or accepting actions.
 - [x] 9.11 Add regression coverage for Telegram human delegation pairing boundaries, Discord bot-output inertness, executable text fallbacks, persistent approval options, and stale mutation conflicts.
+- [x] 9.12 Block or fail tasks when prompt handoff fails after claim persistence instead of leaving them claimed.
+- [x] 9.13 Require explicit local source-broker addressing for capability-target task creation in shared rooms.
+- [x] 9.14 Prevent unauthorized humans or peer-bot non-delegation text from mutating shared-room active-selection state before authorization/inertness checks.
 
 ## 10. Validation
 

@@ -55,6 +55,8 @@ export interface DelegationIngressInput {
   lookup?: DelegationTaskLookup;
   eventAlreadyHandled?: boolean;
   eligibleRoutes?: readonly SessionRoute[];
+  requireCapabilityCreateSourceScope?: boolean;
+  createSourceScoped?: boolean;
   now?: string;
 }
 
@@ -104,6 +106,9 @@ export async function evaluateDelegationIngress(input: DelegationIngressInput): 
   }
 
   if (input.command.kind === "create") {
+    if (input.command.target.kind === "capability" && input.requireCapabilityCreateSourceScope && input.createSourceScoped !== true) {
+      return { kind: "ignore", reason: "not-eligible", message: "Capability delegation creation must be scoped to the local source broker." };
+    }
     const status = input.command.awaitApproval || policy.requireHumanApproval && peerBot ? "awaiting-approval" : "claimable";
     const task = createDelegationTask({
       sourceMachineId: peerBot ? input.message.sender.userId : input.localMachineId,

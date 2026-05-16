@@ -1140,7 +1140,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.sendTelegramDelegationTaskCard(message, next);
       return;
     }
-    if (outcome.kind === "failed") throw outcome.error;
+    if (outcome.kind === "failed") {
+      const blocked = transitionDelegationTask(claimedTask, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : claimedTask;
+      await this.store.upsertDelegationTask(next);
+      await this.sendTelegramDelegationTaskCard(message, next);
+      return;
+    }
     if (outcome.kind !== "success") return;
     const started = transitionDelegationTask(claimedTask, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
     const next = started.ok ? started.task : claimedTask;

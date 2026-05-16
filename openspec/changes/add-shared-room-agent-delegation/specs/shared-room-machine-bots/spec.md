@@ -17,6 +17,11 @@ Shared-room machine bots SHALL treat bot-authored delegation events as actionabl
 - **THEN** each broker may consider the task only if local policy declares that capability and the peer/room is trusted
 - **AND** claim behavior remains single-target and conservative according to delegation policy
 
+#### Scenario: Capability task creation requires explicit source scoping
+- **WHEN** a human or peer publishes a capability-target delegation creation command in a room observed by multiple machine bots
+- **THEN** PiRelay creates the visible task only when the command is explicitly scoped to the local source broker, such as by addressing the local bot identity
+- **AND** unaddressed capability creation commands do not cause each observing bot to render duplicate task cards
+
 #### Scenario: Free-form bot-authored text is ignored
 - **WHEN** a machine bot observes bot-authored text that is not a validated delegation task, validated task action, or existing supported bot-to-bot command
 - **THEN** the broker treats the message as inert shared-room output and does not inject it as a prompt

@@ -656,6 +656,36 @@ describe("DiscordRuntime", () => {
     expect(await store.listDelegationTasks({ roomConversationId: "dm1" })).toHaveLength(0);
   });
 
+  it("does not let unauthorized Discord users mutate shared-room selection during pre-routing", async () => {
+    const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], allowUserIds: ["u1"], sharedRoom: { enabled: true } });
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    await runtime.start();
+
+    await ops.handler?.(discordMessage("relay use remote Docs", { userId: "u2", channelId: "room1", guildId: "g1" }));
+
+    const store = new TunnelStateStore(cfg.stateDir);
+    await expect(store.getActiveChannelSelection("discord", "room1", "u2")).resolves.toBeUndefined();
+  });
+
+  it("requires Discord capability delegation creation to be source-scoped", async () => {
+    const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true }, delegation: { enabled: true, autonomy: "auto-claim-safe-capability", requireHumanApproval: false, localCapabilities: ["linux-tests"] } });
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: testRoute } = route();
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    const now = new Date().toISOString();
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: now, lastSeenAt: now });
+
+    await ops.handler?.(discordMessage("relay delegate #linux-tests run tests", { channelId: "room1", guildId: "g1" }));
+    expect(await store.listDelegationTasks({ roomConversationId: "room1" })).toHaveLength(0);
+
+    await ops.handler?.(discordMessage("<@123> relay delegate #linux-tests run tests", { channelId: "room1", guildId: "g1", mentions: [{ id: "123", bot: true }] }));
+    expect(await store.listDelegationTasks({ roomConversationId: "room1" })).toEqual([expect.objectContaining({ target: { kind: "capability", capability: "linux-tests" } })]);
+  });
+
   it("does not treat arbitrary Discord user mentions as remote bot targeting", async () => {
     const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
     cfg.machineId = "laptop";

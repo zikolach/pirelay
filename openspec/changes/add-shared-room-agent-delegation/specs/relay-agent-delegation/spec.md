@@ -108,6 +108,11 @@ PiRelay SHALL inject claimed delegated work into the target local Pi session as 
 - **THEN** PiRelay does not report successful claim or delivery
 - **AND** it marks the task blocked, failed, or still claimable according to policy with safe guidance
 
+#### Scenario: Prompt handoff fails after claim persistence
+- **WHEN** PiRelay has persisted a delegation claim but prompt handoff fails before the target session accepts or commits the prompt
+- **THEN** PiRelay transitions the task to blocked or failed with a safe reason and renders a task update
+- **AND** the task is not left indefinitely claimed without active delegated work
+
 #### Scenario: Source receives result visibility
 - **WHEN** a delegated task completes or fails
 - **THEN** PiRelay reports the result to the originating shared room or thread
