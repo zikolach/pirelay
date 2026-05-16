@@ -16,6 +16,7 @@ Messenger relay sessions SHALL support prompt delivery that originates from a cl
 #### Scenario: Delegated output is sent to task room
 - **WHEN** a delegated task completes, fails, is aborted, or is blocked for approval
 - **THEN** PiRelay sends a bounded task update to the originating shared room or thread through the target machine bot identity
+- **AND** it does not also send delegated completion, progress, media, or guided-action output to unrelated paired private chats or active selections for the same route
 - **AND** non-target machine bots do not send completion, progress, media, or guided-action output for that task
 
 ### Requirement: Delegation task controls
@@ -29,6 +30,10 @@ Messenger relay sessions SHALL expose task controls through platform-appropriate
 #### Scenario: Unauthorized user invokes task action
 - **WHEN** an unauthorized user invokes claim, approve, decline, cancel, or status for a delegation task
 - **THEN** PiRelay rejects the action before prompt injection, media download, route mutation, approval resolution, or task-state mutation
+
+#### Scenario: Delegation command arrives outside paired room boundary
+- **WHEN** a user or peer bot sends a delegation command in a group/channel that is not enabled, paired, or selected as a shared-room control surface for that messenger instance
+- **THEN** PiRelay rejects or ignores the command before task creation, task mutation, prompt injection, callback handling, or media download
 
 #### Scenario: Task status is requested
 - **WHEN** an authorized user requests status for a delegation task visible in the current room or thread

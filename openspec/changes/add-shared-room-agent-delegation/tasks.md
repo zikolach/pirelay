@@ -57,10 +57,21 @@
 - [x] 8.3 Update README, docs/adapters.md, docs/config.md, docs/testing.md, and shared-room parity docs with delegation setup and smoke checks.
 - [x] 8.4 Add optional live/manual smoke checklist for two or more machine bots delegating in Discord/Slack/Telegram shared rooms.
 
-## 9. Validation
+## 9. Delegation Control-Plane Hardening
 
-- [x] 9.1 Run `npm run typecheck`.
-- [x] 9.2 Run `npm test`.
-- [x] 9.3 Run `npm run openspec:validate`.
-- [x] 9.4 Run `openspec validate add-shared-room-agent-delegation --strict`.
-- [x] 9.5 Review changed files for unrelated edits, leaked secrets, hidden prompt exposure, and accidental implementation outside this change.
+- [ ] 9.1 Centralize delegation admission checks so Telegram, Discord, and Slack require explicit shared-room opt-in, authorization, and pairing/binding before task handling.
+- [ ] 9.2 Make bot-authored non-delegation messages inert before normal prompt routing in all adapters/runtimes.
+- [ ] 9.3 Scope task lookup, listing, history, mutation, and result delivery by full room ref: messenger, instance id, conversation id, and thread/reply id when available.
+- [ ] 9.4 Enforce action-scoped peer trust so create-only peers cannot claim, approve, cancel, decline, or otherwise control tasks.
+- [ ] 9.5 Prevent claim-before-approval and overlapping active delegated tasks for the same session unless queued prompt task ids are implemented.
+- [ ] 9.6 Persist delegation event/action idempotency keys and apply them to create and mutation paths across messenger redelivery/retry.
+- [ ] 9.7 Mark unsafe in-flight delegation tasks stale on runtime/broker startup and enforce running timeouts.
+- [ ] 9.8 Add regression tests for the hardening invariants above across core helpers, state store, and Telegram/Discord/Slack runtimes.
+
+## 10. Validation
+
+- [x] 10.1 Run `npm run typecheck`.
+- [x] 10.2 Run `npm test`.
+- [x] 10.3 Run `npm run openspec:validate`.
+- [x] 10.4 Run `openspec validate add-shared-room-agent-delegation --strict`.
+- [x] 10.5 Review changed files for unrelated edits, leaked secrets, hidden prompt exposure, and accidental implementation outside this change.

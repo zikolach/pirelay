@@ -20,8 +20,9 @@ The system SHALL provide explicit configuration for shared-room agent delegation
 
 #### Scenario: Autonomy level is configured
 - **WHEN** configuration sets delegation autonomy to `off`, `propose-only`, `auto-claim-targeted`, or `auto-claim-safe-capability`
-- **THEN** PiRelay applies that level as an upper bound on bot-authored task behavior for the configured messenger instance or room
+- **THEN** PiRelay applies that level as an upper bound on bot-authored task behavior for the configured messenger instance or room only when delegation is also explicitly enabled
 - **AND** unknown autonomy values are rejected by config validation or reported by doctor diagnostics
+- **AND** setting a non-`off` autonomy value without `enabled: true` does not by itself enable delegation
 
 #### Scenario: Delegation bounds are configured
 - **WHEN** configuration enables delegation

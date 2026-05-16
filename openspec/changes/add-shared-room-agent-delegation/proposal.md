@@ -28,5 +28,5 @@ PiRelay shared rooms can now host multiple machine bots safely, but they are sti
 
 - Affected code: shared-room routing helpers, messenger runtimes, broker route registry/runtime bridge, state store, command surfaces, approval-gate integration, setup/doctor diagnostics, docs, and tests.
 - Affected user workflows: multi-machine Discord/Slack/Telegram rooms where agents delegate work to each other under human supervision.
-- Security impact: introduces new bot-authored ingress paths, so peer identity, explicit structure, authorization, expiry, loop prevention, revocation, approval checks, and audit must be first-class from the start.
+- Security impact: introduces new bot-authored ingress paths, so peer identity, explicit structure, authorization, shared-room pairing, full room/thread scoping, expiry, loop prevention, redelivery idempotency, revocation, approval checks, and audit must be first-class from the start. Delegation is a guarded control-plane path, not general bot chat: bot-authored ordinary messages remain inert, and only explicit scoped delegation commands or task-card actions may create, mutate, claim, or execute tasks.
 - No breaking changes to existing human-directed commands, private chat pairing, shared-room active selection, or messenger file delivery.

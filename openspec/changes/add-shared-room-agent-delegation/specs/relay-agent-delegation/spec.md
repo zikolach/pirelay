@@ -4,8 +4,8 @@
 PiRelay SHALL represent agent-directed shared-room work as visible delegation task cards that are human-readable, bounded, and machine-parseable.
 
 #### Scenario: Agent creates delegation task
-- **WHEN** a trusted agent or authorized human creates a delegation task in a shared messenger room
-- **THEN** PiRelay creates a task with a short user-visible id, source machine/session label, target machine or capability, goal summary, status, expiry, and room/thread reference
+- **WHEN** a trusted agent or authorized human creates a delegation task in an authorized shared messenger room
+- **THEN** PiRelay creates a task with a short user-visible id, source machine/session label, target machine or capability, goal summary, status, expiry, and full room/thread reference containing messenger, instance id, conversation id, and thread/reply id when available
 - **AND** it renders a task card in the originating room using platform-appropriate text, buttons, or thread affordances
 
 #### Scenario: Task card excludes sensitive data
@@ -25,9 +25,10 @@ PiRelay SHALL manage each delegation task through a bounded lifecycle with singl
 - **THEN** PiRelay marks the task as proposed or claimable and exposes safe claim, decline, cancel, and status actions where the platform supports them
 
 #### Scenario: Target claims task
-- **WHEN** a trusted target machine bot or authorized human claims an unexpired claimable task for an eligible local session
-- **THEN** PiRelay transitions the task to claimed/running for that claimant
+- **WHEN** a trusted target machine bot or authorized human claims an unexpired claimable task for an eligible local session and policy permits execution now
+- **THEN** PiRelay transitions the task to claimed/running for that claimant only after the target prompt handoff is accepted or safely queued with an unambiguous task association
 - **AND** prevents later duplicate claims from being accepted for the same task unless the task has been explicitly released or failed back to claimable
+- **AND** rejects or blocks the claim when the target session already has active delegated work and queued turns cannot preserve a task id per turn
 
 #### Scenario: Task completes
 - **WHEN** the target session completes delegated work with a final result
@@ -48,6 +49,7 @@ PiRelay SHALL authorize delegated task creation and claiming using peer-bot trus
 #### Scenario: Trusted peer creates task
 - **WHEN** a bot-authored delegation request arrives from a configured trusted peer identity in an authorized shared room
 - **THEN** PiRelay may create a task according to that peer's configured creation scope, allowed rooms, target machines, capabilities, and autonomy policy
+- **AND** that creation trust does not authorize claim, approve, cancel, decline, or other task-control actions unless those actions are separately configured
 
 #### Scenario: Untrusted peer creates task
 - **WHEN** a bot-authored delegation request arrives from an unknown, untrusted, revoked, or disallowed bot identity
@@ -62,6 +64,10 @@ PiRelay SHALL authorize delegated task creation and claiming using peer-bot trus
 - **WHEN** a bot identity appears in human allow-list configuration but is not configured as a trusted delegation peer
 - **THEN** PiRelay SHALL NOT accept bot-authored delegation creation or claiming from that identity solely because it is allow-listed as a human controller
 
+#### Scenario: Peer bot attempts human-only control
+- **WHEN** a peer bot invokes approve, cancel, decline, or another task-control action without explicit peer control permission
+- **THEN** PiRelay rejects or ignores the action before task-state mutation, prompt injection, callback handling, media download, or approval resolution
+
 ### Requirement: Human supervision and autonomy levels
 PiRelay SHALL gate autonomous delegation behavior through explicit local policy and human supervision options.
 
@@ -73,6 +79,7 @@ PiRelay SHALL gate autonomous delegation behavior through explicit local policy 
 #### Scenario: Propose-only mode is enabled
 - **WHEN** a trusted peer creates a delegation task under propose-only policy
 - **THEN** PiRelay renders the task card for human review but does not inject the task into any target session until an authorized human approves or claims it
+- **AND** claim attempts that still require human supervision do not move the task to claimed/running or remove it from circulation
 
 #### Scenario: Targeted auto-claim is enabled
 - **WHEN** a trusted peer creates an unexpired task explicitly targeting the local machine and local policy allows targeted auto-claiming for that peer/capability
@@ -138,7 +145,7 @@ PiRelay SHALL prevent delegation loops, self-triggering, and unbounded delegatio
 
 #### Scenario: Duplicate delivery is observed
 - **WHEN** Slack retries an event, Discord redelivers an interaction, Telegram update polling sees duplicate updates, or history fallback observes an already-handled task event
-- **THEN** PiRelay handles task creation, claim, cancellation, approval, and result reporting at most once for the task event id or task id/action pair
+- **THEN** PiRelay handles task creation, claim, cancellation, approval, and result reporting at most once for the persisted task event id or task id/action pair
 
 ### Requirement: Delegation audit and history
 PiRelay SHALL record bounded non-secret audit events for delegation task lifecycle and supervision decisions.
@@ -151,3 +158,4 @@ PiRelay SHALL record bounded non-secret audit events for delegation task lifecyc
 #### Scenario: Authorized user requests task history
 - **WHEN** an authorized user requests delegation task history for a room, machine, or session
 - **THEN** PiRelay returns a bounded list of recent task cards or lifecycle summaries scoped to that user's authorized messenger context
+- **AND** room history filtering uses the full room reference, including messenger, instance id, conversation id, and thread/reply id when available

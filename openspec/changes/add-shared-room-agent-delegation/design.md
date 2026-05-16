@@ -70,6 +70,20 @@ This change should be designed alongside `add-relay-approval-gates`. Delegation 
    - A delegated task may be visible to all bots, but only the target or eligible claimant acts.
    - Broker federation may later carry task events directly, but this change should not require NAT traversal, hosted services, or shared bot tokens.
 
+## Delegation Control-Plane Invariants
+
+The implementation must treat delegation as a guarded control plane layered on top of shared-room authorization, not as a separate early adapter shortcut.
+
+1. **Shared-room admission is mandatory.** Delegation commands and task-card actions are accepted only in messenger conversations that satisfy the same shared-room opt-in, allow-list, pairing/binding, and active room checks as ordinary room controls for that platform.
+2. **Bot output is inert unless explicitly structured.** Bot-authored messages are dropped before normal prompt routing unless they parse as an explicit delegation command or task-card action and pass peer trust for the exact action.
+3. **Task room identity is full-fidelity.** Visibility, status, history, mutation, and result delivery are scoped by messenger, instance id, conversation id, and thread/reply id when the platform provides one; conversation ids alone are never globally authoritative.
+4. **Peer trust is action-scoped.** A trusted peer may create, claim, or perform future control actions only when that specific action is configured. Human approval/cancel/decline authority is not implied by peer create trust.
+5. **Claim and prompt execution are atomic.** A task is not moved to claimed/running unless execution is allowed and the target prompt is accepted or safely queued with an unambiguous task association. If human supervision is still required, the task remains awaiting approval or claimable.
+6. **One active delegated turn per session by default.** Until queued turns carry their own task ids, runtimes must reject or block overlapping delegated claims for a session that already has active delegated work.
+7. **Runtime state loss is explicit.** Startup marks unsafe claimed/running work stale or blocked before accepting new delegation actions, and running-timeout policy is enforced so tasks cannot stay active forever.
+8. **Messenger redelivery is idempotent.** Task creation and task mutations use persisted event/action keys so retries or polling redelivery do not duplicate tasks or repeat state transitions.
+9. **Approval gates remain separate.** Task approval permits bounded delegation flow; sensitive tool execution still depends on the approval-gate control plane and task-scoped grant matching.
+
 ## Risks / Trade-offs
 
 - **Bot loops and noisy rooms** → Only validated task cards/commands are actionable, ordinary bot output is inert, parent task ids and max depth are enforced, self-authored cards are ignored.

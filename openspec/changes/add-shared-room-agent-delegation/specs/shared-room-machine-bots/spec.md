@@ -4,7 +4,7 @@
 Shared-room machine bots SHALL treat bot-authored delegation events as actionable only when they are validated task objects or explicit task actions from trusted peers.
 
 #### Scenario: Trusted peer task targets local machine
-- **WHEN** a trusted peer bot publishes a validated delegation task in a shared room and the task explicitly targets the local machine bot
+- **WHEN** a trusted peer bot publishes a validated delegation task in an opted-in and paired shared room and the task explicitly targets the local machine bot
 - **THEN** the local broker may evaluate the task for approval, claim, or manual human review according to local delegation policy
 - **AND** non-target brokers remain silent except for their own eligible task-card observation state
 

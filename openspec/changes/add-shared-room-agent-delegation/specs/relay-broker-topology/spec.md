@@ -13,8 +13,8 @@ Broker topology SHALL keep shared-room delegation execution state local to the m
 - **THEN** that broker owns the target execution state, route-action safety checks, local task audit, terminal update reporting, and task-scoped approval state for that claim
 
 #### Scenario: Broker restarts with running delegation task
-- **WHEN** a broker restarts while a delegation task is pending, claimed, running, blocked, or recently completed
-- **THEN** it reloads bounded non-secret local task state when available and marks unsafe in-flight work stale, blocked, or unavailable instead of silently continuing with stale route references
+- **WHEN** a broker or messenger runtime starts while a delegation task is pending, claimed, running, blocked, or recently completed
+- **THEN** it reloads bounded non-secret local task state when available and marks unsafe in-flight work stale, blocked, or unavailable before accepting new delegation actions instead of silently continuing with stale route references
 
 #### Scenario: Federation is configured in future
 - **WHEN** explicit broker federation is configured to carry delegation task events directly between brokers
