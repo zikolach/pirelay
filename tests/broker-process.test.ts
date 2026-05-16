@@ -170,6 +170,68 @@ describe("telegram broker process", () => {
     expect(await readFile(statePath, "utf8")).toBe("{not-json");
   });
 
+  it("hydrates registered routes with persisted Telegram bindings when the client route is stale", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    const persistedBinding = {
+      sessionKey: "hydrated-session:memory",
+      sessionId: "hydrated-session",
+      sessionLabel: "Hydrated Docs",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(statePath, JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { "hydrated-session:memory": persistedBinding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    await sendBrokerRequest(socketPath, {
+      type: "request",
+      requestId: "hydrate-route-binding",
+      action: "registerRoute",
+      clientId: "test-client",
+      route: {
+        sessionKey: "hydrated-session:memory",
+        sessionId: "hydrated-session",
+        sessionLabel: "Hydrated Docs",
+        online: true,
+        busy: false,
+        notification: {},
+      },
+    });
+
+    const updated = JSON.parse(await readFile(statePath, "utf8")) as { bindings?: Record<string, { status?: string; chatId?: number; userId?: number }> };
+    expect(updated.bindings?.["hydrated-session:memory"]).toMatchObject({ status: "active", chatId: 123, userId: 456 });
+  });
+
   it("preserves non-Telegram channel bindings when updating broker state", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);

@@ -17,6 +17,7 @@ const [
   commandSurfacesModule,
   requesterFileDeliveryModule,
   bindingAuthorityModule,
+  telegramRouteBindingModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -30,6 +31,7 @@ const [
   jiti.import('../commands/surfaces.ts'),
   jiti.import('../core/requester-file-delivery.ts'),
   jiti.import('../core/binding-authority.ts'),
+  jiti.import('./telegram-route-binding.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -109,6 +111,7 @@ const bindingAuthorityStateFromData = requiredFunction(bindingAuthorityModule, '
 const resolveTelegramBindingAuthority = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'resolveTelegramBindingAuthority');
 const stateUnavailableBindingAuthority = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'stateUnavailableBindingAuthority');
 const telegramDestinationKey = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'telegramDestinationKey');
+const routeWithPersistedTelegramBinding = requiredFunction(telegramRouteBindingModule, './telegram-route-binding.ts', 'routeWithPersistedTelegramBinding');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
@@ -2145,7 +2148,8 @@ async function handleClientRequest(socket, message) {
         return;
       }
       case 'registerRoute': {
-        const route = await stripRevokedBindingFromRoute(message.route);
+        const state = await loadState();
+        const route = await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(message.route, state));
         if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set() });
         const client = clients.get(socket);
         client.clientId = message.clientId;
