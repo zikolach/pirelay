@@ -91,7 +91,7 @@ describe("DiscordChannelAdapter", () => {
     expect(answerInteraction).toHaveBeenCalledWith("interaction-1", undefined, { text: "\\*\\*Done\\*\\*", alert: undefined });
   });
 
-  it("rejects bot/webhook messages and only applies image MIME allow-list to images", () => {
+  it("rejects bot messages unless delegation is enabled and only applies image MIME allow-list to images", () => {
     expect(discordMessageToChannelEvent({
       id: "bot-message",
       channel_id: "dm1",
@@ -99,6 +99,15 @@ describe("DiscordChannelAdapter", () => {
       content: "loop",
       attachments: [],
     }, config)).toBeUndefined();
+    const delegatedBotEvent = discordMessageToChannelEvent({
+      id: "bot-delegation-message",
+      channel_id: "c1",
+      guild_id: "g1",
+      author: { id: "bot", username: "bot", bot: true },
+      content: "relay delegate target run tests",
+      attachments: [],
+    }, { ...config, delegation: { enabled: true } });
+    expect(delegatedBotEvent?.sender.metadata).toMatchObject({ isBot: true });
     const docEvent = discordMessageToChannelEvent({
       id: "doc-message",
       channel_id: "dm1",

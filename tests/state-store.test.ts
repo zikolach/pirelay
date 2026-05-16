@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createDelegationTask } from "../extensions/relay/core/agent-delegation.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 
 const tempDirs: string[] = [];
@@ -83,6 +84,48 @@ describe("TunnelStateStore", () => {
     expect(corrupt.kind).toBe("state-unavailable");
 
     expect(await store.load()).toMatchObject({ bindings: {}, channelBindings: {} });
+  });
+
+  it("loads old state files with empty delegation state and stores bounded delegation history", async () => {
+    const { store, dir } = await createStoreWithDir();
+    await writeFile(join(dir, "state.json"), JSON.stringify({ bindings: {}, channelBindings: {} }), { mode: 0o600 });
+    expect(await store.load()).toMatchObject({ delegationTasks: {}, delegationAudit: [] });
+
+    const task = createDelegationTask({
+      id: "task-1",
+      sourceMachineId: "source",
+      target: { kind: "machine", machineId: "target" },
+      goal: "Run tests with TOKEN=secret-value",
+      redactionPatterns: [String.raw`secret-value`],
+      room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
+      expiryMs: 60000,
+      createdAt: "2026-05-15T00:00:00.000Z",
+    });
+
+    await store.upsertDelegationTask(task, { maxAuditEntries: 1 });
+    expect(await store.getDelegationTask("task-1")).toMatchObject({ id: "task-1", goal: "Run tests with [redacted]" });
+    expect(await store.listDelegationTasks({ roomConversationId: "C1" })).toHaveLength(1);
+    expect(await store.listDelegationAudit()).toHaveLength(1);
+    expect(JSON.stringify(await store.load())).not.toContain("secret-value");
+  });
+
+  it("marks in-flight delegation tasks stale after restart", async () => {
+    const store = await createStore();
+    const task = createDelegationTask({
+      id: "task-running",
+      sourceMachineId: "source",
+      target: { kind: "machine", machineId: "target" },
+      goal: "Run tests",
+      room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
+      expiryMs: 60000,
+      createdAt: "2026-05-15T00:00:00.000Z",
+    });
+    await store.upsertDelegationTask({ ...task, status: "running" });
+
+    const changed = await store.markInFlightDelegationTasksStaleAfterRestart("2026-05-15T00:00:30.000Z");
+    expect(changed).toHaveLength(1);
+    expect(await store.getDelegationTask("task-running")).toMatchObject({ status: "blocked" });
+    expect(await store.listDelegationAudit({ taskId: "task-running" })).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "blocked" })]));
   });
 
   it("serializes concurrent state updates so messenger bindings are not clobbered", async () => {

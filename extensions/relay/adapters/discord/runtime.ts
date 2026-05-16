@@ -1,10 +1,11 @@
-import type { ChannelBinding, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import type { ChannelBinding, ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
 import { completeDiscordPairing } from "../channel-pairing.js";
 import { DiscordChannelAdapter, discordMentionsSharedRoomAddressing, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation, buildHelpText } from "../../commands/remote.js";
+import { parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
@@ -17,6 +18,8 @@ import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
+import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
+import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -54,6 +57,7 @@ export class DiscordRuntime {
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
   private readonly typingStates = new Map<string, { address: ChannelRouteAddress; timer?: ReturnType<typeof setTimeout> }>();
   private readonly invalidPairingAttempts = new Map<string, { count: number; resetAt: number }>();
+  private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private started = false;
   private startPromise?: Promise<void>;
   private lastError?: string;
@@ -145,6 +149,7 @@ export class DiscordRuntime {
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.stopTypingActivity(route.sessionKey);
+    await this.finishActiveDelegationTask(route, status);
     if (!this.adapter) return;
     const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding) return;
@@ -199,6 +204,7 @@ export class DiscordRuntime {
     if (!this.adapter || event.channel !== DISCORD_CHANNEL) return;
     try {
       if (event.kind === "action") {
+        if (await this.handleDelegationAction(event)) return;
         await this.handleAction(event);
         return;
       }
@@ -224,6 +230,8 @@ export class DiscordRuntime {
     }
 
     const command = parseDiscordCommand(text) ?? parseDiscordCommand(stripLeadingDiscordMentions(text));
+    const delegationCommand = parseDelegationInvocation(text, { prefixes: ["relay"] }) ?? parseDelegationInvocation(stripLeadingDiscordMentions(text), { prefixes: ["relay"] });
+    if (delegationCommand && this.isSharedRoomMessage(message) && await this.handleDelegationMessage(message, delegationCommand)) return;
     if (this.isSharedRoomMessage(message) && !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
       if (this.shouldRejectUnauthorizedSharedRoomEvent(message, command)) {
         await this.sendText(message, "This Discord identity is not authorized to control this PiRelay machine bot.");
@@ -365,6 +373,136 @@ export class DiscordRuntime {
     if (!this.isSharedRoomMessage(message)) return undefined;
     const active = await this.store.getActiveChannelSelection(DISCORD_CHANNEL, message.conversation.id, message.sender.userId);
     return active?.machineId && active.machineId !== this.sharedRoomMachineIdentity().machineId ? undefined : active?.sessionKey;
+  }
+
+  private async handleDelegationAction(action: ChannelInboundAction): Promise<boolean> {
+    if (!this.adapter || action.conversation.kind === "private") return false;
+    const command = delegationCommandFromAction(action);
+    if (!command) return false;
+    const message: ChannelInboundMessage = {
+      kind: "message",
+      channel: action.channel,
+      updateId: action.updateId,
+      messageId: action.messageId ?? action.actionId,
+      text: action.actionData,
+      attachments: [],
+      conversation: action.conversation,
+      sender: action.sender,
+      metadata: action.metadata,
+    };
+    const handled = await this.handleDelegationMessage(message, command);
+    await this.adapter.answerAction(action.actionId, { text: handled ? "Delegation action handled." : "Delegation action was ignored or stale." });
+    return handled;
+  }
+
+  private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
+    const discordConfig = this.config.discord;
+    if (!this.adapter || !discordConfig?.delegation?.enabled) return false;
+    const room = delegationRoomFromMessage(message, this.instanceId);
+    const decision = await evaluateDelegationIngress({
+      command,
+      message,
+      policy: { ...discordConfig.delegation, localCapabilities: [...(this.config.machineCapabilities ?? []), ...(discordConfig.delegation.localCapabilities ?? [])] },
+      room,
+      localMachineId: this.config.machineId ?? "local",
+      localMachineLabel: this.config.machineDisplayName,
+      localBotUserId: discordConfig.applicationId ?? discordConfig.clientId,
+      isAuthorizedHuman: isDiscordIdentityAllowed(message.sender, discordConfig),
+      lookup: {
+        get: (taskId) => this.store.getDelegationTask(taskId),
+        list: (options) => this.store.listDelegationTasks(options),
+      },
+      eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : [],
+    });
+
+    switch (decision.kind) {
+      case "ignore":
+        if (decision.reason === "not-delegation" || decision.reason === "self-authored" || decision.reason === "not-eligible") return false;
+        if (decision.message && isDiscordIdentityAllowed(message.sender, discordConfig)) await this.sendText(message, decision.message);
+        return true;
+      case "reject":
+        await this.sendText(message, decision.message);
+        return true;
+      case "render-task":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendDelegationTaskCard(message, decision.task);
+        return true;
+      case "status":
+      case "history":
+        await this.sendText(message, decision.text);
+        return true;
+      case "cancel":
+      case "decline":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendDelegationTaskCard(message, decision.task);
+        return true;
+      case "claim":
+        await this.startClaimedDelegationTask(message, decision.task, decision.prompt, decision.requiresHuman);
+        return true;
+    }
+  }
+
+  private async startClaimedDelegationTask(message: ChannelInboundMessage, task: DelegationTaskRecord, prompt: string, requiresHuman: boolean): Promise<void> {
+    if (!this.adapter) return;
+    if (requiresHuman) {
+      await this.store.upsertDelegationTask(task);
+      await this.sendText(message, `Delegation task ${task.id} requires human approval before execution.`);
+      return;
+    }
+    const route = task.claimedBy?.sessionKey ? this.routes.get(task.claimedBy.sessionKey) : this.routes.size === 1 ? [...this.routes.values()][0] : undefined;
+    if (!route) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
+      await this.store.upsertDelegationTask(blocked.ok ? blocked.task : task);
+      await this.sendText(message, `Delegation task ${task.id} could not start: no eligible online local session is available.`);
+      return;
+    }
+    const outcome = await deliverRoutePrompt(route, {
+      content: prompt,
+      deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp",
+      onCommit: async () => {
+        route.lastActivityAt = Date.now();
+        this.activeDelegationTaskBySessionKey.set(route.sessionKey, task.id);
+      },
+    });
+    if (outcome.kind === "unavailable") {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    if (outcome.kind === "failed") throw outcome.error;
+    if (outcome.kind !== "success") return;
+    const started = transitionDelegationTask(task, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
+    const next = started.ok ? started.task : task;
+    await this.store.upsertDelegationTask(next);
+    await this.sendDelegationTaskCard(message, next);
+  }
+
+  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
+    if (!this.adapter) return;
+    const taskId = this.activeDelegationTaskBySessionKey.get(route.sessionKey);
+    if (!taskId) return;
+    this.activeDelegationTaskBySessionKey.delete(route.sessionKey);
+    const task = await this.store.getDelegationTask(taskId);
+    if (!task) return;
+    const summary = summarizeTextDeterministically(route.notification.lastAssistantText ?? route.notification.lastFailure ?? status, 320);
+    const transition = status === "completed"
+      ? transitionDelegationTask(task, { kind: "complete", summary: summary || "Completed." })
+      : transitionDelegationTask(task, { kind: "fail", reason: summary || `Task ${status}.` });
+    const next = transition.ok ? transition.task : task;
+    await this.store.upsertDelegationTask(next);
+    await this.adapter.sendText({ channel: DISCORD_CHANNEL, conversationId: next.room.conversationId, userId: "delegation" }, renderDelegationTaskCard(next, { commandPrefix: "relay task" }).text);
+  }
+
+  private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {
+    const card = renderDelegationTaskCard(task, { commandPrefix: "relay task" });
+    await this.sendText(message, card.text, this.delegationButtons(card.actions));
+  }
+
+  private delegationButtons(actions: ReturnType<typeof renderDelegationTaskCard>["actions"]): ChannelButtonLayout | undefined {
+    if (actions.length === 0) return undefined;
+    return [actions.map((action) => ({ label: action.label, actionData: action.actionId, style: action.kind === "claim" || action.kind === "approve" ? "primary" : action.kind === "cancel" ? "danger" : "default" }))];
   }
 
   private async handlePairing(message: ChannelInboundMessage, code: string): Promise<void> {
@@ -983,8 +1121,8 @@ export class DiscordRuntime {
     await this.adapter?.answerAction(action.actionId, { text: "Action received." });
   }
 
-  private async sendText(message: ChannelInboundMessage, text: string): Promise<void> {
-    await this.adapter?.sendText({ channel: DISCORD_CHANNEL, conversationId: message.conversation.id, userId: message.sender.userId }, text);
+  private async sendText(message: ChannelInboundMessage, text: string, buttons?: ChannelButtonLayout): Promise<void> {
+    await this.adapter?.sendText({ channel: DISCORD_CHANNEL, conversationId: message.conversation.id, userId: message.sender.userId }, text, { buttons });
   }
 
   private pairingAttemptKey(message: ChannelInboundMessage): string {

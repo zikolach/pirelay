@@ -52,14 +52,17 @@ import type {
   TelegramUserSummary,
 } from "../../core/types.js";
 import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
+import { parseDelegationCommand, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { redactSecrets } from "../../config/setup.js";
 import { telegramBotCommands } from "../../commands/surfaces.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
 import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, shouldSendFullFinalOutput } from "../../core/final-output.js";
-import { channelTextChunks } from "../../core/channel-adapter.js";
+import { channelTextChunks, type ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
+import { delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
+import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import {
   appendRecentActivity,
   displayProgressMode,
@@ -156,6 +159,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
   private readonly activeSessionByChatUser = new Map<string, string>();
   private readonly sharedRoomOutputDestinations = new Map<string, SharedRoomOutputDestination>();
+  private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private started = false;
   private pollingTask?: Promise<void>;
   private releaseLock?: () => Promise<void>;
@@ -1013,12 +1017,137 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
+  private async handleTelegramDelegationMessage(message: TelegramInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationCommand>>): Promise<boolean> {
+    if (!this.config.delegation?.enabled) return false;
+    const channelMessage = this.telegramChannelMessage(message);
+    const decision = await evaluateDelegationIngress({
+      command,
+      message: channelMessage,
+      policy: { ...this.config.delegation, localCapabilities: [...(this.config.machineCapabilities ?? []), ...(this.config.delegation.localCapabilities ?? [])] },
+      room: delegationRoomFromMessage(channelMessage, "default"),
+      localMachineId: this.config.machineId ?? "local",
+      localMachineLabel: this.config.machineDisplayName,
+      localBotUserId: String((await this.ensureSetup()).botId),
+      isAuthorizedHuman: !message.user.isBot && (this.config.allowUserIds.length === 0 || this.config.allowUserIds.includes(message.user.id)),
+      lookup: {
+        get: (taskId) => this.store.getDelegationTask(taskId),
+        list: (options) => this.store.listDelegationTasks(options),
+      },
+      eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : [],
+    });
+    switch (decision.kind) {
+      case "ignore":
+        if (decision.reason === "not-delegation" || decision.reason === "self-authored" || decision.reason === "not-eligible") return false;
+        if (decision.message && !message.user.isBot) await this.api.sendPlainText(message.chat.id, decision.message);
+        return true;
+      case "reject":
+        await this.api.sendPlainText(message.chat.id, decision.message);
+        return true;
+      case "render-task":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendTelegramDelegationTaskCard(message, decision.task);
+        return true;
+      case "status":
+      case "history":
+        await this.api.sendPlainText(message.chat.id, decision.text);
+        return true;
+      case "cancel":
+      case "decline":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendTelegramDelegationTaskCard(message, decision.task);
+        return true;
+      case "claim":
+        await this.startClaimedTelegramDelegationTask(message, decision.task, decision.prompt, decision.requiresHuman);
+        return true;
+    }
+  }
+
+  private telegramChannelMessage(message: TelegramInboundMessage): ChannelInboundMessage {
+    return {
+      kind: "message",
+      channel: "telegram",
+      updateId: String(message.messageId),
+      messageId: String(message.messageId),
+      text: message.text,
+      attachments: [],
+      conversation: { channel: "telegram", id: String(message.chat.id), kind: isTelegramGroupConversation(message.chat.type) ? "group" : "private", title: message.chat.title },
+      sender: {
+        channel: "telegram",
+        userId: String(message.user.id),
+        username: message.user.username,
+        displayName: getTelegramUserLabel(message.user),
+        firstName: message.user.firstName,
+        lastName: message.user.lastName,
+        metadata: { isBot: message.user.isBot === true },
+      },
+    };
+  }
+
+  private async startClaimedTelegramDelegationTask(message: TelegramInboundMessage, task: DelegationTaskRecord, prompt: string, requiresHuman: boolean): Promise<void> {
+    if (requiresHuman) {
+      await this.store.upsertDelegationTask(task);
+      await this.api.sendPlainText(message.chat.id, `Delegation task ${task.id} requires human approval before execution.`);
+      return;
+    }
+    const route = task.claimedBy?.sessionKey ? this.routes.get(task.claimedBy.sessionKey) : this.routes.size === 1 ? [...this.routes.values()][0] : undefined;
+    if (!route) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendTelegramDelegationTaskCard(message, next);
+      return;
+    }
+    const outcome = await deliverRoutePrompt(route, {
+      content: prompt,
+      deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp",
+      onCommit: async () => {
+        route.lastActivityAt = Date.now();
+        this.activeDelegationTaskBySessionKey.set(route.sessionKey, task.id);
+      },
+    });
+    if (outcome.kind === "unavailable") {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendTelegramDelegationTaskCard(message, next);
+      return;
+    }
+    if (outcome.kind === "failed") throw outcome.error;
+    if (outcome.kind !== "success") return;
+    const started = transitionDelegationTask(task, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
+    const next = started.ok ? started.task : task;
+    await this.store.upsertDelegationTask(next);
+    await this.sendTelegramDelegationTaskCard(message, next);
+  }
+
+  private async sendTelegramDelegationTaskCard(message: TelegramInboundMessage, task: DelegationTaskRecord): Promise<void> {
+    await this.api.sendPlainText(message.chat.id, renderDelegationTaskCard(task, { commandPrefix: "/task" }).text);
+  }
+
+  private async finishActiveTelegramDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
+    const taskId = this.activeDelegationTaskBySessionKey.get(route.sessionKey);
+    if (!taskId) return;
+    this.activeDelegationTaskBySessionKey.delete(route.sessionKey);
+    const task = await this.store.getDelegationTask(taskId);
+    if (!task) return;
+    const summary = route.notification.lastAssistantText ?? route.notification.lastFailure ?? status;
+    const transition = status === "completed"
+      ? transitionDelegationTask(task, { kind: "complete", summary })
+      : transitionDelegationTask(task, { kind: "fail", reason: summary });
+    const next = transition.ok ? transition.task : task;
+    await this.store.upsertDelegationTask(next);
+    await this.api.sendPlainText(Number(next.room.conversationId), renderDelegationTaskCard(next, { commandPrefix: "/task" }).text);
+  }
+
   private async handleTelegramGroupSharedRoomCommand(message: TelegramInboundMessage, target: TelegramGroupCommandTarget | undefined): Promise<boolean> {
-    if (!target || !["help", "sessions", "use", "to"].includes(target.command)) return false;
+    const delegationCommand = target ? parseDelegationCommand(target.command, target.args) : undefined;
+    if (!target || !["help", "sessions", "use", "to"].includes(target.command) && !delegationCommand) return false;
     if (!target.botUsername) return true;
 
     const setup = await this.ensureSetup();
     if (normalizeTelegramBotUsername(target.botUsername) !== normalizeTelegramBotUsername(setup.botUsername)) return true;
+
+    if (delegationCommand && await this.handleTelegramDelegationMessage(message, delegationCommand)) return true;
 
     if (target.command === "help") {
       await this.api.sendPlainText(message.chat.id, HELP_TEXT);
@@ -2083,6 +2212,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     this.clearActivityIndicator(route);
     this.clearProgressState(route);
     this.clearAnswerStateForRoute(route);
+    await this.finishActiveTelegramDelegationTask(route, status);
     const binding = await this.activeOutputBindingForRoute(route);
     try {
       if (!binding || binding.paused) return;

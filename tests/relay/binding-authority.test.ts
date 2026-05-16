@@ -17,6 +17,8 @@ function emptyState(): TunnelStoreData {
     activeChannelSelections: {},
     trustedRelayUsers: {},
     lifecycleNotifications: {},
+    delegationTasks: {},
+    delegationAudit: [],
   };
 }
 

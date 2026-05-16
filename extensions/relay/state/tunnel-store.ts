@@ -7,6 +7,7 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityStateFromData, resolveC
 import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../broker/channel-registry.js";
 import { decideRelayLifecycleNotification, relayLifecycleStorageKey, type RelayLifecycleEventKind, type RelayLifecycleNotificationDecision } from "../notifications/lifecycle.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
+import { markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord } from "../core/agent-delegation.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
 function emptyStore(): TunnelStoreData {
@@ -17,6 +18,8 @@ function emptyStore(): TunnelStoreData {
     activeChannelSelections: {},
     trustedRelayUsers: {},
     lifecycleNotifications: {},
+    delegationTasks: {},
+    delegationAudit: [],
   };
 }
 
@@ -30,6 +33,8 @@ function parseStoreData(raw: string): TunnelStoreData {
     activeChannelSelections: parsed.activeChannelSelections ?? {},
     trustedRelayUsers: parsed.trustedRelayUsers ?? {},
     lifecycleNotifications: parsed.lifecycleNotifications ?? {},
+    delegationTasks: parsed.delegationTasks ?? {},
+    delegationAudit: parsed.delegationAudit ?? [],
   };
 }
 
@@ -390,6 +395,58 @@ export class TunnelStateStore {
       delete data.trustedRelayUsers[key];
     });
     return removed;
+  }
+
+  async upsertDelegationTask(task: DelegationTaskRecord, options: { maxAuditEntries?: number } = {}): Promise<DelegationTaskRecord> {
+    const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
+    await this.update((data) => {
+      data.delegationTasks[task.id] = task;
+      data.delegationAudit = [...data.delegationAudit, ...task.audit].slice(-maxAuditEntries);
+    });
+    return task;
+  }
+
+  async getDelegationTask(taskId: string): Promise<DelegationTaskRecord | undefined> {
+    return (await this.load()).delegationTasks[taskId];
+  }
+
+  async listDelegationTasks(options: { roomConversationId?: string; sourceMachineId?: string; targetMachineId?: string; limit?: number } = {}): Promise<DelegationTaskRecord[]> {
+    const limit = Math.max(1, options.limit ?? 50);
+    return Object.values((await this.load()).delegationTasks)
+      .filter((task) => !options.roomConversationId || task.room.conversationId === options.roomConversationId)
+      .filter((task) => !options.sourceMachineId || task.sourceMachineId === options.sourceMachineId)
+      .filter((task) => !options.targetMachineId || task.target.kind === "machine" && task.target.machineId === options.targetMachineId)
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || right.id.localeCompare(left.id))
+      .slice(0, limit);
+  }
+
+  async appendDelegationAudit(event: DelegationTaskAuditEvent, options: { maxAuditEntries?: number } = {}): Promise<void> {
+    const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
+    await this.update((data) => {
+      data.delegationAudit = [...data.delegationAudit, event].slice(-maxAuditEntries);
+    });
+  }
+
+  async listDelegationAudit(options: { taskId?: string; limit?: number } = {}): Promise<DelegationTaskAuditEvent[]> {
+    const limit = Math.max(1, options.limit ?? 50);
+    return (await this.load()).delegationAudit
+      .filter((event) => !options.taskId || event.taskId === options.taskId)
+      .sort((left, right) => Date.parse(right.at) - Date.parse(left.at) || right.eventId.localeCompare(left.eventId))
+      .slice(0, limit);
+  }
+
+  async markInFlightDelegationTasksStaleAfterRestart(now = toIsoNow()): Promise<DelegationTaskRecord[]> {
+    const changed: DelegationTaskRecord[] = [];
+    await this.update((data) => {
+      for (const [taskId, task] of Object.entries(data.delegationTasks)) {
+        const next = markDelegationTaskStaleAfterRestart(task, now);
+        if (next === task || next.status === task.status && next.updatedAt === task.updatedAt) continue;
+        data.delegationTasks[taskId] = next;
+        data.delegationAudit = [...data.delegationAudit, ...next.audit.slice(task.audit.length)].slice(-200);
+        changed.push(next);
+      }
+    });
+    return changed;
   }
 
   async recordLifecycleNotification(input: {

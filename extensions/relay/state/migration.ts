@@ -27,6 +27,8 @@ export function normalizeRelayStore(value: unknown): RelayStoreData {
     actions: isObject(value.actions) ? value.actions as RelayStoreData["actions"] : {},
     routes: isObject(value.routes) ? value.routes as RelayStoreData["routes"] : {},
     migrations: Array.isArray(value.migrations) ? value.migrations as RelayStoreData["migrations"] : [],
+    delegationTasks: isObject(value.delegationTasks) ? value.delegationTasks as RelayStoreData["delegationTasks"] : {},
+    delegationAudit: Array.isArray(value.delegationAudit) ? value.delegationAudit as RelayStoreData["delegationAudit"] : [],
   };
 }
 

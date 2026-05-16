@@ -55,6 +55,15 @@ export function collectRelayDiagnostics(config: ResolvedRelayConfig): RelayDiagn
       }
     }
 
+    if (messenger.delegation?.enabled) {
+      items.push({ level: "ok", message: `${ref}: delegation ${messenger.delegation.autonomy}; trusted peers: ${messenger.delegation.trustedPeers.length}; capabilities: ${messenger.delegation.localCapabilities.length > 0 ? messenger.delegation.localCapabilities.join(", ") : "none"}; approval gates: required for sensitive delegated work.` });
+      if (!messenger.sharedRoom.enabled) items.push({ level: "warning", message: `${ref}: delegation is enabled but shared-room mode is not enabled; use propose-only or disable delegation until a room is configured.` });
+      if (messenger.delegation.trustedPeers.length === 0) items.push({ level: "warning", message: `${ref}: delegation is enabled without trusted peer bots; bot-authored tasks will be rejected.` });
+      if (!messenger.delegation.requireHumanApproval && messenger.delegation.autonomy !== "propose-only") items.push({ level: "warning", message: `${ref}: delegation can auto-claim under ${messenger.delegation.autonomy}; verify trusted peer, room, target, and approval policies.` });
+      if (!messenger.botUserId && messenger.ref.kind === "slack") items.push({ level: "warning", message: `${ref}: delegation loop prevention works best with Slack botUserId configured.` });
+      if (!messenger.applicationId && messenger.ref.kind === "discord") items.push({ level: "warning", message: `${ref}: delegation command surfaces work best with Discord applicationId/clientId configured.` });
+    }
+
     const ownership = resolveMessengerIngressOwnership({
       messenger: messenger.ref,
       localMachineId: config.relay.machineId,

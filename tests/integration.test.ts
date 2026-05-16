@@ -34,9 +34,11 @@ async function flushAsyncActions(): Promise<void> {
 async function createRuntimeConfig(prefix = "pi-telegram-integration-"): Promise<TelegramTunnelConfig> {
   const stateDir = await mkdtemp(join(tmpdir(), prefix));
   tempDirs.push(stateDir);
+  const configPath = join(stateDir, "config.json");
+  vi.stubEnv("PI_RELAY_CONFIG", configPath);
   return {
     botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-    configPath: join(stateDir, "config.json"),
+    configPath,
     stateDir,
     pairingExpiryMs: 300_000,
     busyDeliveryMode: "followUp",

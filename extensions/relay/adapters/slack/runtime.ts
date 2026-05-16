@@ -5,6 +5,7 @@ import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
+import { parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
@@ -16,6 +17,8 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDest
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
+import { delegationCommandFromAction, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
+import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -62,6 +65,7 @@ export class SlackRuntime {
   private readonly consumedResponseUrls = new Map<string, number>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private botIdentity?: SlackAuthTestResult;
   private started = false;
   private startPromise?: Promise<void>;
@@ -185,6 +189,7 @@ export class SlackRuntime {
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     await this.stopThinkingReaction(route.sessionKey);
     this.clearProgressState(route);
+    await this.finishActiveDelegationTask(route, status);
     if (!this.adapter) return;
     const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused && status === "completed") return;
@@ -345,6 +350,7 @@ export class SlackRuntime {
     if (!this.adapter || event.channel !== SLACK_CHANNEL) return;
     try {
       if (event.kind === "action") {
+        if (await this.handleDelegationAction(event)) return;
         await this.handleAction(event);
         return;
       }
@@ -391,6 +397,8 @@ export class SlackRuntime {
       await this.handlePairing(message, pairingCode);
       return;
     }
+    const delegationCommand = parseDelegationInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseDelegationInvocation(stripLeadingSlackMentions(message.text), { prefixes: ["relay", "pirelay"] });
+    if (delegationCommand && message.conversation.kind !== "private" && await this.handleDelegationMessage(message, delegationCommand)) return;
     if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) return;
     const routedMessage = await this.applySharedRoomPreRouting(message);
     if (!routedMessage) return;
@@ -456,6 +464,126 @@ export class SlackRuntime {
       }
     }
     return hasLocalMention ? { ...message, text: stripLeadingSlackMentions(message.text) } : message;
+  }
+
+  private async handleDelegationAction(action: ChannelInboundAction): Promise<boolean> {
+    if (action.conversation.kind === "private") return false;
+    const command = delegationCommandFromAction(action);
+    if (!command) return false;
+    const message: ChannelInboundMessage = {
+      kind: "message",
+      channel: action.channel,
+      updateId: action.updateId,
+      messageId: action.messageId ?? action.actionId,
+      text: action.actionData,
+      attachments: [],
+      conversation: action.conversation,
+      sender: action.sender,
+      metadata: action.metadata,
+    };
+    return this.handleDelegationMessage(message, command);
+  }
+
+  private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
+    const slackConfig = this.configForInstance();
+    if (!this.adapter || !slackConfig?.delegation?.enabled) return false;
+    const decision = await evaluateDelegationIngress({
+      command,
+      message,
+      policy: { ...slackConfig.delegation, localCapabilities: [...(this.config.machineCapabilities ?? []), ...(slackConfig.delegation.localCapabilities ?? [])] },
+      room: delegationRoomFromMessage(message, this.instanceId),
+      localMachineId: this.config.machineId ?? "local",
+      localMachineLabel: this.config.machineDisplayName,
+      localBotUserId: this.localBotUserId(),
+      isAuthorizedHuman: isSlackIdentityAllowed(message.sender, slackConfig),
+      lookup: {
+        get: (taskId) => this.store.getDelegationTask(taskId),
+        list: (options) => this.store.listDelegationTasks(options),
+      },
+      eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : [],
+    });
+    switch (decision.kind) {
+      case "ignore":
+        if (decision.reason === "not-delegation" || decision.reason === "self-authored" || decision.reason === "not-eligible") return false;
+        if (decision.message && isSlackIdentityAllowed(message.sender, slackConfig)) await this.sendText(message, decision.message);
+        return true;
+      case "reject":
+        await this.sendText(message, decision.message);
+        return true;
+      case "render-task":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendDelegationTaskCard(message, decision.task);
+        return true;
+      case "status":
+      case "history":
+        await this.sendText(message, decision.text);
+        return true;
+      case "cancel":
+      case "decline":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendDelegationTaskCard(message, decision.task);
+        return true;
+      case "claim":
+        await this.startClaimedDelegationTask(message, decision.task, decision.prompt, decision.requiresHuman);
+        return true;
+    }
+  }
+
+  private async startClaimedDelegationTask(message: ChannelInboundMessage, task: DelegationTaskRecord, prompt: string, requiresHuman: boolean): Promise<void> {
+    if (requiresHuman) {
+      await this.store.upsertDelegationTask(task);
+      await this.sendText(message, `Delegation task ${task.id} requires human approval before execution.`);
+      return;
+    }
+    const route = task.claimedBy?.sessionKey ? this.routes.get(task.claimedBy.sessionKey) : this.routes.size === 1 ? [...this.routes.values()][0] : undefined;
+    if (!route) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    const outcome = await deliverRoutePrompt(route, {
+      content: prompt,
+      deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp",
+      onCommit: async () => {
+        route.lastActivityAt = Date.now();
+        this.activeDelegationTaskBySessionKey.set(route.sessionKey, task.id);
+      },
+    });
+    if (outcome.kind === "unavailable") {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    if (outcome.kind === "failed") throw outcome.error;
+    if (outcome.kind !== "success") return;
+    const started = transitionDelegationTask(task, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
+    const next = started.ok ? started.task : task;
+    await this.store.upsertDelegationTask(next);
+    await this.sendDelegationTaskCard(message, next);
+  }
+
+  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
+    if (!this.adapter) return;
+    const taskId = this.activeDelegationTaskBySessionKey.get(route.sessionKey);
+    if (!taskId) return;
+    this.activeDelegationTaskBySessionKey.delete(route.sessionKey);
+    const task = await this.store.getDelegationTask(taskId);
+    if (!task) return;
+    const summary = route.notification.lastAssistantText ?? route.notification.lastFailure ?? status;
+    const transition = status === "completed"
+      ? transitionDelegationTask(task, { kind: "complete", summary })
+      : transitionDelegationTask(task, { kind: "fail", reason: summary });
+    const next = transition.ok ? transition.task : task;
+    await this.store.upsertDelegationTask(next);
+    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: next.room.conversationId, userId: "delegation" }, renderDelegationTaskCard(next, { commandPrefix: "relay task" }).text);
+  }
+
+  private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {
+    await this.sendText(message, renderDelegationTaskCard(task, { commandPrefix: "relay task" }).text);
   }
 
   private async handleBoundMessage(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute): Promise<void> {

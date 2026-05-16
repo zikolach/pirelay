@@ -79,6 +79,63 @@ describe("relay config loader", () => {
     expect(loaded.messengers[0]?.sharedRoom).toMatchObject({ enabled: true, plainText: "addressed-only", roomHint: "PiRelay" });
   });
 
+  it("loads delegation policy disabled by default and explicit trusted peer settings", async () => {
+    const configPath = await writeConfig({
+      relay: { machineId: "laptop", capabilities: ["linux-tests"] },
+      messengers: {
+        discord: {
+          default: {
+            enabled: true,
+            tokenEnv: "DISCORD_TOKEN",
+            sharedRoom: { enabled: true },
+            delegation: {
+              enabled: true,
+              autonomy: "auto-claim-targeted",
+              trustedPeers: [{ peerId: "bot-a", allowCreate: true, targetMachineIds: ["laptop"] }],
+              localCapabilities: ["browser"],
+              taskExpiryMs: 120000,
+              runningTimeoutMs: 120000,
+              maxDepth: 2,
+              maxVisibleSummaryChars: 256,
+              maxHistory: 10,
+            },
+          },
+        },
+        telegram: { default: { enabled: true, tokenEnv: "TELEGRAM_TOKEN" } },
+      },
+    });
+
+    const loaded = await loadRelayConfig({
+      configPath,
+      env: { DISCORD_TOKEN: "discord-token", TELEGRAM_TOKEN: "telegram-token", PI_RELAY_MACHINE_CAPABILITIES: "docs" },
+    });
+
+    const discord = loaded.messengers.find((messenger) => messenger.ref.kind === "discord");
+    expect(loaded.relay.capabilities).toEqual(["linux-tests", "docs"]);
+    expect(discord?.delegation).toMatchObject({
+      enabled: true,
+      autonomy: "auto-claim-targeted",
+      localCapabilities: ["linux-tests", "docs", "browser"],
+      taskExpiryMs: 120000,
+      runningTimeoutMs: 120000,
+      maxDepth: 2,
+      maxVisibleSummaryChars: 256,
+      maxHistory: 10,
+    });
+    expect(discord?.delegation?.trustedPeers).toEqual([{ peerId: "bot-a", allowCreate: true, targetMachineIds: ["laptop"] }]);
+
+    const telegram = loaded.messengers.find((messenger) => messenger.ref.kind === "telegram");
+    expect(telegram?.delegation).toMatchObject({ enabled: false, autonomy: "off", trustedPeers: [] });
+  });
+
+  it("rejects invalid delegation settings", async () => {
+    const configPath = await writeConfig({
+      messengers: { discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", delegation: { enabled: true, autonomy: "free-for-all" } } } },
+    });
+
+    await expect(loadRelayConfig({ configPath, env: { DISCORD_TOKEN: "token" }, supportedMessengers: ["discord"] })).rejects.toThrow(/delegation\.autonomy/);
+  });
+
   it("resolves Discord Application ID from applicationId and legacy clientId aliases", async () => {
     const appPath = await writeConfig({
       messengers: { discord: { default: { enabled: true, tokenEnv: "DISCORD_TOKEN", applicationId: "app-id" } } },

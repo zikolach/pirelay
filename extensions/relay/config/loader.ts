@@ -6,10 +6,11 @@ import { canonicalizeRelayConfigFile, hasLegacyRelayConfigKeys } from "./legacy.
 import { DEFAULT_MESSENGER_INSTANCE_ID, isValidMessengerInstanceId, isValidMessengerKind } from "../core/messenger-ref.js";
 import type { MessengerKind, MessengerRef } from "../core/messenger-ref.js";
 import type { MessengerIngressPolicy } from "../broker/protocol.js";
-import type { MessengerInstanceFileConfig, RelayConfigFile, RelayConfigLoadOptions, RelayDefaultsConfig, RelayMachineConfig, ResolvedMessengerInstanceConfig, ResolvedRelayConfig } from "./schema.js";
+import type { MessengerInstanceFileConfig, RelayAgentDelegationConfig, RelayConfigFile, RelayConfigLoadOptions, RelayDefaultsConfig, RelayMachineConfig, ResolvedMessengerInstanceConfig, ResolvedRelayAgentDelegationConfig, ResolvedRelayConfig } from "./schema.js";
 import { RelayConfigError } from "./schema.js";
 
 const defaultSupportedMessengers = ["telegram", "discord", "slack"] as const;
+const delegationAutonomyLevels = new Set(["off", "propose-only", "auto-claim-targeted", "auto-claim-safe-capability"]);
 
 const defaultDefaults: RelayDefaultsConfig = {
   pairingExpiryMs: 5 * 60_000,
@@ -88,6 +89,12 @@ function relayMachineAliases(fileConfig: RelayConfigFile, env: NodeJS.ProcessEnv
   return [...new Set([...fileAliases, ...envAliases].map((alias) => alias.trim()).filter(Boolean))];
 }
 
+function relayMachineCapabilities(fileConfig: RelayConfigFile, env: NodeJS.ProcessEnv): string[] {
+  const fileCapabilities = Array.isArray(fileConfig.relay?.capabilities) ? fileConfig.relay.capabilities : [];
+  const envCapabilities = parseStringList(env.PI_RELAY_MACHINE_CAPABILITIES) ?? [];
+  return [...new Set([...fileCapabilities, ...envCapabilities].map((capability) => capability.trim()).filter(Boolean))];
+}
+
 function resolveSecret(env: NodeJS.ProcessEnv, value: string | undefined, envName: string | undefined): string | undefined {
   if (value) return value;
   if (envName) return env[envName];
@@ -106,6 +113,33 @@ function ensureValidDefaults(defaults: RelayDefaultsConfig): void {
   if (defaults.busyDeliveryMode !== "followUp" && defaults.busyDeliveryMode !== "steer") throw new RelayConfigError("defaults.busyDeliveryMode must be followUp or steer.");
   if (defaults.maxTextChars < 256) throw new RelayConfigError("defaults.maxTextChars must be at least 256.");
   if (defaults.allowedImageMimeTypes.length === 0) throw new RelayConfigError("defaults.allowedImageMimeTypes must include at least one MIME type.");
+}
+
+function resolveDelegationConfig(config: RelayAgentDelegationConfig | undefined, relay: RelayMachineConfig, messengerLabel: string): ResolvedRelayAgentDelegationConfig {
+  const autonomy = config?.autonomy ?? (config?.enabled ? "propose-only" : "off");
+  if (!delegationAutonomyLevels.has(autonomy)) throw new RelayConfigError(`${messengerLabel} delegation.autonomy must be off, propose-only, auto-claim-targeted, or auto-claim-safe-capability.`);
+  const taskExpiryMs = config?.taskExpiryMs ?? 10 * 60_000;
+  const runningTimeoutMs = config?.runningTimeoutMs ?? 60 * 60_000;
+  const maxDepth = config?.maxDepth ?? 1;
+  const maxVisibleSummaryChars = config?.maxVisibleSummaryChars ?? 320;
+  const maxHistory = config?.maxHistory ?? 50;
+  if (taskExpiryMs < 30_000) throw new RelayConfigError(`${messengerLabel} delegation.taskExpiryMs must be at least 30000.`);
+  if (runningTimeoutMs < 60_000) throw new RelayConfigError(`${messengerLabel} delegation.runningTimeoutMs must be at least 60000.`);
+  if (maxDepth < 0) throw new RelayConfigError(`${messengerLabel} delegation.maxDepth must not be negative.`);
+  if (maxVisibleSummaryChars < 80) throw new RelayConfigError(`${messengerLabel} delegation.maxVisibleSummaryChars must be at least 80.`);
+  if (maxHistory < 1) throw new RelayConfigError(`${messengerLabel} delegation.maxHistory must be positive.`);
+  return {
+    enabled: config?.enabled ?? autonomy !== "off",
+    autonomy,
+    trustedPeers: config?.trustedPeers ?? [],
+    localCapabilities: [...new Set([...(relay.capabilities ?? []), ...(config?.localCapabilities ?? [])].map((capability) => capability.trim()).filter(Boolean))],
+    taskExpiryMs,
+    runningTimeoutMs,
+    maxDepth,
+    maxVisibleSummaryChars,
+    maxHistory,
+    requireHumanApproval: config?.requireHumanApproval ?? autonomy === "propose-only",
+  };
 }
 
 function resolveMessengerInstance(input: {
@@ -157,6 +191,7 @@ function resolveMessengerInstance(input: {
     allowGuildIds: config.allowGuildIds ?? [],
     allowChannelMessages: config.allowChannelMessages,
     sharedRoom: config.sharedRoom ?? {},
+    delegation: resolveDelegationConfig(config.delegation, relay, `${ref.kind}:${ref.instanceId}`),
     ingressPolicy: normalizePolicy(config, relay),
     ownerMachineId: config.ownerMachineId,
     brokerGroup: config.brokerGroup ?? relay.brokerGroup,
@@ -213,6 +248,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
     stateDir: expandHome(fileConfig.relay?.stateDir ?? env.PI_RELAY_STATE_DIR ?? env.PI_TELEGRAM_TUNNEL_STATE_DIR ?? fileConfig.stateDir ?? DEFAULT_PIRELAY_STATE_DIR),
     displayName: fileConfig.relay?.displayName ?? env.PI_RELAY_MACHINE_DISPLAY_NAME,
     aliases: relayMachineAliases(fileConfig, env),
+    capabilities: relayMachineCapabilities(fileConfig, env),
     brokerNamespace: fileConfig.relay?.brokerNamespace ?? env.PI_RELAY_BROKER_NAMESPACE,
     brokerGroup: fileConfig.relay?.brokerGroup ?? env.PI_RELAY_BROKER_GROUP,
     brokerPeers: fileConfig.relay?.brokerPeers ?? [],

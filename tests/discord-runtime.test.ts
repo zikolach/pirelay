@@ -548,6 +548,51 @@ describe("DiscordRuntime", () => {
     expect(await store.getActiveChannelSelection("discord", "room1", "u1")).toMatchObject({ machineId: "desktop" });
   });
 
+  it("handles shared-room delegation cards, trusted peer bots, and claim prompt handoff", async () => {
+    const cfg = await config({
+      applicationId: "123",
+      allowGuildChannels: true,
+      allowGuildIds: ["g1"],
+      sharedRoom: { enabled: true },
+      delegation: {
+        enabled: true,
+        autonomy: "auto-claim-targeted",
+        requireHumanApproval: false,
+        trustedPeers: [{ peerId: "peer-bot", allowCreate: true, targetMachineIds: ["laptop"] }],
+      },
+    });
+    cfg.machineId = "laptop";
+    cfg.machineDisplayName = "Laptop";
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    await runtime.registerRoute(session);
+    await runtime.start();
+
+    await ops.handler?.(discordMessage("relay delegate laptop run docs tests", { channelId: "room1", guildId: "g1" }));
+    expect(ops.messages.some((message) => message.content.includes("Delegation task-"))).toBe(true);
+    expect(ops.messages.at(-1)?.components?.[0]?.[0]).toMatchObject({ label: "Claim" });
+
+    const store = new TunnelStateStore(cfg.stateDir);
+    const [task] = await store.listDelegationTasks({ roomConversationId: "room1" });
+    expect(task).toMatchObject({ status: "claimable", target: { kind: "machine", machineId: "laptop" } });
+
+    await ops.handler?.(discordMessage(`relay task claim ${task!.id}`, { channelId: "room1", guildId: "g1" }));
+    expect(sendUserMessage).toHaveBeenCalledWith(expect.stringContaining(`delegated task ${task!.id}`));
+    expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "running", claimedBy: { sessionKey: session.sessionKey } });
+
+    session.notification.lastAssistantText = "Docs tests passed.";
+    await runtime.notifyTurnCompleted(session, "completed");
+    expect(ops.messages.at(-1)?.content).toContain("Status: completed");
+
+    await ops.handler?.(discordMessage("relay delegate laptop should be ignored", { channelId: "room1", guildId: "g1", userId: "unknown-bot", bot: true }));
+    expect((await store.listDelegationTasks({ roomConversationId: "room1" })).length).toBe(1);
+
+    await ops.handler?.(discordMessage("relay delegate laptop trusted task", { channelId: "room1", guildId: "g1", userId: "peer-bot", bot: true }));
+    const tasks = await store.listDelegationTasks({ roomConversationId: "room1" });
+    expect(tasks.some((candidate) => candidate.sourceMachineId === "peer-bot")).toBe(true);
+  });
+
   it("does not treat arbitrary Discord user mentions as remote bot targeting", async () => {
     const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
     cfg.machineId = "laptop";
