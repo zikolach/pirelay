@@ -31,6 +31,32 @@ describe("broker namespace isolation", () => {
     expect(socketPath(betaRuntime)).toBe(join(stateDir, "broker-beta-5c86c8f7d9db9ca4.sock"));
   });
 
+  it("resyncs registered routes when the broker socket is recreated", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-reconnect-"));
+    tempDirs.push(stateDir);
+    const runtime = new BrokerTunnelRuntime(config(stateDir));
+    const firstMessages: Array<Record<string, unknown>> = [];
+    const firstServer = await listenJsonBroker(socketPath(runtime), firstMessages);
+
+    await runtime.registerRoute(route("docs-session"));
+    expect(firstMessages.map((message) => message.action)).toContain("registerRoute");
+
+    for (const socket of sockets.splice(0)) socket.destroy();
+    (runtime as unknown as { socket?: Socket }).socket?.destroy();
+    (runtime as unknown as { socket?: Socket }).socket = undefined;
+    await closeServer(firstServer);
+    await rm(socketPath(runtime), { force: true });
+
+    const secondMessages: Array<Record<string, unknown>> = [];
+    await listenJsonBroker(socketPath(runtime), secondMessages);
+    await (runtime as unknown as { ensureConnected(): Promise<void> }).ensureConnected();
+
+    await waitForCondition(() => secondMessages.some((message) => message.action === "registerRoute"));
+    expect(secondMessages.some((message) => (message.route as { sessionKey?: string } | undefined)?.sessionKey === "docs-session")).toBe(true);
+
+    await runtime.stop();
+  });
+
   it("does not share route registration or delivery across namespace sockets", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-namespace-"));
     tempDirs.push(stateDir);
@@ -62,7 +88,7 @@ function socketPath(runtime: BrokerTunnelRuntime): string {
   return (runtime as unknown as { socketPath: string }).socketPath;
 }
 
-async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>): Promise<void> {
+async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>): Promise<Server> {
   const server = createServer((socket) => {
     sockets.push(socket);
     socket.setEncoding("utf8");
@@ -90,6 +116,22 @@ async function listenJsonBroker(path: string, messages: Array<Record<string, unk
       resolve();
     });
   });
+  return server;
+}
+
+function closeServer(server: Server): Promise<void> {
+  const index = servers.indexOf(server);
+  if (index >= 0) servers.splice(index, 1);
+  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for condition.");
 }
 
 function config(stateDir: string): TelegramTunnelConfig {

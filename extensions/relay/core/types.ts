@@ -270,6 +270,7 @@ export interface SessionRouteActions {
   appendAudit(message: string): void;
   notifyLocal?(message: string, level?: "info" | "warning" | "error"): void;
   setLocalStatus?(key: string, value: string): void;
+  clearLocalStatus?(key: string): void;
   refreshLocalStatus?(): void;
   persistBinding(binding: TelegramBindingMetadata | null, revoked?: boolean): void;
   promptLocalConfirmation(identity: RelayPairingIdentity): Promise<PairingApprovalDecision | boolean>;

@@ -170,7 +170,10 @@ export class SlackRuntime {
       },
       recent,
     );
-    if (authorityOutcomeAllowsDelivery(outcome) && "status" in outcome.binding) return outcome.binding;
+    if (authorityOutcomeAllowsDelivery(outcome) && "status" in outcome.binding) {
+      route.actions.clearLocalStatus?.("relay-binding-authority");
+      return outcome.binding;
+    }
     if (outcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
     if (outcome.kind === "revoked" || outcome.kind === "moved" || outcome.kind === "state-unavailable") {
       this.ownedBindingSessionKeys.delete(route.sessionKey);

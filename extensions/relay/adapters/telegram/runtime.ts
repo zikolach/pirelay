@@ -329,7 +329,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         { sessionKey: route.sessionKey, chatId: baseBinding.chatId, userId: baseBinding.userId, includePaused: true, allowVolatileFallback: true },
         baseBinding,
       );
-      if (baseOutcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(baseOutcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+      if (baseOutcome.kind === "state-unavailable") {
+        route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(baseOutcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+        return undefined;
+      }
+      route.actions.clearLocalStatus?.("relay-binding-authority");
       return authorityOutcomeAllowsDelivery(baseOutcome) ? { ...baseOutcome.binding, chatId: binding.chatId, userId: binding.userId } : undefined;
     }
     const outcome = resolveTelegramBindingAuthority(
@@ -337,7 +341,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       { sessionKey: route.sessionKey, chatId: binding.chatId, userId: binding.userId, includePaused: true, allowVolatileFallback: true },
       binding,
     );
-    if (outcome.kind === "state-unavailable") route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+    if (outcome.kind === "state-unavailable") {
+      route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+      return undefined;
+    }
+    route.actions.clearLocalStatus?.("relay-binding-authority");
     return authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
   }
 
