@@ -268,7 +268,7 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 | resume delivery | `/resume` | `relay resume` | `/relay resume` |
 | disconnect binding | `/disconnect` | `relay disconnect` | `/relay disconnect` |
 | create delegation task (opt-in shared rooms) | `/delegate <machine\|#capability> <goal>` | `relay delegate <machine\|#capability> <goal>` | `/relay delegate <machine\|#capability> <goal>` |
-| control delegation task | `/task <claim\|decline\|cancel\|status\|history> [task-id]` | `relay task <claim\|decline\|cancel\|status\|history> [task-id]` | `/relay task <claim\|decline\|cancel\|status\|history> [task-id]` |
+| control delegation task | `/task@<bot_username> <claim\|decline\|cancel\|status\|history> [task-id]` (or `/task <claim\|decline\|cancel\|status\|history> [task-id]` in private/other clients) | `relay task <claim\|decline\|cancel\|status\|history> [task-id]` | `/relay task <claim\|decline\|cancel\|status\|history> [task-id]` |
 
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 

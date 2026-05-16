@@ -1155,7 +1155,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async sendTelegramDelegationTaskCard(message: TelegramInboundMessage, task: DelegationTaskRecord): Promise<void> {
-    await this.api.sendPlainText(message.chat.id, renderDelegationTaskCard(task, { commandPrefix: "/task" }).text);
+    const commandPrefix = await this.delegationTaskCommandPrefixForMessage(message);
+    await this.api.sendPlainText(message.chat.id, renderDelegationTaskCard(task, { commandPrefix }).text);
   }
 
   private async finishActiveTelegramDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<boolean> {
@@ -1170,7 +1171,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       : transitionDelegationTask(task, { kind: "fail", reason: summary });
     const next = transition.ok ? transition.task : task;
     await this.store.upsertDelegationTask(next);
-    await this.api.sendPlainText(Number(next.room.conversationId), renderDelegationTaskCard(next, { commandPrefix: "/task" }).text);
+    const commandPrefix = await this.delegationTaskCommandPrefixForConversationId(next.room.conversationId);
+    await this.api.sendPlainText(Number(next.room.conversationId), renderDelegationTaskCard(next, { commandPrefix }).text);
     return true;
   }
 
@@ -1271,6 +1273,23 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
     }
     return true;
+  }
+
+  private async delegationTaskCommandPrefixForMessage(message: TelegramInboundMessage): Promise<string> {
+    return this.delegationTaskCommandPrefixForConversationId(String(message.chat.id), message.chat.type);
+  }
+
+  private async delegationTaskCommandPrefixForConversationId(conversationId: string, chatType?: string): Promise<string> {
+    if (chatType && !isTelegramGroupConversation(chatType) && !isGroupConversationId(conversationId)) return "/task";
+    try {
+      const setup = await this.ensureSetup();
+      if (setup?.botUsername) {
+        return `/task@${normalizeTelegramBotUsername(setup.botUsername)}`;
+      }
+    } catch {
+      // If setup metadata is unavailable, fall back to unscoped task commands.
+    }
+    return "/task";
   }
 
   private async handleStart(message: TelegramInboundMessage, nonce: string): Promise<void> {
@@ -2329,6 +2348,11 @@ function normalizeTelegramBotUsername(username: string): string {
 
 function isTelegramGroupConversation(type: string): boolean {
   return type === "group" || type === "supergroup";
+}
+
+function isGroupConversationId(conversationId: string): boolean {
+  const chatId = Number(conversationId);
+  return Number.isSafeInteger(chatId) && chatId < 0;
 }
 
 function normalizePairingApproval(value: PairingApprovalDecision | boolean): PairingApprovalDecision {
