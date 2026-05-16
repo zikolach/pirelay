@@ -162,6 +162,20 @@ describe("telegram tunnel config", () => {
     expect(config.slack).toMatchObject({ enabled: true, botToken: "slack-file", signingSecret: "slack-env-secret", appToken: "xapp-canonical", appId: "A-canonical", eventMode: "webhook", workspaceId: "T-canonical", botUserId: "U-canonical" });
   });
 
+  it("rejects invalid delegation policy in runtime compatibility loader", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      messengers: {
+        telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", delegation: { enabled: true, autonomy: "free-for-all" } } },
+      },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+
+    await expect(loadTelegramTunnelConfig()).rejects.toThrow(/delegation\.autonomy/);
+  });
+
   it("accepts Discord applicationId as the preferred Application ID field", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
     tempDirs.push(dir);

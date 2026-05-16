@@ -36,7 +36,7 @@ export type DelegationIngressDecision =
   | { kind: "status"; task: DelegationTaskRecord; text: string }
   | { kind: "history"; tasks: DelegationTaskRecord[]; text: string }
   | { kind: "claim"; task: DelegationTaskRecord; requiresHuman: boolean; prompt: string }
-  | { kind: "cancel" | "decline"; task: DelegationTaskRecord; text: string };
+  | { kind: "approve" | "cancel" | "decline"; task: DelegationTaskRecord; text: string };
 
 export interface DelegationTaskLookup {
   get(taskId: string): Promise<DelegationTaskRecord | undefined>;
@@ -59,8 +59,9 @@ export interface DelegationIngressInput {
 }
 
 export function resolveDelegationRuntimePolicy(policy: AgentDelegationRelayConfig | undefined, machineCapabilities: readonly string[] = []): ResolvedDelegationRuntimePolicy {
-  const enabled = policy?.enabled === true;
-  const autonomy = policy?.autonomy ?? (enabled ? "propose-only" : "off");
+  const requestedAutonomy = policy?.autonomy ?? (policy?.enabled === true ? "propose-only" : "off");
+  const autonomy = isDelegationAutonomyLevel(requestedAutonomy) ? requestedAutonomy : "off";
+  const enabled = policy?.enabled === true && autonomy !== "off";
   return {
     enabled,
     autonomy,
@@ -84,6 +85,10 @@ export async function evaluateDelegationIngress(input: DelegationIngressInput): 
 
   const actor = delegationActorFromIdentity(input.message.sender);
   const peerBot = isPeerBotIdentity(input.message.sender);
+
+  if (input.command.kind === "approve" && !input.isAuthorizedHuman) {
+    return { kind: "reject", message: "Only an authorized human may approve a delegation task." };
+  }
 
   if (peerBot) {
     const trust = isTrustedDelegationPeer({
@@ -125,8 +130,15 @@ export async function evaluateDelegationIngress(input: DelegationIngressInput): 
 
   const task = await lookup.get(input.command.taskId);
   if (!task) return { kind: "reject", message: `Delegation task ${input.command.taskId} was not found or is stale.` };
+  if (!delegationTaskRoomMatches(task, input.room)) return { kind: "reject", message: `Delegation task ${input.command.taskId} is not visible in this room or thread.` };
 
   if (input.command.kind === "status") return { kind: "status", task, text: renderDelegationTaskSummary(task) };
+
+  if (input.command.kind === "approve") {
+    const result = transitionDelegationTask(task, { kind: "approve", actor }, input.now);
+    if (!result.ok) return { kind: "reject", message: result.message };
+    return { kind: "approve", task: result.task, text: renderDelegationTaskSummary(result.task) };
+  }
 
   if (input.command.kind === "cancel") {
     const result = transitionDelegationTask(task, { kind: "cancel", actor, reason: input.command.reason }, input.now);
@@ -161,7 +173,7 @@ export function delegationRoomFromMessage(message: ChannelInboundMessage | Chann
     messenger: message.channel,
     instanceId,
     conversationId: message.conversation.id,
-    threadId: typeof message.metadata?.threadId === "string" ? message.metadata.threadId : undefined,
+    threadId: typeof message.metadata?.threadId === "string" ? message.metadata.threadId : typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined,
     messageId: "messageId" in message ? message.messageId : undefined,
   };
 }
@@ -180,6 +192,19 @@ export function delegationActorFromIdentity(sender: ChannelIdentity): Delegation
     id: sender.userId,
     displayName: sender.displayName ?? sender.username,
   };
+}
+
+export function delegationTaskRoomMatches(task: Pick<DelegationTaskRecord, "room">, room: DelegationTaskRoomRef): boolean {
+  if (task.room.messenger !== room.messenger) return false;
+  if (task.room.instanceId !== room.instanceId) return false;
+  if (task.room.conversationId !== room.conversationId) return false;
+  const taskThread = task.room.threadId;
+  const currentThread = room.threadId;
+  return taskThread === currentThread || (!taskThread && !currentThread);
+}
+
+function isDelegationAutonomyLevel(value: unknown): value is DelegationAutonomyLevel {
+  return value === "off" || value === "propose-only" || value === "auto-claim-targeted" || value === "auto-claim-safe-capability";
 }
 
 export function buildDelegatedTaskPrompt(task: DelegationTaskRecord): string {
@@ -203,6 +228,7 @@ export function delegationCommandFromAction(action: ChannelInboundAction): Deleg
   if (parsed.kind === "claim") return { kind: "claim", taskId: parsed.taskId };
   if (parsed.kind === "decline") return { kind: "decline", taskId: parsed.taskId };
   if (parsed.kind === "cancel") return { kind: "cancel", taskId: parsed.taskId };
-  if (parsed.kind === "status" || parsed.kind === "approve") return { kind: "status", taskId: parsed.taskId };
+  if (parsed.kind === "status") return { kind: "status", taskId: parsed.taskId };
+  if (parsed.kind === "approve") return { kind: "approve", taskId: parsed.taskId };
   return undefined;
 }

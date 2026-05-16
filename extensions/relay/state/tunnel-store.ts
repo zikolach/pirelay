@@ -400,8 +400,10 @@ export class TunnelStateStore {
   async upsertDelegationTask(task: DelegationTaskRecord, options: { maxAuditEntries?: number } = {}): Promise<DelegationTaskRecord> {
     const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
     await this.update((data) => {
+      const existingEventIds = new Set(data.delegationTasks[task.id]?.audit.map((event) => event.eventId) ?? []);
+      const newAuditEvents = task.audit.filter((event) => !existingEventIds.has(event.eventId));
       data.delegationTasks[task.id] = task;
-      data.delegationAudit = [...data.delegationAudit, ...task.audit].slice(-maxAuditEntries);
+      data.delegationAudit = [...data.delegationAudit, ...newAuditEvents].slice(-maxAuditEntries);
     });
     return task;
   }

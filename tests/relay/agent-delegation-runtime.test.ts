@@ -42,9 +42,10 @@ function route(overrides: Partial<SessionRoute> = {}): SessionRoute {
 }
 
 describe("agent delegation runtime helpers", () => {
-  it("resolves disabled-by-default policy", () => {
+  it("resolves disabled-by-default policy and fails closed for invalid autonomy", () => {
     expect(resolveDelegationRuntimePolicy(undefined)).toMatchObject({ enabled: false, autonomy: "off", trustedPeers: [] });
     expect(resolveDelegationRuntimePolicy({ enabled: true, localCapabilities: ["tests"] }, ["docs"])).toMatchObject({ enabled: true, autonomy: "propose-only", localCapabilities: ["docs", "tests"] });
+    expect(resolveDelegationRuntimePolicy({ enabled: true, autonomy: "free-for-all" as never })).toMatchObject({ enabled: false, autonomy: "off" });
   });
 
   it("ignores self-authored and ordinary non-delegation events", async () => {
@@ -104,6 +105,24 @@ describe("agent delegation runtime helpers", () => {
     expect(trusted).toMatchObject({ kind: "render-task", task: { status: "awaiting-approval", sourceMachineId: "bot-a" } });
   });
 
+  it("approves awaiting-approval tasks without leaking across rooms", async () => {
+    const task = createDelegationTask({
+      id: "task-approve",
+      sourceMachineId: "bot-a",
+      target: { kind: "machine", machineId: "target" },
+      goal: "run tests",
+      room,
+      expiryMs: 60000,
+      status: "awaiting-approval",
+      createdAt: "2026-05-15T00:00:00.000Z",
+    });
+    const lookup = { get: async () => task, list: async () => [task] };
+    expect(await evaluateDelegationIngress({ command: { kind: "approve", taskId: "task-approve" }, message, policy: { enabled: true }, room, localMachineId: "target", isAuthorizedHuman: true, lookup, now: "2026-05-15T00:00:01.000Z" }))
+      .toMatchObject({ kind: "approve", task: { status: "claimable" } });
+    expect(await evaluateDelegationIngress({ command: { kind: "status", taskId: "task-approve" }, message, policy: { enabled: true }, room: { ...room, conversationId: "C2" }, localMachineId: "target", isAuthorizedHuman: true, lookup }))
+      .toMatchObject({ kind: "reject", message: expect.stringContaining("not visible") });
+  });
+
   it("claims eligible local tasks and builds bounded task prompts", async () => {
     const task = createDelegationTask({
       id: "task-1",
@@ -131,6 +150,19 @@ describe("agent delegation runtime helpers", () => {
     if (decision.kind !== "claim") throw new Error("not claimed");
     expect(decision.prompt).toContain("delegated task task-1");
     expect(buildDelegatedTaskPrompt(task)).not.toContain("TOKEN=");
+
+    const noRouteDecision = await evaluateDelegationIngress({
+      command: { kind: "claim", taskId: "task-1" },
+      message,
+      policy: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+      room,
+      localMachineId: "target",
+      isAuthorizedHuman: true,
+      eligibleRoutes: [],
+      lookup: { get: async () => task, list: async () => [task] },
+      now: "2026-05-15T00:00:01.000Z",
+    });
+    expect(noRouteDecision).toMatchObject({ kind: "ignore", reason: "not-eligible", message: expect.stringContaining("ambiguous-session") });
   });
 
   it("renders status/history and parses platform action ids", async () => {
@@ -141,5 +173,10 @@ describe("agent delegation runtime helpers", () => {
 
     const action: ChannelInboundAction = { kind: "action", channel: "discord", updateId: "a1", actionId: "a1", actionData: "pirelay:delegation:claim:task-1", conversation: message.conversation, sender: message.sender };
     expect(delegationCommandFromAction(action)).toEqual({ kind: "claim", taskId: "task-1" });
+    expect(delegationCommandFromAction({ ...action, actionData: "pirelay:delegation:approve:task-1" })).toEqual({ kind: "approve", taskId: "task-1" });
+  });
+
+  it("preserves Slack thread ids in room refs", () => {
+    expect(delegationRoomFromMessage({ ...message, metadata: { threadTs: "1700.1" } }, "default")).toMatchObject({ threadId: "1700.1" });
   });
 });

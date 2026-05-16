@@ -812,7 +812,7 @@ describe("SlackRuntime foundations", () => {
   it("routes Slack channel prompts after pairing, use, and one-shot targeting", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
-    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true, allowUserIds: ["U_DRIVER", "U_OTHER"] };
+    runtimeConfig.slack = { ...runtimeConfig.slack!, allowChannelMessages: true, allowUserIds: ["U_DRIVER", "U_OTHER"], delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false } };
     const testRoute = route();
     const store = new TunnelStateStore(runtimeConfig.stateDir);
     const { nonce } = await store.createPendingPairing({
@@ -825,7 +825,10 @@ describe("SlackRuntime foundations", () => {
     const runtime = new SlackRuntime(runtimeConfig, { operations });
     await runtime.registerRoute(testRoute);
     await runtime.start();
-    const sendChannelMessage = async (text: string, ts: string, user = "U_DRIVER") => operations.handler!({ type: "event_callback", envelopeId: `channel-env-${ts}`, eventId: `channel-event-${ts}`, event: { type: "message", channel: "C1", channel_type: "channel", user, text, ts, team: "T1" } });
+    const sendChannelMessage = async (text: string, ts: string, user = "U_DRIVER", threadTs?: string) => operations.handler!({ type: "event_callback", envelopeId: `channel-env-${ts}`, eventId: `channel-event-${ts}`, event: { type: "message", channel: "C1", channel_type: "channel", user, text, ts, thread_ts: threadTs, team: "T1" } });
+
+    await sendChannelMessage("relay delegate local should wait for pairing", "69");
+    expect(await store.listDelegationTasks({ roomConversationId: "C1" })).toHaveLength(0);
 
     await sendChannelMessage(`relay pair ${nonce}`, "70");
     expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", text: expect.stringContaining("Slack paired") });
@@ -833,6 +836,15 @@ describe("SlackRuntime foundations", () => {
 
     await sendChannelMessage("ordinary channel prompt after pairing", "70.1");
     expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith("ordinary channel prompt after pairing");
+
+    await sendChannelMessage("relay delegate local run channel task", "70.2", "U_DRIVER", "thread-70");
+    const [delegationTask] = await store.listDelegationTasks({ roomConversationId: "C1" });
+    expect(delegationTask).toMatchObject({ status: "claimable", room: { threadId: "thread-70" } });
+    await sendChannelMessage(`relay task claim ${delegationTask!.id}`, "70.3", "U_DRIVER", "thread-70");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith(expect.stringContaining(`delegated task ${delegationTask!.id}`));
+    testRoute.notification.lastAssistantText = "Channel task done.";
+    await runtime.notifyTurnCompleted(testRoute, "completed");
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", threadTs: "thread-70", text: expect.stringContaining("Status: completed") });
 
     await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
     const sendCount = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;

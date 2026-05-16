@@ -106,6 +106,8 @@ describe("TunnelStateStore", () => {
     expect(await store.getDelegationTask("task-1")).toMatchObject({ id: "task-1", goal: "Run tests with [redacted]" });
     expect(await store.listDelegationTasks({ roomConversationId: "C1" })).toHaveLength(1);
     expect(await store.listDelegationAudit()).toHaveLength(1);
+    await store.upsertDelegationTask(task, { maxAuditEntries: 10 });
+    expect(await store.listDelegationAudit()).toHaveLength(1);
     expect(JSON.stringify(await store.load())).not.toContain("secret-value");
   });
 

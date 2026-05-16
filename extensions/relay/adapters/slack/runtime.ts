@@ -189,7 +189,7 @@ export class SlackRuntime {
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     await this.stopThinkingReaction(route.sessionKey);
     this.clearProgressState(route);
-    await this.finishActiveDelegationTask(route, status);
+    if (await this.finishActiveDelegationTask(route, status)) return;
     if (!this.adapter) return;
     const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused && status === "completed") return;
@@ -486,7 +486,9 @@ export class SlackRuntime {
 
   private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
     const slackConfig = this.configForInstance();
-    if (!this.adapter || !slackConfig?.delegation?.enabled) return false;
+    if (!this.adapter || !slackConfig?.delegation?.enabled || !slackConfig.sharedRoom?.enabled || !slackConfig.allowChannelMessages) return false;
+    const pairedBindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
+    if (pairedBindings.length === 0) return false;
     const decision = await evaluateDelegationIngress({
       command,
       message,
@@ -518,6 +520,7 @@ export class SlackRuntime {
       case "history":
         await this.sendText(message, decision.text);
         return true;
+      case "approve":
       case "cancel":
       case "decline":
         await this.store.upsertDelegationTask(decision.task);
@@ -566,20 +569,21 @@ export class SlackRuntime {
     await this.sendDelegationTaskCard(message, next);
   }
 
-  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
-    if (!this.adapter) return;
+  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<boolean> {
+    if (!this.adapter) return false;
     const taskId = this.activeDelegationTaskBySessionKey.get(route.sessionKey);
-    if (!taskId) return;
+    if (!taskId) return false;
     this.activeDelegationTaskBySessionKey.delete(route.sessionKey);
     const task = await this.store.getDelegationTask(taskId);
-    if (!task) return;
+    if (!task) return false;
     const summary = route.notification.lastAssistantText ?? route.notification.lastFailure ?? status;
     const transition = status === "completed"
       ? transitionDelegationTask(task, { kind: "complete", summary })
       : transitionDelegationTask(task, { kind: "fail", reason: summary });
     const next = transition.ok ? transition.task : task;
     await this.store.upsertDelegationTask(next);
-    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: next.room.conversationId, userId: "delegation" }, renderDelegationTaskCard(next, { commandPrefix: "relay task" }).text);
+    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: next.room.conversationId, userId: "delegation", ...(next.room.threadId ? { threadTs: next.room.threadId } : {}) } as ChannelRouteAddress, renderDelegationTaskCard(next, { commandPrefix: "relay task" }).text);
+    return true;
   }
 
   private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {

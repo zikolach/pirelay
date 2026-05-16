@@ -359,7 +359,7 @@ export function evaluateDelegationEligibility(input: DelegationEligibilityInput,
   if (isDelegationTaskTerminal(input.task)) return { eligible: false, reason: "terminal" };
   if (isDelegationTaskExpired(input.task, now)) return { eligible: false, reason: "expired" };
   if (!isDelegationDepthAllowed(input.task.depth, input.maxDepth)) return { eligible: false, reason: "depth-exceeded" };
-  if ((input.eligibleSessionKeys?.length ?? 1) > 1) return { eligible: false, reason: "ambiguous-session" };
+  if (input.eligibleSessionKeys !== undefined && input.eligibleSessionKeys.length !== 1) return { eligible: false, reason: "ambiguous-session" };
   if (input.task.target.kind === "machine") {
     if (input.task.target.machineId !== input.localMachineId) return { eligible: false, reason: "remote-target" };
     return { eligible: true, reason: "targeted-machine", requiresHuman: input.autonomy === "propose-only" };

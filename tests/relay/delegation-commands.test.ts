@@ -41,6 +41,7 @@ describe("delegation command parsing and rendering", () => {
 
   it("parses task lifecycle controls and history", () => {
     expect(parseDelegationCommand("task", "claim task-1")).toEqual({ kind: "claim", taskId: "task-1" });
+    expect(parseDelegationCommand("task", "approve task-1")).toEqual({ kind: "approve", taskId: "task-1" });
     expect(parseDelegationCommand("task", "cancel task-1 no longer needed")).toEqual({ kind: "cancel", taskId: "task-1", reason: "no longer needed" });
     expect(parseDelegationCommand("decline", "task-1 busy")).toEqual({ kind: "decline", taskId: "task-1", reason: "busy" });
     expect(parseDelegationCommand("task", "task-1")).toEqual({ kind: "status", taskId: "task-1" });

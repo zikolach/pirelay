@@ -1051,6 +1051,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       case "history":
         await this.api.sendPlainText(message.chat.id, decision.text);
         return true;
+      case "approve":
       case "cancel":
       case "decline":
         await this.store.upsertDelegationTask(decision.task);

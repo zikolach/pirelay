@@ -6,6 +6,7 @@ import { parseRemoteCommandInvocation } from "./remote.js";
 export type DelegationCommand =
   | { kind: "create"; target: DelegationTaskTarget; goal: string; rawGoal: string; awaitApproval: boolean }
   | { kind: "claim"; taskId: string }
+  | { kind: "approve"; taskId: string }
   | { kind: "decline"; taskId: string; reason?: string }
   | { kind: "cancel"; taskId: string; reason?: string }
   | { kind: "status"; taskId: string }
@@ -41,6 +42,7 @@ export function parseDelegationCommand(command: string, args: string): Delegatio
   const normalized = command.trim().toLowerCase().replace(/_/g, "-");
   if (normalized === "delegate" || normalized === "propose") return parseCreateCommand(args, normalized === "propose");
   if (normalized === "claim") return parseTaskIdCommand("claim", args);
+  if (normalized === "approve") return parseTaskIdCommand("approve", args);
   if (normalized === "decline") return parseTaskIdWithReasonCommand("decline", args);
   if (normalized === "cancel") return parseTaskIdWithReasonCommand("cancel", args);
   if (normalized === "task") return parseTaskCommand(args);
@@ -115,6 +117,7 @@ function parseTaskCommand(args: string): DelegationCommand | undefined {
   if (!parsed) return { kind: "history" };
   const subcommand = parsed.first.toLowerCase().replace(/_/g, "-");
   if (subcommand === "claim") return parseTaskIdCommand("claim", parsed.rest);
+  if (subcommand === "approve") return parseTaskIdCommand("approve", parsed.rest);
   if (subcommand === "decline") return parseTaskIdWithReasonCommand("decline", parsed.rest);
   if (subcommand === "cancel") return parseTaskIdWithReasonCommand("cancel", parsed.rest);
   if (subcommand === "status") return parseTaskIdCommand("status", parsed.rest);
@@ -127,7 +130,7 @@ function parseHistoryCommand(args: string): DelegationCommand {
   return taskId ? { kind: "history", taskId } : { kind: "history" };
 }
 
-function parseTaskIdCommand(kind: "claim" | "status", args: string): DelegationCommand | undefined {
+function parseTaskIdCommand(kind: "claim" | "approve" | "status", args: string): DelegationCommand | undefined {
   const taskId = args.trim().split(/\s+/)[0]?.trim();
   if (!taskId) return undefined;
   return { kind, taskId };

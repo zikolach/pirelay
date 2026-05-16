@@ -149,7 +149,7 @@ export class DiscordRuntime {
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.stopTypingActivity(route.sessionKey);
-    await this.finishActiveDelegationTask(route, status);
+    if (await this.finishActiveDelegationTask(route, status)) return;
     if (!this.adapter) return;
     const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding) return;
@@ -431,6 +431,7 @@ export class DiscordRuntime {
       case "history":
         await this.sendText(message, decision.text);
         return true;
+      case "approve":
       case "cancel":
       case "decline":
         await this.store.upsertDelegationTask(decision.task);
@@ -479,13 +480,13 @@ export class DiscordRuntime {
     await this.sendDelegationTaskCard(message, next);
   }
 
-  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
-    if (!this.adapter) return;
+  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<boolean> {
+    if (!this.adapter) return false;
     const taskId = this.activeDelegationTaskBySessionKey.get(route.sessionKey);
-    if (!taskId) return;
+    if (!taskId) return false;
     this.activeDelegationTaskBySessionKey.delete(route.sessionKey);
     const task = await this.store.getDelegationTask(taskId);
-    if (!task) return;
+    if (!task) return false;
     const summary = summarizeTextDeterministically(route.notification.lastAssistantText ?? route.notification.lastFailure ?? status, 320);
     const transition = status === "completed"
       ? transitionDelegationTask(task, { kind: "complete", summary: summary || "Completed." })
@@ -493,6 +494,7 @@ export class DiscordRuntime {
     const next = transition.ok ? transition.task : task;
     await this.store.upsertDelegationTask(next);
     await this.adapter.sendText({ channel: DISCORD_CHANNEL, conversationId: next.room.conversationId, userId: "delegation" }, renderDelegationTaskCard(next, { commandPrefix: "relay task" }).text);
+    return true;
   }
 
   private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {
