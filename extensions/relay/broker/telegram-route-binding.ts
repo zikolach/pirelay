@@ -15,8 +15,12 @@ export function persistedTelegramBindingForRoute(route: Pick<BrokerTelegramRoute
   return binding;
 }
 
-export function routeWithPersistedTelegramBinding<T extends BrokerTelegramRouteLike>(route: T, state: BrokerTelegramRouteBindingState): T {
-  if (route.binding) return route;
+export type BrokerTelegramRouteWithOptionalBinding<T extends Pick<BrokerTelegramRouteLike, "sessionKey">> = T & { binding?: TelegramBindingMetadata };
+
+export function routeWithPersistedTelegramBinding<T extends BrokerTelegramRouteLike & { binding: TelegramBindingMetadata }>(route: T, state: BrokerTelegramRouteBindingState): T;
+export function routeWithPersistedTelegramBinding<T extends Pick<BrokerTelegramRouteLike, "sessionKey">>(route: T, state: BrokerTelegramRouteBindingState): BrokerTelegramRouteWithOptionalBinding<T>;
+export function routeWithPersistedTelegramBinding<T extends Pick<BrokerTelegramRouteLike, "sessionKey">>(route: T, state: BrokerTelegramRouteBindingState): BrokerTelegramRouteWithOptionalBinding<T> {
+  if ("binding" in route && route.binding) return route as BrokerTelegramRouteWithOptionalBinding<T>;
   const binding = persistedTelegramBindingForRoute(route, state);
   return binding ? { ...route, binding } : route;
 }
