@@ -232,17 +232,20 @@ export class DiscordRuntime {
 
     const command = parseDiscordCommand(text) ?? parseDiscordCommand(stripLeadingDiscordMentions(text));
     const delegationCommand = parseDelegationInvocation(text, { prefixes: ["relay"] }) ?? parseDelegationInvocation(stripLeadingDiscordMentions(text), { prefixes: ["relay"] });
-    if (delegationCommand && this.isSharedRoomMessage(message) && await this.handleDelegationMessage(message, delegationCommand)) return;
-    if (this.isSharedRoomMessage(message) && !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
-      if (this.shouldRejectUnauthorizedSharedRoomEvent(message, command)) {
-        await this.sendText(message, "This Discord identity is not authorized to control this PiRelay machine bot.");
+    if (delegationCommand && this.isSharedRoomMessage(message)) {
+      if (await this.handleDelegationMessage(message, delegationCommand)) return;
+      return;
+    }
+    const sharedRoomDecision = this.isSharedRoomMessage(message) ? await this.applySharedRoomPreRouting(message, command) : { kind: "continue" as const };
+    if (sharedRoomDecision.kind === "silent") return;
+    const routedMessage = sharedRoomDecision.kind === "continue" ? sharedRoomDecision.message ?? message : message;
+    const routedCommand = sharedRoomDecision.kind === "continue" ? sharedRoomDecision.command ?? command : command;
+    if (this.isSharedRoomMessage(message) && !isDiscordIdentityAllowed(routedMessage.sender, this.config.discord)) {
+      if (this.shouldRejectUnauthorizedSharedRoomEvent(routedMessage, routedCommand)) {
+        await this.sendText(routedMessage, "This Discord identity is not authorized to control this PiRelay machine bot.");
       }
       return;
     }
-    const sharedRoomDecision = await this.applySharedRoomPreRouting(message, command);
-    if (sharedRoomDecision.kind === "silent") return;
-    const routedMessage = sharedRoomDecision.message ?? message;
-    const routedCommand = sharedRoomDecision.command ?? command;
     const preferredSessionKey = routedCommand?.name === "to" ? await this.targetSessionKeyForToCommand(routedMessage, routedCommand.args) : await this.sharedRoomPreferredSessionKey(routedMessage);
     const binding = await this.findDiscordBinding(routedMessage, { preferredSessionKey });
     if (!binding || !isDiscordIdentityAllowed(routedMessage.sender, this.config.discord)) {
@@ -399,6 +402,10 @@ export class DiscordRuntime {
   private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
     const discordConfig = this.config.discord;
     if (!this.adapter || !discordConfig?.delegation?.enabled || !discordConfig.sharedRoom?.enabled || !discordConfig.allowGuildChannels || message.conversation.kind === "private") return false;
+    if (command.kind === "create") {
+      const target = resolveSharedRoomMachineTarget({ selector: command.target.kind === "machine" ? command.target.machineId : "", localMachine: this.sharedRoomMachineIdentity() });
+      if (command.target.kind === "machine" && target.kind !== "local") return false;
+    }
     const pairedBindings = await this.store.getChannelBindingsForConversation(DISCORD_CHANNEL, message.conversation.id, this.instanceId);
     if (pairedBindings.length === 0) return false;
     const room = delegationRoomFromMessage(message, this.instanceId);

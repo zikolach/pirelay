@@ -572,10 +572,11 @@ describe("DiscordRuntime", () => {
     await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "channel" } });
 
     await ops.handler?.(discordMessage("relay delegate laptop run docs tests", { channelId: "room1", guildId: "g1" }));
+    const beforeTasks = await store.listDelegationTasks({ roomConversationId: "room1" });
     expect(ops.messages.some((message) => message.content.includes("Delegation task-"))).toBe(true);
     expect(ops.messages.at(-1)?.components?.[0]?.[0]).toMatchObject({ label: "Claim" });
 
-    const [task] = await store.listDelegationTasks({ roomConversationId: "room1" });
+    const [task] = beforeTasks;
     expect(task).toMatchObject({ status: "claimable", target: { kind: "machine", machineId: "laptop" } });
 
     await ops.handler?.(discordMessage(`relay task claim ${task!.id}`, { channelId: "room1", guildId: "g1" }));
@@ -596,6 +597,44 @@ describe("DiscordRuntime", () => {
     await ops.handler?.(discordMessage("relay delegate laptop trusted task", { channelId: "room1", guildId: "g1", userId: "peer-bot", bot: true }));
     const tasks = await store.listDelegationTasks({ roomConversationId: "room1" });
     expect(tasks.some((candidate) => candidate.sourceMachineId === "peer-bot")).toBe(true);
+  });
+
+  it("routes shared-room delegation cards only to locally targeted Discord bot", async () => {
+    const laptopCfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true }, delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false } });
+    laptopCfg.machineId = "laptop";
+    laptopCfg.machineDisplayName = "Laptop";
+    laptopCfg.machineAliases = ["lap"];
+    const desktopCfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true }, delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false } });
+    desktopCfg.machineId = "desktop";
+    desktopCfg.machineDisplayName = "Desktop";
+    desktopCfg.machineAliases = ["desk"];
+
+    const laptopOps = new FakeDiscordOperations();
+    const desktopOps = new FakeDiscordOperations();
+    const laptopRuntime = new DiscordRuntime(laptopCfg, { operations: laptopOps });
+    const desktopRuntime = new DiscordRuntime(desktopCfg, { operations: desktopOps });
+    const { route: laptopRoute } = route();
+    const { route: desktopRoute } = route();
+    desktopRoute.sessionKey = "desktop-session:memory";
+    desktopRoute.sessionId = "desktop-session";
+    desktopRoute.sessionLabel = "API";
+
+    await laptopRuntime.registerRoute(laptopRoute);
+    await desktopRuntime.registerRoute(desktopRoute);
+    await laptopRuntime.start();
+    await desktopRuntime.start();
+
+    const now = new Date().toISOString();
+    const nowStore = new TunnelStateStore(laptopCfg.stateDir);
+    await nowStore.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: laptopRoute.sessionKey, sessionId: laptopRoute.sessionId, sessionLabel: laptopRoute.sessionLabel, metadata: { alias: "docs" }, boundAt: now, lastSeenAt: now });
+    const otherStore = new TunnelStateStore(desktopCfg.stateDir);
+    await otherStore.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: desktopRoute.sessionKey, sessionId: desktopRoute.sessionId, sessionLabel: desktopRoute.sessionLabel, metadata: { alias: "api" }, boundAt: now, lastSeenAt: now });
+
+    await laptopOps.handler?.(discordMessage("relay delegate laptop run docs tests", { channelId: "room1", guildId: "g1" }));
+    await desktopOps.handler?.(discordMessage("relay delegate laptop run docs tests", { channelId: "room1", guildId: "g1" }));
+
+    expect(laptopOps.messages.some((message) => message.content.includes("Delegation task-") )).toBe(true);
+    expect(desktopOps.messages).toHaveLength(0);
   });
 
   it("does not treat arbitrary Discord user mentions as remote bot targeting", async () => {

@@ -888,6 +888,107 @@ describe("SlackRuntime foundations", () => {
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledTimes(callsBeforeRemoteTarget);
   });
 
+  it("allows delegation task claim in the same Slack root thread (without thread metadata)", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.machineId = "laptop";
+    runtimeConfig.machineAliases = ["lap"];
+    runtimeConfig.machineDisplayName = "Laptop";
+    runtimeConfig.slack = {
+      ...runtimeConfig.slack!,
+      allowChannelMessages: true,
+      allowUserIds: ["U_DRIVER", "U_OTHER"],
+      delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+    };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const { nonce } = await store.createPendingPairing({
+      channel: "slack",
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      expiryMs: 300_000,
+      codeKind: "pin",
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+    const sendChannelMessage = async (text: string, ts: string, user = "U_DRIVER", threadTs?: string) => operations.handler!({
+      type: "event_callback",
+      envelopeId: `root-env-${ts}`,
+      eventId: `root-event-${ts}`,
+      event: { type: "message", channel: "C1", channel_type: "channel", user, text, ts, thread_ts: threadTs, team: "T1" },
+    });
+
+    await sendChannelMessage(`relay pair ${nonce}`, "1");
+    await sendChannelMessage("relay delegate laptop run root thread task", "100");
+    const [task] = await store.listDelegationTasks({ roomConversationId: "C1" });
+    expect(task).toMatchObject({ status: "claimable", room: { conversationId: "C1" } });
+    expect(task?.room.threadId).toBeUndefined();
+
+    await sendChannelMessage(`relay task claim ${task!.id}`, "101");
+    expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith(expect.stringContaining(`delegated task ${task!.id}`));
+  });
+
+  it("acknowledges delegation actions and keeps action responses scoped", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.machineId = "laptop";
+    runtimeConfig.machineAliases = ["lap"];
+    runtimeConfig.machineDisplayName = "Laptop";
+    runtimeConfig.slack = {
+      ...runtimeConfig.slack!,
+      allowChannelMessages: true,
+      allowUserIds: ["U_DRIVER"],
+      delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+    };
+    const testRoute = route();
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const { nonce } = await store.createPendingPairing({
+      channel: "slack",
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      expiryMs: 300_000,
+      codeKind: "pin",
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+    const sendChannelMessage = async (text: string, ts: string, user = "U_DRIVER", threadTs?: string) => operations.handler!({
+      type: "event_callback",
+      envelopeId: `action-env-${ts}`,
+      eventId: `action-event-${ts}`,
+      event: { type: "message", channel: "C1", channel_type: "channel", user, text, ts, thread_ts: threadTs, team: "T1" },
+    });
+
+    await sendChannelMessage(`relay pair ${nonce}`, "201");
+    await sendChannelMessage("relay delegate laptop run action task", "202");
+    const [task] = await store.listDelegationTasks({ roomConversationId: "C1" });
+
+    await operations.handler!({
+      type: "block_actions",
+      channel: { id: "C1" },
+      user: { id: "U_DRIVER", team_id: "T1" },
+      actions: [{ value: `pirelay:delegation:claim:${task!.id}` }],
+      response_url: "https://hooks.slack.test/delegation-action",
+    });
+    expect(operations.responses.at(-1)).toMatchObject({
+      url: "https://hooks.slack.test/delegation-action",
+      text: "Delegation action handled.",
+    });
+
+    await operations.handler!({
+      type: "block_actions",
+      channel: { id: "C1" },
+      user: { id: "U_DRIVER", team_id: "T1" },
+      actions: [{ value: "pirelay:delegation:approve:missing-task" }],
+      response_url: "https://hooks.slack.test/delegation-action-stale",
+    });
+    expect(operations.responses.at(-1)).toMatchObject({
+      url: "https://hooks.slack.test/delegation-action-stale",
+      text: "Delegation action was ignored or stale.",
+    });
+  });
+
   it("routes Slack shared-room messages only when locally targeted or actively selected", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();

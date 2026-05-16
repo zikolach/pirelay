@@ -351,7 +351,10 @@ export class SlackRuntime {
     if (!this.adapter || event.channel !== SLACK_CHANNEL) return;
     try {
       if (event.kind === "action") {
-        if (await this.handleDelegationAction(event)) return;
+        if (actionFromDelegationSurface(event)) {
+          await this.handleDelegationAction(event);
+          return;
+        }
         await this.handleAction(event);
         return;
       }
@@ -389,6 +392,34 @@ export class SlackRuntime {
     await this.adapter.answerAction(action.actionId, { text: "Slack action received." });
   }
 
+  private async handleDelegationAction(action: ChannelInboundAction): Promise<void> {
+    const slackConfig = this.configForInstance();
+    if (!this.adapter || action.conversation.kind === "private") return;
+    const command = delegationCommandFromAction(action);
+    if (!command) return;
+    const taskId = command.kind === "create" ? undefined : command.taskId;
+    if (taskId) {
+      const existing = await this.store.getDelegationTask(taskId, { runningTimeoutMs: slackConfig?.delegation?.runningTimeoutMs });
+      if (!existing) {
+        await this.adapter.answerAction(action.actionId, { text: "Delegation action was ignored or stale." });
+        return;
+      }
+    }
+    const message: ChannelInboundMessage = {
+      kind: "message",
+      channel: action.channel,
+      updateId: action.updateId,
+      messageId: action.messageId ?? action.actionId,
+      text: action.actionData,
+      attachments: [],
+      conversation: action.conversation,
+      sender: action.sender,
+      metadata: action.metadata,
+    };
+    const handled = await this.handleDelegationMessage(message, command);
+    await this.adapter.answerAction(action.actionId, { text: handled ? "Delegation action handled." : "Delegation action was ignored or stale." });
+  }
+
   private async handleMessage(message: ChannelInboundMessage): Promise<void> {
     const slackConfig = this.configForInstance();
     const localBotUserId = this.localBotUserId();
@@ -398,12 +429,18 @@ export class SlackRuntime {
       await this.handlePairing(message, pairingCode);
       return;
     }
-    const delegationCommand = parseDelegationInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseDelegationInvocation(stripLeadingSlackMentions(message.text), { prefixes: ["relay", "pirelay"] });
-    if (delegationCommand && message.conversation.kind !== "private" && await this.handleDelegationMessage(message, delegationCommand)) return;
+    const delegatedCommand = parseDelegationInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseDelegationInvocation(stripLeadingSlackMentions(message.text), { prefixes: ["relay", "pirelay"] });
+    const routedMessage = await this.applySharedRoomPreRouting(message);
+    if (!routedMessage) {
+      if (delegatedCommand) return;
+      return;
+    }
+    if (delegatedCommand && routedMessage.conversation.kind !== "private") {
+      if (await this.handleDelegationMessage(routedMessage, delegatedCommand)) return;
+      return;
+    }
     if (isPeerBotIdentity(message.sender)) return;
     if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) return;
-    const routedMessage = await this.applySharedRoomPreRouting(message);
-    if (!routedMessage) return;
     const binding = await this.findSlackBinding(routedMessage) ?? await this.livePreseededBinding(routedMessage);
     if (!binding) {
       await this.sendText(message, message.conversation.kind === "private"
@@ -468,27 +505,13 @@ export class SlackRuntime {
     return hasLocalMention ? { ...message, text: stripLeadingSlackMentions(message.text) } : message;
   }
 
-  private async handleDelegationAction(action: ChannelInboundAction): Promise<boolean> {
-    if (action.conversation.kind === "private") return false;
-    const command = delegationCommandFromAction(action);
-    if (!command) return false;
-    const message: ChannelInboundMessage = {
-      kind: "message",
-      channel: action.channel,
-      updateId: action.updateId,
-      messageId: action.messageId ?? action.actionId,
-      text: action.actionData,
-      attachments: [],
-      conversation: action.conversation,
-      sender: action.sender,
-      metadata: action.metadata,
-    };
-    return this.handleDelegationMessage(message, command);
-  }
 
   private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
     const slackConfig = this.configForInstance();
     if (!this.adapter || !slackConfig?.delegation?.enabled || !slackConfig.sharedRoom?.enabled || !slackConfig.allowChannelMessages) return false;
+    if (command.kind === "create" && command.target.kind === "machine" && !isLocalSlackMachineSelector(command.target.machineId, this.config, slackConfig)) {
+      return false;
+    }
     const pairedBindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
     if (pairedBindings.length === 0) return false;
     const room = delegationRoomFromMessage(message, this.instanceId);
@@ -1293,20 +1316,23 @@ function hasHistoryReader(operations: SlackApiOperations | undefined): operation
 
 function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent | SlackMessageEventFromHistory, config: Parameters<typeof slackEventToChannelEvent>[1]): ChannelInboundMessage | undefined {
   if (!event.bot_id) return slackEventToChannelEvent(event, config);
+
   const senderUser = event.user;
   if (!senderUser || event.subtype && event.subtype !== "bot_message") return undefined;
+  const messageTs = event.ts;
+  const conversation = {
+    channel: SLACK_CHANNEL,
+    id: event.channel,
+    kind: event.channel_type === "im" ? "private" : event.channel_type === "channel" || event.channel_type === "group" ? "channel" : event.channel_type === "mpim" ? "group" : "unknown",
+  } as const;
   return {
     kind: "message",
     channel: SLACK_CHANNEL,
-    updateId: event.ts,
-    messageId: event.ts,
+    updateId: messageTs,
+    messageId: messageTs,
     text: event.text ?? "",
     attachments: [],
-    conversation: {
-      channel: SLACK_CHANNEL,
-      id: event.channel,
-      kind: event.channel_type === "im" ? "private" : event.channel_type === "channel" || event.channel_type === "group" ? "channel" : event.channel_type === "mpim" ? "group" : "unknown",
-    },
+    conversation,
     sender: {
       channel: SLACK_CHANNEL,
       userId: senderUser,
@@ -1314,8 +1340,14 @@ function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent |
       displayName: event.username,
       metadata: { teamId: event.team, botId: event.bot_id },
     },
-    metadata: { teamId: event.team, botId: event.bot_id, liveStubBotMessage: true },
+    metadata: { teamId: event.team, botId: event.bot_id, liveStubBotMessage: true, threadTs: pickSlackThreadTs(messageTs, (event as { thread_ts?: string }).thread_ts, conversation.kind === "private") },
   };
+}
+
+function pickSlackThreadTs(messageTs: string | undefined, threadTs: string | undefined, isPrivateConversation = false): string | undefined {
+  if (typeof threadTs === "string" && threadTs && threadTs !== messageTs) return threadTs;
+  if (isPrivateConversation && messageTs) return messageTs;
+  return undefined;
 }
 
 function parseSlackPairingCode(text: string): string | undefined {
@@ -1344,6 +1376,10 @@ function parseSlackCommand(text: string): SlackCommand | undefined {
 
 function stripLeadingSlackMentions(text: string): string {
   return text.replace(/^(?:\s*<@[A-Z0-9_]+>)+\s*/, "");
+}
+
+function actionFromDelegationSurface(action: ChannelInboundAction): boolean {
+  return !!delegationCommandFromAction(action);
 }
 
 function isLocalSlackMachineSelector(selector: string, config: TelegramTunnelConfig, slackConfig: NonNullable<TelegramTunnelConfig["slack"]>): boolean {

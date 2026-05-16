@@ -55,6 +55,54 @@ describe("SlackChannelAdapter", () => {
     expect(event!.conversation.kind).toBe("channel");
   });
 
+  it("keeps root Slack thread metadata unset for room matching", () => {
+    const rootEvent = slackEventToChannelEvent({
+      type: "message",
+      channel_type: "channel",
+      channel: "C1",
+      user: "U1",
+      text: "relay delegate laptop run tests",
+      ts: "171.4",
+      team: "T1",
+      thread_ts: "171.4",
+    }, config);
+    expect(rootEvent).toMatchObject({ metadata: { teamId: "T1", threadTs: undefined } });
+
+    const threadedEvent = slackEventToChannelEvent({
+      type: "message",
+      channel_type: "channel",
+      channel: "C1",
+      user: "U1",
+      text: "relay task claim x",
+      ts: "171.5",
+      team: "T1",
+      thread_ts: "171.4",
+    }, config);
+    expect(threadedEvent).toMatchObject({ metadata: { teamId: "T1", threadTs: "171.4" } });
+  });
+
+  it("keeps root Slack thread metadata unset for block actions", () => {
+    const action = slackEnvelopeToChannelEvent({
+      type: "block_actions",
+      channel: { id: "C1" },
+      user: { id: "U1", team_id: "T1" },
+      actions: [{ value: "full:t:chat" }],
+      message: { ts: "171.6", thread_ts: "171.6" },
+      response_url: "https://hooks.slack.test/response",
+    }, config);
+    expect(action).toMatchObject({ metadata: { teamId: "T1", threadTs: undefined } });
+
+    const threadedAction = slackEnvelopeToChannelEvent({
+      type: "block_actions",
+      channel: { id: "C1" },
+      user: { id: "U1", team_id: "T1" },
+      actions: [{ value: "full:t:chat" }],
+      message: { ts: "171.7", thread_ts: "171.4" },
+      response_url: "https://hooks.slack.test/response",
+    }, config);
+    expect(threadedAction).toMatchObject({ metadata: { teamId: "T1", threadTs: "171.4" } });
+  });
+
   it("chunks text, maps buttons, uploads files, and sends typing fallback", async () => {
     const postMessage = vi.fn(async (_payload: unknown) => undefined);
     const uploadFile = vi.fn(async (_payload: unknown) => undefined);

@@ -1160,6 +1160,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const setup = await this.ensureSetup();
     if (normalizeTelegramBotUsername(target.botUsername) !== normalizeTelegramBotUsername(setup.botUsername)) return true;
 
+    if (delegationCommand && await this.handleTelegramDelegationMessage(message, delegationCommand)) return true;
+
     if (target.command === "help") {
       await this.api.sendPlainText(message.chat.id, HELP_TEXT);
       return true;
@@ -1180,8 +1182,6 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const activeSessionKey = activeSelection?.sessionKey && entries.some((entry) => entry.sessionKey === activeSelection.sessionKey)
       ? activeSelection.sessionKey
       : undefined;
-
-    if (delegationCommand && await this.handleTelegramDelegationMessage(message, delegationCommand)) return true;
 
     switch (target.command) {
       case "sessions": {

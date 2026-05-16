@@ -289,16 +289,18 @@ export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: Sla
     const action = envelope.actions?.[0];
     const channelId = envelope.channel?.id ?? "";
     const user = envelope.user ?? { id: "unknown" };
+    const messageTs = envelope.message?.ts;
+    const threadTs = pickSlackThreadTs(messageTs, envelope.message?.thread_ts, slackConversationFromId(channelId));
     return {
       kind: "action",
       channel: SLACK_CHANNEL,
       updateId: envelope.trigger_id ?? `${channelId}:${envelope.message?.ts ?? Date.now()}`,
       actionId: buildSlackActionId({ channelId, userId: user.id, responseUrl: envelope.response_url, triggerId: envelope.trigger_id }),
-      messageId: envelope.message?.ts,
+      messageId: messageTs ?? `${channelId}:${Date.now()}`,
       actionData: action?.value ?? action?.action_id ?? "",
       conversation: slackConversationFromId(channelId),
       sender: slackIdentity(user.id, user.username ?? user.name, user.team_id ?? envelope.team?.id),
-    metadata: { teamId: envelope.team?.id, threadTs: envelope.message?.thread_ts ?? envelope.message?.ts },
+      metadata: { teamId: user.team_id ?? envelope.team?.id, threadTs },
     };
   }
   if (!envelope.event) throw new Error("Slack envelope does not contain a supported event.");
@@ -345,17 +347,25 @@ function sanitizeSlackSlashText(text: string | undefined): string {
 export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
   if (!event.user || event.bot_id || (event.subtype && event.subtype !== "file_share")) return undefined;
   const teamId = event.team;
+  const messageTs = event.ts;
+  const conversation = slackConversation(event.channel, event.channel_type);
   return {
     kind: "message",
     channel: SLACK_CHANNEL,
-    updateId: event.ts,
-    messageId: event.ts,
+    updateId: messageTs ?? "unknown",
+    messageId: messageTs ?? "unknown",
     text: event.text ?? "",
     attachments: (event.files ?? []).map((file) => slackFileToInboundFile(file, config)),
-    conversation: slackConversation(event.channel, event.channel_type),
+    conversation,
     sender: slackIdentity(event.user, event.username, teamId),
-    metadata: { teamId, threadTs: event.thread_ts ?? event.ts },
+    metadata: { teamId, threadTs: pickSlackThreadTs(messageTs, event.thread_ts, conversation) },
   };
+}
+
+function pickSlackThreadTs(messageTs: string | undefined, threadTs: string | undefined, conversation?: ChannelConversation): string | undefined {
+  if (typeof threadTs === "string" && threadTs && threadTs !== messageTs) return threadTs;
+  if (conversation?.kind === "private" && messageTs) return messageTs;
+  return undefined;
 }
 
 function slackThreadTs(address: ChannelRouteAddress): string | undefined {
