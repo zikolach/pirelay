@@ -2833,4 +2833,42 @@ describe("PiRelay integration behavior", () => {
 
     expect(deliveries).toEqual([{ text: "after reconnect prompt", deliverAs: undefined }]);
   });
+
+  it("keeps Telegram human delegation behind private pairing while allowing trusted peer bots", async () => {
+    const config = await createRuntimeConfig("pi-telegram-delegation-auth-");
+    config.delegation = {
+      enabled: true,
+      autonomy: "propose-only",
+      trustedPeers: [{ peerId: "999", allowCreate: true, targetMachineIds: ["local"], conversationIds: ["-1001"] }],
+    };
+    const store = new TunnelStateStore(config.stateDir);
+    await store.setSetup({ botId: 123456, botUsername: "pirelay_bot", botDisplayName: "PiRelay", validatedAt: new Date().toISOString() });
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 10,
+      messageId: 10,
+      text: "/delegate@pirelay_bot local run tests",
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 42, username: "human", isBot: false },
+    });
+
+    expect(sent.at(-1)).toContain("Pair with this bot in a private Telegram chat first");
+    expect(await store.listDelegationTasks({ roomConversationId: "-1001" })).toHaveLength(0);
+
+    await (runtime as any).processInbound({
+      updateId: 11,
+      messageId: 11,
+      text: "/delegate@pirelay_bot local run trusted peer task",
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 999, username: "peer", isBot: true },
+    });
+
+    expect(await store.listDelegationTasks({ roomConversationId: "-1001" })).toEqual([expect.objectContaining({ status: "awaiting-approval" })]);
+  });
 });

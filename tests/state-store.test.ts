@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDelegationTask } from "../extensions/relay/core/agent-delegation.js";
+import { createDelegationTask, transitionDelegationTask } from "../extensions/relay/core/agent-delegation.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 
 const tempDirs: string[] = [];
@@ -99,7 +99,7 @@ describe("TunnelStateStore", () => {
       redactionPatterns: [String.raw`secret-value`],
       room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
       expiryMs: 60000,
-      createdAt: "2026-05-15T00:00:00.000Z",
+      createdAt: "2030-05-15T00:00:00.000Z",
     });
 
     await store.upsertDelegationTask(task, { maxAuditEntries: 1 });
@@ -124,11 +124,11 @@ describe("TunnelStateStore", () => {
       goal: "Run tests",
       room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
       expiryMs: 60000,
-      createdAt: "2026-05-15T00:00:00.000Z",
+      createdAt: "2030-05-15T00:00:00.000Z",
     });
     await store.upsertDelegationTask({ ...task, status: "running" });
 
-    const changed = await store.markInFlightDelegationTasksStaleAfterRestart("2026-05-15T00:00:30.000Z");
+    const changed = await store.markInFlightDelegationTasksStaleAfterRestart("2030-05-15T00:00:30.000Z");
     expect(changed).toHaveLength(1);
     expect(await store.getDelegationTask("task-running")).toMatchObject({ status: "blocked" });
     expect(await store.listDelegationAudit({ taskId: "task-running" })).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "blocked" })]));
@@ -140,10 +140,48 @@ describe("TunnelStateStore", () => {
       goal: "Run tests",
       room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
       expiryMs: 600000,
+      createdAt: "2030-05-15T00:00:00.000Z",
+    });
+    await store.upsertDelegationTask({ ...timeoutTask, status: "running", startedAt: "2030-05-15T00:00:00.000Z" });
+    expect(await store.getDelegationTask("task-timeout", { runningTimeoutMs: 60_000, now: "2030-05-15T00:02:00.000Z" })).toMatchObject({ status: "expired" });
+  });
+
+  it("expires pending delegation tasks on read and rejects stale lifecycle writes", async () => {
+    const store = await createStore();
+    const task = createDelegationTask({
+      id: "task-race",
+      sourceMachineId: "source",
+      target: { kind: "machine", machineId: "target" },
+      goal: "Run tests",
+      room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
+      expiryMs: 60_000,
       createdAt: "2026-05-15T00:00:00.000Z",
     });
-    await store.upsertDelegationTask({ ...timeoutTask, status: "running", startedAt: "2026-05-15T00:00:00.000Z" });
-    expect(await store.getDelegationTask("task-timeout", { runningTimeoutMs: 60_000, now: "2026-05-15T00:02:00.000Z" })).toMatchObject({ status: "expired" });
+    await store.upsertDelegationTask(task);
+
+    expect(await store.getDelegationTask("task-race", { now: "2026-05-15T00:02:00.000Z" })).toMatchObject({ status: "expired" });
+    expect(await store.listDelegationTasks({ roomConversationId: "C1", now: "2026-05-15T00:02:00.000Z" })).toEqual([expect.objectContaining({ status: "expired" })]);
+
+    const fresh = createDelegationTask({
+      id: "task-claim-race",
+      sourceMachineId: "source",
+      target: { kind: "machine", machineId: "target" },
+      goal: "Run tests",
+      room: { messenger: "discord", instanceId: "default", conversationId: "C1" },
+      expiryMs: 60_000,
+      createdAt: "2030-05-15T00:00:00.000Z",
+    });
+    await store.upsertDelegationTask(fresh);
+    const firstClaim = transitionDelegationTask(fresh, { kind: "claim", claimant: { machineId: "target", sessionKey: "s1" } }, "2030-05-15T00:00:01.000Z");
+    const secondClaim = transitionDelegationTask(fresh, { kind: "claim", claimant: { machineId: "target", sessionKey: "s2" } }, "2030-05-15T00:00:02.000Z");
+    expect(firstClaim.ok).toBe(true);
+    expect(secondClaim.ok).toBe(true);
+
+    const first = await store.tryUpsertDelegationTask(firstClaim.ok ? firstClaim.task : fresh);
+    const second = await store.tryUpsertDelegationTask(secondClaim.ok ? secondClaim.task : fresh);
+    expect(first.applied).toBe(true);
+    expect(second).toMatchObject({ applied: false, reason: "conflict", task: { claimedBy: { sessionKey: "s1" } } });
+    expect(await store.getDelegationTask("task-claim-race")).toMatchObject({ claimedBy: { sessionKey: "s1" } });
   });
 
   it("serializes concurrent state updates so messenger bindings are not clobbered", async () => {

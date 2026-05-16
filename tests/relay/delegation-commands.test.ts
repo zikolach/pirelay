@@ -67,8 +67,8 @@ describe("delegation command parsing and rendering", () => {
   });
 
   it("maps platform action fallbacks without changing task semantics", () => {
-    expect(platformDelegationActionSurface("slack", task).textFallback).toContain("/pirelay task claim task-abc");
-    expect(platformDelegationActionSurface("discord", task).textFallback).toContain("/relay task claim task-abc");
+    expect(platformDelegationActionSurface("slack", task).textFallback).toContain("relay task claim task-abc");
+    expect(platformDelegationActionSurface("discord", task).textFallback).toContain("relay task claim task-abc");
     expect(platformDelegationActionSurface("telegram", task).textFallback).toContain("/task claim task-abc");
   });
 });

@@ -18,7 +18,7 @@ import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
-import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
+import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 
 const DISCORD_CHANNEL = "discord" as const;
@@ -236,6 +236,7 @@ export class DiscordRuntime {
       if (await this.handleDelegationMessage(message, delegationCommand)) return;
       return;
     }
+    if (isPeerBotIdentity(message.sender)) return;
     const sharedRoomDecision = this.isSharedRoomMessage(message) ? await this.applySharedRoomPreRouting(message, command) : { kind: "continue" as const };
     if (sharedRoomDecision.kind === "silent") return;
     const routedMessage = sharedRoomDecision.kind === "continue" ? sharedRoomDecision.message ?? message : message;
@@ -446,8 +447,7 @@ export class DiscordRuntime {
       case "approve":
       case "cancel":
       case "decline":
-        await this.store.upsertDelegationTask(decision.task);
-        await this.sendDelegationTaskCard(message, decision.task);
+        await this.persistDelegationTaskMutation(message, decision.task);
         return true;
       case "claim":
         await this.startClaimedDelegationTask(message, decision.task, decision.prompt, decision.requiresHuman);
@@ -455,10 +455,20 @@ export class DiscordRuntime {
     }
   }
 
+  private async persistDelegationTaskMutation(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<DelegationTaskRecord | undefined> {
+    const result = await this.store.tryUpsertDelegationTask(task);
+    if (!result.applied) {
+      await this.sendText(message, `Delegation task ${task.id} changed before this action could be applied.`);
+      await this.sendDelegationTaskCard(message, result.task);
+      return undefined;
+    }
+    await this.sendDelegationTaskCard(message, result.task);
+    return result.task;
+  }
+
   private async startClaimedDelegationTask(message: ChannelInboundMessage, task: DelegationTaskRecord, prompt: string, requiresHuman: boolean): Promise<void> {
     if (!this.adapter) return;
     if (requiresHuman) {
-      await this.store.upsertDelegationTask(task);
       await this.sendText(message, `Delegation task ${task.id} requires human approval before execution.`);
       return;
     }
@@ -476,25 +486,32 @@ export class DiscordRuntime {
       await this.sendText(message, `Delegation task ${task.id} could not start: no eligible online local session is available.`);
       return;
     }
+    const persisted = await this.store.tryUpsertDelegationTask(task);
+    if (!persisted.applied) {
+      await this.sendText(message, `Delegation task ${task.id} changed before this claim could be applied.`);
+      await this.sendDelegationTaskCard(message, persisted.task);
+      return;
+    }
+    const claimedTask = persisted.task;
     const outcome = await deliverRoutePrompt(route, {
       content: prompt,
       deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp",
       onCommit: async () => {
         route.lastActivityAt = Date.now();
-        this.activeDelegationTaskBySessionKey.set(route.sessionKey, task.id);
+        this.activeDelegationTaskBySessionKey.set(route.sessionKey, claimedTask.id);
       },
     });
     if (outcome.kind === "unavailable") {
-      const blocked = transitionDelegationTask(task, { kind: "block", reason: routeActionDisplayMessage(outcome) });
-      const next = blocked.ok ? blocked.task : task;
+      const blocked = transitionDelegationTask(claimedTask, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : claimedTask;
       await this.store.upsertDelegationTask(next);
       await this.sendDelegationTaskCard(message, next);
       return;
     }
     if (outcome.kind === "failed") throw outcome.error;
     if (outcome.kind !== "success") return;
-    const started = transitionDelegationTask(task, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
-    const next = started.ok ? started.task : task;
+    const started = transitionDelegationTask(claimedTask, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
+    const next = started.ok ? started.task : claimedTask;
     await this.store.upsertDelegationTask(next);
     await this.sendDelegationTaskCard(message, next);
   }

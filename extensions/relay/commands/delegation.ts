@@ -98,7 +98,7 @@ export function renderDelegationTaskCard(task: DelegationTaskRecord, options: { 
 }
 
 export function platformDelegationActionSurface(platform: MessengerKind | (string & {}), task: DelegationTaskRecord): PlatformDelegationActionSurface {
-  const prefix = platform === "slack" ? "/pirelay task" : platform === "discord" ? "/relay task" : "/task";
+  const prefix = platform === "telegram" ? "/task" : "relay task";
   const actions = delegationTaskActionsForStatus(task, { commandPrefix: prefix });
   const textFallback = actions.length > 0 ? actions.map((action) => action.command).join(" | ") : `${prefix} status ${task.id}`;
   return { platform, textFallback, actions };

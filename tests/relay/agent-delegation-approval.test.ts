@@ -39,6 +39,7 @@ describe("delegation approval helpers", () => {
 
   it("renders approval options and safe summaries", () => {
     expect(delegationApprovalOptions({ taskId: "task-1", allowSessionGrant: true }).map((option) => option.id)).toEqual(["approve-once", "approve-for-task", "approve-for-session", "deny"]);
+    expect(delegationApprovalOptions({ allowPersistentGrant: true }).map((option) => option.id)).toEqual(["approve-once", "approve-persistent", "deny"]);
     expect(delegationApprovalOptions().map((option) => option.id)).toEqual(["approve-once", "deny"]);
     const summary = formatDelegationApprovalSummary({ ...operation, toolName: "TOKEN=secret-value" });
     expect(summary).toContain("Delegated task: task-1");

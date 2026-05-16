@@ -29,7 +29,7 @@ export interface DelegationApprovalGrant {
 }
 
 export interface DelegationApprovalDecisionOption {
-  id: "approve-once" | "approve-for-task" | "approve-for-session" | "deny";
+  id: "approve-once" | "approve-for-task" | "approve-for-session" | "approve-persistent" | "deny";
   label: string;
   grantScope?: DelegationApprovalGrantScope;
   dangerous?: boolean;
@@ -87,6 +87,7 @@ export function delegationApprovalOptions(input: { taskId?: string; allowSession
   ];
   if (input.taskId) options.push({ id: "approve-for-task", label: "Approve for this delegated task", grantScope: "task" });
   if (input.allowSessionGrant) options.push({ id: "approve-for-session", label: "Approve matching operations for this session", grantScope: "session" });
+  if (input.allowPersistentGrant) options.push({ id: "approve-persistent", label: "Approve matching operations persistently", grantScope: "persistent", dangerous: true });
   options.push({ id: "deny", label: "Deny", dangerous: true });
   return options;
 }

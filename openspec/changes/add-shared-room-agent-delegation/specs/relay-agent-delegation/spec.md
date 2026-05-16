@@ -30,6 +30,11 @@ PiRelay SHALL manage each delegation task through a bounded lifecycle with singl
 - **AND** prevents later duplicate claims from being accepted for the same task unless the task has been explicitly released or failed back to claimable
 - **AND** rejects or blocks the claim when the target session already has active delegated work and queued turns cannot preserve a task id per turn
 
+#### Scenario: Concurrent lifecycle mutations are serialized
+- **WHEN** two claim, approve, cancel, decline, start, or terminal updates race for the same stored delegation task
+- **THEN** PiRelay applies each lifecycle transition against the current stored task state inside the serialized state update or rejects the stale write with safe guidance
+- **AND** it does not overwrite a claimed, terminal, or otherwise newer task state with a transition computed from an older snapshot
+
 #### Scenario: Task completes
 - **WHEN** the target session completes delegated work with a final result
 - **THEN** PiRelay marks the task completed and reports a bounded result summary to the task room or thread through the target machine bot identity
@@ -128,6 +133,11 @@ PiRelay SHALL integrate delegated work with approval-gate semantics without trea
 - **WHEN** a human approves a delegation task or task-scoped operation
 - **THEN** PiRelay does not create persistent or cross-session approval grants unless persistent grants are explicitly enabled by local configuration and explicitly selected by an authorized approver
 
+#### Scenario: Persistent approval option is explicitly enabled
+- **WHEN** local configuration enables persistent approval grants for an approval surface
+- **THEN** PiRelay may render a distinct persistent approval option alongside approve-once, task, session, and deny options as applicable
+- **AND** the persistent option is not shown when persistent grants are not explicitly enabled
+
 ### Requirement: Delegation loop prevention
 PiRelay SHALL prevent delegation loops, self-triggering, and unbounded delegation chains.
 
@@ -146,6 +156,11 @@ PiRelay SHALL prevent delegation loops, self-triggering, and unbounded delegatio
 #### Scenario: Duplicate delivery is observed
 - **WHEN** Slack retries an event, Discord redelivers an interaction, Telegram update polling sees duplicate updates, or history fallback observes an already-handled task event
 - **THEN** PiRelay handles task creation, claim, cancellation, approval, and result reporting at most once for the persisted task event id or task id/action pair
+
+#### Scenario: Expired tasks are normalized on read
+- **WHEN** task status, task history, or a runtime lookup reads a proposed, awaiting-approval, claimable, claimed, or running task after its configured expiry or running timeout
+- **THEN** PiRelay returns and persists an expired terminal state before rendering the task or accepting further task actions
+- **AND** stale task cards no longer advertise expired tasks as claimable or awaiting approval
 
 ### Requirement: Delegation audit and history
 PiRelay SHALL record bounded non-secret audit events for delegation task lifecycle and supervision decisions.

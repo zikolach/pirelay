@@ -412,10 +412,19 @@ function sanitizeDelegationRoom(room: DelegationTaskRoomRef): DelegationTaskRoom
   return {
     messenger: safeIdentityText(room.messenger, "unknown") as DelegationTaskRoomRef["messenger"],
     instanceId: safeIdentityText(room.instanceId, "default"),
-    conversationId: safeIdentityText(room.conversationId, "unknown-conversation"),
-    threadId: room.threadId ? safeIdentityText(room.threadId, undefined) : undefined,
-    messageId: room.messageId ? safeIdentityText(room.messageId, undefined) : undefined,
+    conversationId: safeRoomRefText(room.conversationId, "unknown-conversation"),
+    threadId: room.threadId ? safeRoomRefText(room.threadId, undefined) : undefined,
+    messageId: room.messageId ? safeRoomRefText(room.messageId, undefined) : undefined,
   };
+}
+
+function safeRoomRefText(value: string | undefined, fallback = "unknown"): string {
+  const safe = String(value ?? "")
+    .replace(/[\r\n\t]+/g, "-")
+    .replace(/[^a-zA-Z0-9_.:@/-]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 128);
+  return safe || fallback;
 }
 
 function transitioned(

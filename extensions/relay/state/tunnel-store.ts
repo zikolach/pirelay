@@ -7,7 +7,7 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityStateFromData, resolveC
 import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../broker/channel-registry.js";
 import { decideRelayLifecycleNotification, relayLifecycleStorageKey, type RelayLifecycleEventKind, type RelayLifecycleNotificationDecision } from "../notifications/lifecycle.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
-import { expireDelegationTaskIfRunningTimedOut, markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord, type DelegationTaskRoomRef } from "../core/agent-delegation.js";
+import { expireDelegationTaskIfNeeded, expireDelegationTaskIfRunningTimedOut, markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord, type DelegationTaskRoomRef } from "../core/agent-delegation.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
 function emptyStore(): TunnelStoreData {
@@ -400,26 +400,32 @@ export class TunnelStateStore {
   }
 
   async upsertDelegationTask(task: DelegationTaskRecord, options: { maxAuditEntries?: number } = {}): Promise<DelegationTaskRecord> {
+    return (await this.tryUpsertDelegationTask(task, options)).task;
+  }
+
+  async tryUpsertDelegationTask(task: DelegationTaskRecord, options: { maxAuditEntries?: number } = {}): Promise<{ applied: boolean; task: DelegationTaskRecord; reason?: "conflict" }> {
     const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
+    let result: { applied: boolean; task: DelegationTaskRecord; reason?: "conflict" } = { applied: true, task };
     await this.update((data) => {
-      const existingEventIds = new Set(data.delegationTasks[task.id]?.audit.map((event) => event.eventId) ?? []);
-      const newAuditEvents = task.audit.filter((event) => !existingEventIds.has(event.eventId));
-      data.delegationTasks[task.id] = task;
-      data.delegationAudit = [...data.delegationAudit, ...newAuditEvents].slice(-maxAuditEntries);
+      const current = data.delegationTasks[task.id];
+      if (current && !delegationTaskIncludesAudit(task, current)) {
+        result = { applied: false, task: current, reason: "conflict" };
+        return;
+      }
+      saveDelegationTask(data, task, maxAuditEntries);
+      result = { applied: true, task };
     });
-    return task;
+    return result;
   }
 
   async getDelegationTask(taskId: string, options: { runningTimeoutMs?: number; now?: string } = {}): Promise<DelegationTaskRecord | undefined> {
-    if (!options.runningTimeoutMs) return (await this.load()).delegationTasks[taskId];
     let task: DelegationTaskRecord | undefined;
     await this.update((data) => {
       const current = data.delegationTasks[taskId];
       if (!current) return;
-      const next = expireDelegationTaskIfRunningTimedOut(current, options.runningTimeoutMs!, options.now ?? toIsoNow());
+      const next = normalizeDelegationTaskForRead(current, options);
       if (next !== current) {
-        data.delegationTasks[taskId] = next;
-        data.delegationAudit = [...data.delegationAudit, ...next.audit.slice(current.audit.length)].slice(-200);
+        saveDelegationTask(data, next, 200);
       }
       task = next;
     });
@@ -428,14 +434,13 @@ export class TunnelStateStore {
 
   async listDelegationTasks(options: { room?: DelegationTaskRoomRef; roomConversationId?: string; sourceMachineId?: string; targetMachineId?: string; limit?: number; runningTimeoutMs?: number; now?: string } = {}): Promise<DelegationTaskRecord[]> {
     const limit = Math.max(1, options.limit ?? 50);
-    const data = options.runningTimeoutMs ? await this.update((draft) => {
+    const data = await this.update((draft) => {
       for (const [taskId, current] of Object.entries(draft.delegationTasks)) {
-        const next = expireDelegationTaskIfRunningTimedOut(current, options.runningTimeoutMs!, options.now ?? toIsoNow());
+        const next = normalizeDelegationTaskForRead(current, options);
         if (next === current) continue;
-        draft.delegationTasks[taskId] = next;
-        draft.delegationAudit = [...draft.delegationAudit, ...next.audit.slice(current.audit.length)].slice(-200);
+        saveDelegationTask(draft, next, 200);
       }
-    }) : await this.load();
+    });
     return Object.values(data.delegationTasks)
       .filter((task) => !options.room || delegationRoomMatches(task.room, options.room))
       .filter((task) => !options.roomConversationId || task.room.conversationId === options.roomConversationId)
@@ -578,6 +583,24 @@ function trustedRelayUserStorageKey(channel: ChannelBinding["channel"], instance
 
 function channelSelectionStorageKey(channel: ChannelBinding["channel"], conversationId: string, userId: string): string {
   return `${channel}:${conversationId}:${userId}`;
+}
+
+function normalizeDelegationTaskForRead(task: DelegationTaskRecord, options: { runningTimeoutMs?: number; now?: string } = {}): DelegationTaskRecord {
+  const now = options.now ?? toIsoNow();
+  const expired = expireDelegationTaskIfNeeded(task, now);
+  return options.runningTimeoutMs ? expireDelegationTaskIfRunningTimedOut(expired, options.runningTimeoutMs, now) : expired;
+}
+
+function saveDelegationTask(data: TunnelStoreData, task: DelegationTaskRecord, maxAuditEntries: number): void {
+  const existingEventIds = new Set(data.delegationTasks[task.id]?.audit.map((event) => event.eventId) ?? []);
+  const newAuditEvents = task.audit.filter((event) => !existingEventIds.has(event.eventId));
+  data.delegationTasks[task.id] = task;
+  data.delegationAudit = [...data.delegationAudit, ...newAuditEvents].slice(-maxAuditEntries);
+}
+
+function delegationTaskIncludesAudit(candidate: DelegationTaskRecord, current: DelegationTaskRecord): boolean {
+  const candidateEventIds = new Set(candidate.audit.map((event) => event.eventId));
+  return current.audit.every((event) => candidateEventIds.has(event.eventId));
 }
 
 function delegationRoomMatches(left: DelegationTaskRoomRef, right: DelegationTaskRoomRef): boolean {

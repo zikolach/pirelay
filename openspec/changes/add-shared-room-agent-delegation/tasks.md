@@ -67,6 +67,9 @@
 - [x] 9.6 Persist delegation event/action idempotency keys and apply them to create and mutation paths across messenger redelivery/retry.
 - [x] 9.7 Mark unsafe in-flight delegation tasks stale on runtime/broker startup and enforce running timeouts.
 - [x] 9.8 Add regression tests for the hardening invariants above across core helpers, state store, and Telegram/Discord/Slack runtimes.
+- [x] 9.9 Add compare-and-set style task persistence so stale lifecycle transitions cannot overwrite newer task state.
+- [x] 9.10 Normalize expired pending and running tasks on task lookup/listing before rendering or accepting actions.
+- [x] 9.11 Add regression coverage for Telegram human delegation pairing boundaries, Discord bot-output inertness, executable text fallbacks, persistent approval options, and stale mutation conflicts.
 
 ## 10. Validation
 

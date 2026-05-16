@@ -35,6 +35,16 @@ Messenger relay sessions SHALL expose task controls through platform-appropriate
 - **WHEN** a user or peer bot sends a delegation command in a group/channel that is not enabled, paired, or selected as a shared-room control surface for that messenger instance
 - **THEN** PiRelay rejects or ignores the command before task creation, task mutation, prompt injection, callback handling, or media download
 
+#### Scenario: Telegram human delegation requires private pairing
+- **WHEN** a non-bot Telegram user addresses the bot with a delegation command in a group where that user has not completed the private pairing/session setup required for other group controls
+- **THEN** PiRelay rejects or guides setup before task creation, task mutation, or prompt injection
+- **AND** this human pairing boundary does not prevent explicitly configured trusted Telegram peer bots from being evaluated through peer-trust policy
+
 #### Scenario: Task status is requested
 - **WHEN** an authorized user requests status for a delegation task visible in the current room or thread
 - **THEN** PiRelay returns bounded task state including id, source, target, status, claimant when non-secret, expiry, and latest safe update
+
+#### Scenario: Text fallbacks use executable commands
+- **WHEN** PiRelay renders delegation task action text fallbacks for Slack, Discord, or Telegram
+- **THEN** the fallback commands match that platform's currently parsed command surface
+- **AND** unsupported slash-command syntax is not advertised as the only way to perform a task action

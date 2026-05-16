@@ -637,6 +637,25 @@ describe("DiscordRuntime", () => {
     expect(desktopOps.messages).toHaveLength(0);
   });
 
+  it("keeps bot-authored Discord delegation text inert outside shared rooms", async () => {
+    const cfg = await config({ allowUserIds: [], delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false } });
+    cfg.machineId = "local";
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: testRoute, sendUserMessage } = route();
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    const store = new TunnelStateStore(cfg.stateDir);
+    const now = new Date().toISOString();
+    await store.upsertChannelBinding({ channel: "discord", conversationId: "dm1", userId: "peer-bot", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: now, lastSeenAt: now });
+
+    await ops.handler?.(discordMessage("relay delegate local run tests", { userId: "peer-bot", bot: true }));
+
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(await store.listDelegationTasks({ roomConversationId: "dm1" })).toHaveLength(0);
+  });
+
   it("does not treat arbitrary Discord user mentions as remote bot targeting", async () => {
     const cfg = await config({ applicationId: "123", allowGuildChannels: true, allowGuildIds: ["g1"], sharedRoom: { enabled: true } });
     cfg.machineId = "laptop";

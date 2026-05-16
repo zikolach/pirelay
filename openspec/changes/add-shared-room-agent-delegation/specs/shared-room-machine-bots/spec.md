@@ -21,6 +21,11 @@ Shared-room machine bots SHALL treat bot-authored delegation events as actionabl
 - **WHEN** a machine bot observes bot-authored text that is not a validated delegation task, validated task action, or existing supported bot-to-bot command
 - **THEN** the broker treats the message as inert shared-room output and does not inject it as a prompt
 
+#### Scenario: Bot-authored delegation text outside validated shared rooms is ignored
+- **WHEN** a bot-authored message resembles a delegation command in a private chat, unpaired room, disabled shared room, or another conversation where the runtime will not validate shared-room delegation
+- **THEN** PiRelay drops the message before normal prompt routing
+- **AND** bot-authored delegation-like text is not delivered to a paired session as an ordinary user prompt
+
 ### Requirement: Delegation safe silence and loop prevention
 Shared-room machine bots SHALL preserve safe silence and loop-prevention invariants for delegation tasks.
 
