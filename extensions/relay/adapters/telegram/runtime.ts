@@ -41,6 +41,7 @@ import type {
   SessionStatusSnapshot,
   SetupCache,
   TelegramBindingMetadata,
+  PersistedBindingRecord,
   TelegramDownloadedImage,
   TelegramInboundCallback,
   TelegramInboundImageReference,
@@ -240,7 +241,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (route.binding) {
       const expected = { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: true };
       const outcome = resolveTelegramBindingAuthority(await this.store.loadBindingAuthoritySnapshot(), expected, route.binding);
-      route.binding = authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
+      if (authorityOutcomeAllowsDelivery(outcome)) {
+        route.binding = outcome.binding;
+        route.actions.clearLocalStatus?.("relay-binding-authority");
+      } else if (outcome.kind === "state-unavailable") {
+        route.actions.setLocalStatus?.("relay-binding-authority", bindingAuthorityDiagnostic(outcome) ?? "Relay state is unavailable; protected messenger delivery was suppressed.");
+      } else {
+        route.binding = undefined;
+      }
     }
     if (previousRoute?.binding?.chatId !== route.binding?.chatId && previousRoute?.binding) {
       this.clearActivityIndicator(previousRoute);
@@ -714,14 +722,21 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
 
-    const persisted = await this.activeBindingForMessage(message.chat.id, message.user.id);
+    const bindingSnapshot = await this.store.loadBindingAuthoritySnapshot();
+    if (bindingSnapshot.kind === "state-unavailable") {
+      await this.api.sendPlainText(message.chat.id, "Relay state is temporarily unavailable; retry shortly.");
+      return;
+    }
+    const chatBindings = this.bindingsForChatFromSnapshot(bindingSnapshot.data.bindings, message.chat.id);
+    const persisted = this.activeBindingForMessageFromBindings(chatBindings, message.chat.id, message.user.id);
     if (!persisted) {
-      const revoked = await this.chatUserHasRevokedBinding(message.chat.id, message.user.id);
+      const revoked = this.chatUserHasRevokedBindingFromBindings(chatBindings, message.user.id);
+      const chatHasActive = this.chatHasActiveBindingFromBindings(chatBindings);
       await this.api.sendPlainText(
         message.chat.id,
         revoked
           ? "This Telegram relay binding has been revoked. Pair again from Pi with /relay connect telegram."
-          : await this.chatHasActiveBinding(message.chat.id)
+          : chatHasActive
             ? "Unauthorized Telegram identity for this Pi session."
             : "This chat is not paired to an active Pi session. Run /relay connect telegram locally first.",
       );
@@ -2147,20 +2162,35 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async chatHasActiveBinding(chatId: number): Promise<boolean> {
-    return (await this.store.getBindingsByChatId(chatId)).some((binding) => binding.status !== "revoked");
+    return this.chatHasActiveBindingFromBindings(await this.store.getBindingsByChatId(chatId));
   }
 
   private async chatUserHasRevokedBinding(chatId: number, userId: number): Promise<boolean> {
-    return (await this.store.getBindingsByChatId(chatId)).some((binding) => binding.status === "revoked" && binding.userId === userId);
+    return this.chatUserHasRevokedBindingFromBindings(await this.store.getBindingsByChatId(chatId), userId);
   }
 
   private async activeBindingForMessage(chatId: number, userId: number): Promise<TelegramBindingMetadata | undefined> {
-    const bindings = (await this.store.getBindingsByChatId(chatId))
-      .filter((binding) => binding.status !== "revoked" && binding.userId === userId);
-    if (bindings.length === 0) return undefined;
+    return this.activeBindingForMessageFromBindings(await this.store.getBindingsByChatId(chatId), chatId, userId);
+  }
+
+  private bindingsForChatFromSnapshot(bindings: Record<string, PersistedBindingRecord>, chatId: number): PersistedBindingRecord[] {
+    return Object.values(bindings).filter((binding) => binding.chatId === chatId);
+  }
+
+  private chatHasActiveBindingFromBindings(bindings: readonly PersistedBindingRecord[]): boolean {
+    return bindings.some((binding) => binding.status !== "revoked");
+  }
+
+  private chatUserHasRevokedBindingFromBindings(bindings: readonly PersistedBindingRecord[], userId: number): boolean {
+    return bindings.some((binding) => binding.status === "revoked" && binding.userId === userId);
+  }
+
+  private activeBindingForMessageFromBindings(bindings: readonly PersistedBindingRecord[], chatId: number, userId: number): TelegramBindingMetadata | undefined {
+    const activeBindings = bindings.filter((binding) => binding.status !== "revoked" && binding.userId === userId);
+    if (activeBindings.length === 0) return undefined;
     const activeKey = this.activeSessionByChatUser.get(this.activeSessionKey(chatId, userId));
-    const active = activeKey ? bindings.find((binding) => binding.sessionKey === activeKey) : undefined;
-    return active ?? bindings.find((binding) => this.routes.has(binding.sessionKey)) ?? bindings[0];
+    const active = activeKey ? activeBindings.find((binding) => binding.sessionKey === activeKey) : undefined;
+    return active ?? activeBindings.find((binding) => this.routes.has(binding.sessionKey)) ?? activeBindings[0];
   }
 
   private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {

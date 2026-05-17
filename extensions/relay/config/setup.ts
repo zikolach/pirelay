@@ -19,7 +19,7 @@ export interface RelaySetupFacts {
 }
 
 export interface RelayLocalCommandIntent {
-  subcommand?: "setup" | "connect" | "send-file" | "disconnect" | "status" | "doctor" | "trusted" | "untrust";
+  subcommand?: "setup" | "connect" | "send-file" | "restart" | "disconnect" | "status" | "doctor" | "trusted" | "untrust";
   channel?: RelaySetupChannel;
   messengerRef?: string;
   sendFileTarget?: string;
@@ -49,7 +49,7 @@ export function completeRelayLocalCommand(prefix: string, options: { compatibili
   const parts = prefix.trim().split(/\s+/).filter(Boolean);
   const subcommands = options.compatibilityCommand
     ? ["setup", "connect", "disconnect", "status"]
-    : ["setup", "connect", "send-file", "doctor", "disconnect", "status", "trusted", "untrust"];
+    : ["setup", "connect", "send-file", "restart", "doctor", "disconnect", "status", "trusted", "untrust"];
 
   if (parts.length === 0) return subcommands;
   if (parts.length === 1 && !endsWithSpace) {
@@ -94,7 +94,7 @@ export function parseRelayLocalCommand(args: string, options: { compatibilityCom
       args: rest.slice(1).join(" "),
     };
   }
-  if (subcommand === "doctor" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
+  if (subcommand === "doctor" || subcommand === "restart" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
     return { subcommand, args: rest.join(" ") };
   }
 
@@ -449,7 +449,7 @@ function channelStatus(config: TelegramTunnelConfig, channel: RelaySetupChannel)
 }
 
 function normalizeSubcommand(value: string | undefined): RelayLocalCommandIntent["subcommand"] | undefined {
-  if (value === "setup" || value === "connect" || value === "send-file" || value === "disconnect" || value === "status" || value === "doctor" || value === "trusted" || value === "untrust") return value;
+  if (value === "setup" || value === "connect" || value === "send-file" || value === "restart" || value === "disconnect" || value === "status" || value === "doctor" || value === "trusted" || value === "untrust") return value;
   return undefined;
 }
 

@@ -41,6 +41,7 @@ describe("relay setup wizard helpers", () => {
     expect(completeRelayLocalCommand("connect di")).toEqual(["connect discord"]);
     expect(completeRelayLocalCommand("setup sl")).toEqual(["setup slack"]);
     expect(completeRelayLocalCommand("send-file ")).toEqual(["send-file all", "send-file telegram", "send-file discord", "send-file slack"]);
+    expect(completeRelayLocalCommand("res")).toEqual(["restart"]);
     expect(completeRelayLocalCommand("connect di", { compatibilityCommand: true })).toBeNull();
   });
 
@@ -54,6 +55,7 @@ describe("relay setup wizard helpers", () => {
     expect(parseRelayLocalCommand("connect slack:")).toMatchObject({ subcommand: "connect", unsupportedChannel: "slack:" });
     expect(parseRelayLocalCommand("setup matrix")).toMatchObject({ subcommand: "setup", unsupportedChannel: "matrix" });
     expect(parseRelayLocalCommand("doctor")).toEqual({ subcommand: "doctor", args: "" });
+    expect(parseRelayLocalCommand("restart")).toEqual({ subcommand: "restart", args: "" });
   });
 
   it("renders secret-safe doctor output and permission diagnostics", () => {

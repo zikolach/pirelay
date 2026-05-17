@@ -370,6 +370,7 @@ export interface TunnelRuntime {
   readonly setup?: SetupCache;
   start(): Promise<void>;
   stop(): Promise<void>;
+  restartBrokerProcess?(): Promise<void>;
   ensureSetup(): Promise<SetupCache>;
   registerRoute(route: SessionRoute): Promise<void>;
   unregisterRoute(sessionKey: string): Promise<void>;

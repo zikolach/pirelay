@@ -479,7 +479,14 @@ function getLiveRoutesForChat(chatId, userId) {
 
 async function getActiveLiveRoutesForChat(chatId, userId, state = undefined) {
   const active = [];
-  state = state ?? await loadState();
+  const snapshot = state ? bindingAuthorityStateFromData(state) : await loadStateSnapshot();
+  if (snapshot.kind === 'state-unavailable') {
+    for (const route of routes.values()) {
+      if (route.binding?.chatId === chatId && route.binding?.userId === userId) active.push(route);
+    }
+    return active;
+  }
+  state = snapshot.data;
   for (const route of routes.values()) {
     const binding = await activeBindingForRoute(route, { includePaused: true, state });
     if (!binding) {
@@ -493,7 +500,11 @@ async function getActiveLiveRoutesForChat(chatId, userId, state = undefined) {
 }
 
 async function getPersistedBindingsForChat(chatId, userId, state = undefined) {
-  state = state ?? await loadState();
+  if (!state) {
+    const snapshot = await loadStateSnapshot();
+    if (snapshot.kind === 'state-unavailable') return undefined;
+    state = snapshot.data;
+  }
   return Object.values(state.bindings)
     .filter((binding) => binding.chatId === chatId && binding.userId === userId && binding.status !== 'revoked');
 }
@@ -524,7 +535,7 @@ async function stripRevokedBindingFromRoute(route) {
 async function getSessionEntriesForChat(chatId, userId) {
   const state = await loadState();
   const live = await getActiveLiveRoutesForChat(chatId, userId, state);
-  const persisted = await getPersistedBindingsForChat(chatId, userId, state);
+  const persisted = await getPersistedBindingsForChat(chatId, userId, state) ?? [];
   const seen = new Set(live.map((route) => route.sessionKey));
   return [
     ...live.map(routeToSessionEntry),
@@ -1515,7 +1526,9 @@ async function handleAuthorizedCommand(message, route, command, args) {
   }
   if (!route || !binding) {
     const persisted = await getPersistedBindingsForChat(message.chat.id, message.user.id);
-    if (persisted.length > 0) {
+    if (!persisted) {
+      await sendPlainText(message.chat.id, 'Relay state is temporarily unavailable; retry shortly.');
+    } else if (persisted.length > 0) {
       await sendPlainText(message.chat.id, 'The selected Pi session is currently offline. Resume it locally, then try again.');
     } else {
       await sendPlainText(message.chat.id, 'This chat is not paired to an active Pi session. Run /relay connect telegram locally first.');
@@ -1905,6 +1918,10 @@ async function processCallback(callback) {
 
   if (!route) {
     const persisted = await getPersistedBindingsForChat(callback.chat.id, callback.user.id);
+    if (!persisted) {
+      await answerCallbackQuery(callback.callbackQueryId, 'Relay state unavailable.');
+      return;
+    }
     await answerCallbackQuery(callback.callbackQueryId, persisted.length > 0 ? 'Pi session is offline.' : 'This chat is not paired.');
     if (persisted.length > 0) {
       await sendPlainText(callback.chat.id, 'The selected Pi session is currently offline. Resume it locally, then try again.');

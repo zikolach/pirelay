@@ -222,16 +222,30 @@ export class SlackLiveOperations implements SlackApiOperations {
   }
 
   private async callSlackApi(method: string, token: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const response = await fetch(`https://slack.com/api/${method}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/x-www-form-urlencoded; charset=utf-8",
-      },
-      body: formEncode(removeUndefined(body)),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`https://slack.com/api/${method}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+        },
+        body: formEncode(removeUndefined(body)),
+      });
+    } catch (error) {
+      const message = redactSecrets(error instanceof Error ? error.message : String(error));
+      this.debug(`Slack API ${method} request failed: ${message}`);
+      throw new Error(`Slack API ${method} request failed: ${message}`);
+    }
     if (!response.ok) throw new Error(`Slack API ${method} failed with HTTP ${response.status}.`);
-    const payload = await response.json() as unknown;
+    let payload: unknown;
+    try {
+      payload = await response.json() as unknown;
+    } catch (error) {
+      const message = redactSecrets(error instanceof Error ? error.message : String(error));
+      this.debug(`Slack API ${method} returned invalid JSON: ${message}`);
+      throw new Error(`Slack API ${method} returned invalid JSON: ${message}`);
+    }
     if (!isRecord(payload)) throw new Error(`Slack API ${method} returned a non-object response.`);
     if (payload.ok === false) {
       const error = typeof payload.error === "string" ? payload.error : "unknown_error";

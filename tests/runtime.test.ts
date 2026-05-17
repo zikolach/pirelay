@@ -137,6 +137,61 @@ describe("InProcessTunnelRuntime", () => {
     expect((await store.getSetup())?.botId).toBe(123456);
   });
 
+  it("does not report Telegram chats as unpaired when state is temporarily unreadable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    await writeFile(join(config.stateDir, "state.json"), "{not-json", "utf8");
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 1,
+      messageId: 1,
+      text: "hello",
+      chat: { id: 100, type: "private" },
+      user: { id: 200, username: "owner" },
+    });
+
+    expect(sent.at(-1)).toBe("Relay state is temporarily unavailable; retry shortly.");
+  });
+
+  it("preserves volatile Telegram route binding when state is temporarily unreadable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-state-unreadable:/tmp/session-state-unreadable.jsonl",
+      sessionId: "session-state-unreadable",
+      sessionFile: "/tmp/session-state-unreadable.jsonl",
+      sessionLabel: "state-unreadable.jsonl",
+      chatId: 100,
+      userId: 200,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    await writeFile(join(config.stateDir, "state.json"), "{not-json", "utf8");
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const { route } = createRoute(binding);
+    const statuses: Array<{ key: string; value: string }> = [];
+    route.actions.setLocalStatus = (key, value) => statuses.push({ key, value });
+    route.actions.clearLocalStatus = (key) => statuses.push({ key, value: "" });
+    (runtime as any).api = {
+      getMe: vi.fn(async () => ({ id: 123456, is_bot: true, first_name: "PiRelay", username: "pirelay_bot" })),
+      getUpdates: vi.fn(async () => []),
+      sendPlainText: async () => undefined,
+    };
+    (runtime as any).pollLoop = vi.fn(async () => undefined);
+
+    await runtime.registerRoute(route);
+    await runtime.stop();
+
+    expect(route.binding).toMatchObject({ chatId: 100, userId: 200 });
+    expect(statuses).toContainEqual({ key: "relay-binding-authority", value: "Relay state is unavailable; protected messenger delivery was suppressed." });
+  });
+
   it("registers Telegram command menu after setup and continues when registration fails", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -934,7 +989,7 @@ describe("InProcessTunnelRuntime", () => {
 
     sends.length = 0;
     route.notification.lastTurnId = "turn-long";
-    route.notification.lastAssistantText = "Long output ".repeat(40);
+    route.notification.lastAssistantText = "Long output ".repeat(220);
 
     await runtime.notifyTurnCompleted(route, "completed");
 
@@ -943,7 +998,7 @@ describe("InProcessTunnelRuntime", () => {
 
     sends.length = 0;
     const decisionText = [
-      `${"Long decision output ".repeat(30)}`,
+      `${"Long decision output ".repeat(120)}`,
       "",
       "Choose:",
       "1. Review the current diff.",
