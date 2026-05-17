@@ -5,7 +5,7 @@ import { createDiscordLiveOperations } from "./live-client.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation, buildHelpText } from "../../commands/remote.js";
-import { parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
+import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
@@ -554,12 +554,7 @@ export class DiscordRuntime {
 
   private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {
     const card = renderDelegationTaskCard(task, { commandPrefix: "relay task" });
-    await this.sendText(message, card.text, this.delegationButtons(card.actions));
-  }
-
-  private delegationButtons(actions: ReturnType<typeof renderDelegationTaskCard>["actions"]): ChannelButtonLayout | undefined {
-    if (actions.length === 0) return undefined;
-    return [actions.map((action) => ({ label: action.label, actionData: action.actionId, style: action.kind === "claim" || action.kind === "approve" ? "primary" : action.kind === "cancel" ? "danger" : "default" }))];
+    await this.sendText(message, card.text, delegationTaskActionButtons(card.actions));
   }
 
   private async handlePairing(message: ChannelInboundMessage, code: string): Promise<void> {

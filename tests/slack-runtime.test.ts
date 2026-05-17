@@ -173,12 +173,13 @@ describe("SlackLiveOperations", () => {
     socket.emit("message", { data: "not-json" } as never);
     socket.emit("message", { data: JSON.stringify({ envelope_id: "env-1", payload: { type: "event_callback", event_id: "ev-1", team_id: "T1", event: { type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "hi", ts: "1" } } }) } as never);
     socket.emit("message", { data: JSON.stringify({ envelope_id: "env-2", type: "slash_commands", payload: { command: "/relay", text: "status", channel_id: "C1", channel_name: "general", user_id: "U1", user_name: "alice", team_id: "T1", trigger_id: "trigger-1", response_url: "https://hooks.slack.com/commands/T1/B1/response" } }) } as never);
-    socket.emit("message", { data: JSON.stringify({ envelope_id: "env-3", payload: { type: "block_actions", response_url: "https://hooks.slack.com/actions/T/B/secret", state: { values: "xapp-secret-token" }, token: "xoxb-secret-token", user: { id: "U1" }, channel: { id: "C1" }, actions: [{ value: "summary" }] } }) } as never);
+    socket.emit("message", { data: JSON.stringify({ envelope_id: "env-3", type: "interactive", payload: { type: "block_actions", response_url: "https://hooks.slack.com/actions/T/B/secret", state: { values: "xapp-secret-token" }, token: "xoxb-secret-token", user: { id: "U1" }, channel: { id: "C1" }, actions: [{ action_id: "summary", value: "summary" }] } }) } as never);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(socket.sent).toEqual([JSON.stringify({ envelope_id: "env-1" }), JSON.stringify({ envelope_id: "env-2" }), JSON.stringify({ envelope_id: "env-3" })]);
     expect(events[0]).toMatchObject({ type: "event_callback", envelopeId: "env-1", eventId: "ev-1", event: { text: "hi", team: "T1" } });
     expect(events[1]).toMatchObject({ type: "slash_command", envelopeId: "env-2", command: "/relay", text: "status", channel_id: "C1", user_id: "U1", team_id: "T1", trigger_id: "trigger-1", response_url: "https://hooks.slack.com/commands/T1/B1/response" });
+    expect(events[2]).toMatchObject({ type: "block_actions", envelopeId: "env-3", user: { id: "U1" }, channel: { id: "C1" }, actions: [{ action_id: "summary", value: "summary" }] });
     const debugLog = await readFile(logPath, "utf8");
     expect(debugLog).not.toContain("hooks.slack.com");
     expect(debugLog).not.toContain("xapp-secret-token");
@@ -285,6 +286,22 @@ describe("SlackRuntime foundations", () => {
     await vi.runOnlyPendingTimersAsync();
     await vi.advanceTimersByTimeAsync(2_000);
     expect(operations.listChannelMessages).toHaveBeenCalledTimes(2);
+    await runtime.stop();
+    vi.useRealTimers();
+  });
+
+  it("uses configured Slack history oldest timestamp so live startup does not miss manual commands", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    vi.stubEnv("PI_RELAY_SLACK_HISTORY_FALLBACK", "true");
+    vi.stubEnv("PI_RELAY_SLACK_HISTORY_OLDEST_TS", "1767225500.123456");
+    const operations = new FakeSlackOperations() as FakeSlackOperations & { listChannelMessages: ReturnType<typeof vi.fn> };
+    operations.listChannelMessages = vi.fn(async () => []);
+    const runtime = new SlackRuntime(await config(), { operations });
+    await runtime.start();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(operations.listChannelMessages).toHaveBeenCalledWith("C1", "1767225500.123456");
     await runtime.stop();
     vi.useRealTimers();
   });
@@ -843,7 +860,7 @@ describe("SlackRuntime foundations", () => {
     expect(testRoute.actions.sendUserMessage).toHaveBeenLastCalledWith(expect.stringContaining(`delegated task ${delegationTask!.id}`));
     testRoute.notification.lastAssistantText = "Channel task done.";
     await runtime.notifyTurnCompleted(testRoute, "completed");
-    expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", threadTs: "thread-70", text: expect.stringContaining("Status: completed") });
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "C1", threadTs: "thread-70", text: expect.stringContaining("Status: Completed") });
 
     await store.clearActiveChannelSelection("slack", "C1", "U_DRIVER");
     const sendCount = vi.mocked(testRoute.actions.sendUserMessage).mock.calls.length;
@@ -963,6 +980,9 @@ describe("SlackRuntime foundations", () => {
     await sendChannelMessage(`relay pair ${nonce}`, "201");
     await sendChannelMessage("relay delegate laptop run action task", "202");
     const [task] = await store.listDelegationTasks({ roomConversationId: "C1" });
+    expect(operations.posts.at(-1)?.text).toContain("Fallback commands:");
+    expect(operations.posts.at(-1)?.blocks?.[0]).toMatchObject({ type: "section" });
+    expect(operations.posts.at(-1)?.blocks?.[1]).toMatchObject({ elements: expect.arrayContaining([expect.objectContaining({ text: "Claim", value: `pirelay:delegation:claim:${task!.id}`, actionId: `pirelay:delegation:claim:${task!.id}`, style: "primary" })]) });
 
     await operations.handler!({
       type: "block_actions",
@@ -1046,6 +1066,128 @@ describe("SlackRuntime foundations", () => {
     expect(await store.listDelegationTasks({ roomConversationId: "C1" })).toEqual([expect.objectContaining({ target: { kind: "capability", capability: "linux-tests" } })]);
   });
 
+  it("supports live delegation create without prior pairing when preseeded binding mode is enabled", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.machineId = "pirelay__mini_";
+    runtimeConfig.machineDisplayName = "pirelay__mini_";
+    runtimeConfig.slack = {
+      ...runtimeConfig.slack!,
+      allowChannelMessages: true,
+      delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+      sharedRoom: runtimeConfig.slack!.sharedRoom ? { ...runtimeConfig.slack!.sharedRoom, machineAliases: ["pirelay__mini_", "a", "U0B2WTNL3U1"] } : { enabled: true, roomHint: "C1", machineAliases: ["pirelay__mini_", "a", "U0B2WTNL3U1"] },
+    };
+    const testRoute = route();
+    testRoute.sessionLabel = "pirelay__mini_";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const preseeded = process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+    process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = "true";
+
+    try {
+      const runtime = new SlackRuntime(runtimeConfig, { operations });
+      await runtime.registerRoute(testRoute);
+      await runtime.start();
+      const sendChannelMessage = async (text: string, ts: string) => operations.handler!({
+        type: "event_callback",
+        envelopeId: `preseed-env-${ts}`,
+        eventId: `preseed-event-${ts}`,
+        event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text, ts, team: "T1" },
+      });
+
+      await sendChannelMessage("relay delegate pirelay__mini_ run preseeded task", "1000");
+      const [task] = await store.listDelegationTasks({ roomConversationId: "C1" });
+      expect(task).toMatchObject({ target: { kind: "machine", machineId: "pirelay__mini_" } });
+      await expect(store.getActiveChannelSelection("slack", "C1", "U_DRIVER")).resolves.toBeUndefined();
+
+      await sendChannelMessage("ordinary text should not route after delegation create", "1001");
+      expect(testRoute.actions.sendUserMessage).not.toHaveBeenCalledWith("ordinary text should not route after delegation create");
+    } finally {
+      if (preseeded === undefined) {
+        delete process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+      } else {
+        process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = preseeded;
+      }
+    }
+  });
+
+  it("ignores Slack shared-room delegation claims for unknown tasks", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.machineId = "pirelay__work_";
+    runtimeConfig.machineDisplayName = "pirelay__work_";
+    runtimeConfig.slack = {
+      ...runtimeConfig.slack!,
+      allowChannelMessages: true,
+      delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+      sharedRoom: runtimeConfig.slack!.sharedRoom
+        ? { ...runtimeConfig.slack!.sharedRoom, machineAliases: ["pirelay__work_", "b", "U0B3P9D4ECQ"] }
+        : { enabled: true, roomHint: "C1", machineAliases: ["pirelay__work_", "b", "U0B3P9D4ECQ"] },
+    };
+    const preseeded = process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+    process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = "true";
+
+    try {
+      const runtime = new SlackRuntime(runtimeConfig, { operations });
+      await runtime.start();
+      await operations.handler!({
+        type: "event_callback",
+        envelopeId: "unknown-task-env",
+        eventId: "unknown-task-event",
+        event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text: "relay task claim task-owned-by-other", ts: "1500", team: "T1" },
+      });
+
+      expect(operations.posts).toHaveLength(0);
+    } finally {
+      if (preseeded === undefined) {
+        delete process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+      } else {
+        process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = preseeded;
+      }
+    }
+  });
+
+  it("supports delegation create while preseeded and without a registered route", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.machineId = "pirelay__mini_";
+    runtimeConfig.machineDisplayName = "pirelay__mini_";
+    runtimeConfig.slack = {
+      ...runtimeConfig.slack!,
+      allowChannelMessages: true,
+      delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+      sharedRoom: runtimeConfig.slack!.sharedRoom
+        ? { ...runtimeConfig.slack!.sharedRoom, machineAliases: ["pirelay__mini_", "a", "U0B2WTNL3U1"] }
+        : { enabled: true, roomHint: "C1", machineAliases: ["pirelay__mini_", "a", "U0B2WTNL3U1"] },
+    };
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const preseeded = process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+    process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = "true";
+
+    try {
+      const runtime = new SlackRuntime(runtimeConfig, { operations });
+      await runtime.start();
+      const sendChannelMessage = async (text: string, ts: string) => operations.handler!({
+        type: "event_callback",
+        envelopeId: `preseed-env-${ts}`,
+        eventId: `preseed-event-${ts}`,
+        event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text, ts, team: "T1" },
+      });
+
+      await sendChannelMessage("relay delegate pirelay__mini_ run unbound preseed task", "2000");
+      const [task] = await store.listDelegationTasks({ roomConversationId: "C1" });
+      expect(task).toMatchObject({ target: { kind: "machine", machineId: "pirelay__mini_" } });
+      await sendChannelMessage(`relay task claim ${task!.id}`, "2001");
+      expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "blocked" });
+      expect(operations.posts.at(-1)?.text).toContain("Status: Blocked");
+    } finally {
+      if (preseeded === undefined) {
+        delete process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+      } else {
+        process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = preseeded;
+      }
+    }
+  });
+
   it("blocks Slack delegation tasks when prompt handoff fails after claim", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
@@ -1083,7 +1225,7 @@ describe("SlackRuntime foundations", () => {
     await sendChannelMessage(`relay task claim ${task!.id}`, "403");
 
     expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "blocked" });
-    expect(operations.posts.at(-1)?.text).toContain("Status: blocked");
+    expect(operations.posts.at(-1)?.text).toContain("Status: Blocked");
   });
 
   it("routes Slack shared-room messages only when locally targeted or actively selected", async () => {

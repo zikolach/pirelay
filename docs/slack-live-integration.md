@@ -44,7 +44,7 @@ Set these variables only in a secure local shell or CI secret store:
 export PI_RELAY_SLACK_LIVE_ENABLED=true
 export PI_RELAY_SLACK_LIVE_WORKSPACE_ID=T123...
 export PI_RELAY_SLACK_LIVE_CHANNEL_ID=C123...   # or G123... for private channels
-export PI_RELAY_SLACK_LIVE_AUTHORIZED_USER_ID=U123...
+export PI_RELAY_SLACK_LIVE_AUTHORIZED_USER_ID=U123...  # must be your Slack user ID (the sender of manual commands)
 export PI_RELAY_SLACK_LIVE_DRIVER_TOKEN=xoxp-or-test-driver-token
 export PI_RELAY_SLACK_LIVE_EVENT_MODE=socket    # default; use webhook only with external delivery
 export PI_RELAY_SLACK_LIVE_REAL_AGENT=false     # set true for real LLM-backed Pi agent runs
@@ -66,19 +66,37 @@ Optional:
 
 ```bash
 export PI_RELAY_SLACK_LIVE_TIMEOUT_MS=120000 # defaults to 300000 when PI_RELAY_SLACK_LIVE_REAL_AGENT=true
-export PI_RELAY_SLACK_LIVE_BOT_A_INSTANCE_ID=slack-live-a
-export PI_RELAY_SLACK_LIVE_BOT_B_INSTANCE_ID=slack-live-b
-export PI_RELAY_SLACK_LIVE_BOT_A_DISPLAY_NAME='PiRelay Slack A'
-export PI_RELAY_SLACK_LIVE_BOT_B_DISPLAY_NAME='PiRelay Slack B'
+export PI_RELAY_SLACK_LIVE_BOT_A_INSTANCE_ID=pirelay__mini_    # machine id used in relay delegate machine arguments
+export PI_RELAY_SLACK_LIVE_BOT_B_INSTANCE_ID=pirelay__work_    # machine id used in relay delegate machine arguments
+export PI_RELAY_SLACK_LIVE_BOT_A_DISPLAY_NAME='pirelay__mini_'
+export PI_RELAY_SLACK_LIVE_BOT_B_DISPLAY_NAME='pirelay__work_'
+export PI_RELAY_SLACK_LIVE_DELEGATION_ENABLED=false   # set true to enable delegation-only live coverage
+export PI_RELAY_SLACK_LIVE_DELEGATION_AUTONOMY=auto-claim-targeted
+export PI_RELAY_SLACK_LIVE_DELEGATION_REQUIRE_HUMAN_APPROVAL=false
+export PI_RELAY_SLACK_LIVE_DELEGATION_MANUAL=false  # optional interactive/manual message-post mode for local runs
+
+# If your Slack bots now have different names, update *_INSTANCE_ID (and *_DISPLAY_NAME for log readability)
+# so the printed commands line up with the names you want to target.
 ```
 
-The harness writes per-instance config files under a temporary directory, points each Pi process at a distinct `PI_RELAY_CONFIG`/`PI_RELAY_STATE_DIR`, and passes the relevant Slack token/signing-secret/app-level token values via environment variables. Temporary state is deleted during teardown so repeated runs do not reuse stale local bindings. The live harness enables a test-only pre-seeded binding path for its disposable channel so targeted prompts exercise real runtime prompt routing and completion notifications without committing pairing codes. Set `PI_RELAY_SLACK_LIVE_REAL_AGENT=true` when `PI_RELAY_SLACK_LIVE_BOT_A_PI_COMMAND` and `PI_RELAY_SLACK_LIVE_BOT_B_PI_COMMAND` launch real LLM-backed Pi agents; this switches the prompt wording to an explicit marker-only instruction and increases the default timeout to five minutes while still asserting only that the marker appears. Production Socket Mode uses the same token shape: a bot token (`xoxb-...`) plus an app-level token (`xapp-...`) with `connections:write`. Prefer namespaced PiRelay config (`tokenEnv`, `signingSecretEnv`, and `appTokenEnv`) for non-test runs; `PI_RELAY_SLACK_BOT_USER_ID`/`slack.botUserId` is only a non-secret fallback when startup `auth.test` discovery is unavailable. The live harness also enables the bounded history-polling fallback for diagnostics, but production prompt routing should use Socket Mode events.
+The harness writes per-instance config files under a temporary directory, points each Pi process at a distinct `PI_RELAY_CONFIG`/`PI_RELAY_STATE_DIR`, and passes the relevant Slack token/signing-secret/app-level token values via environment variables. Temporary state is deleted during teardown so repeated runs do not reuse stale local bindings. The live harness enables a test-only pre-seeded binding path for its disposable channel so targeted prompts exercise real runtime prompt routing and completion notifications without committing pairing codes. Set `PI_RELAY_SLACK_LIVE_REAL_AGENT=true` when `PI_RELAY_SLACK_LIVE_BOT_A_PI_COMMAND` and `PI_RELAY_SLACK_LIVE_BOT_B_PI_COMMAND` launch real LLM-backed Pi agents; this switches the prompt wording to an explicit marker-only instruction and increases the default timeout to five minutes while still asserting only that the marker appears. In that mode, per-instance broker namespaces are also enabled so multiple bot apps can run on the same machine without session collisions. `PI_RELAY_SLACK_LIVE_REAL_AGENT=false` uses lightweight stub-style sessions intended for command-routing checks, so `/status` output may show offline even while delegation messaging still works for live validation. Production Socket Mode uses the same token shape: a bot token (`xoxb-...`) plus an app-level token (`xapp-...`) with `connections:write`. Prefer namespaced PiRelay config (`tokenEnv`, `signingSecretEnv`, and `appTokenEnv`) for non-test runs; `PI_RELAY_SLACK_BOT_USER_ID`/`slack.botUserId` is only a non-secret fallback when startup `auth.test` discovery is unavailable. The live harness also enables the bounded history-polling fallback for diagnostics, but production prompt routing should use Socket Mode events.
 
 ## Running locally
 
 ```bash
 npm run test -- tests/slack-live-integration.test.ts
+./run-slack-live-test.sh
 ```
+
+`run-slack-live-test.sh` is parameterizable. Use the `--delegation` option (and optional `--test`) for the new live delegation suite:
+
+```bash
+./run-slack-live-test.sh --delegation
+./run-slack-live-test.sh --test tests/slack-live-delegation.test.ts --delegation
+./run-slack-live-test.sh --delegation --manual-delegation --test tests/slack-live-delegation.test.ts
+```
+
+In manual mode, the test prints the exact machine ID and display name it expects you to target, plus the command examples, so you can copy-paste directly into Slack. Delegation task cards use Slack buttons for claim, decline, cancel, and status actions when callbacks are available; the card text also includes `relay task ...` fallback commands for manual copy-paste or environments where button callbacks are unavailable. In real-agent mode, the delegation test waits for a completed task card with a bounded `Result` summary rather than stopping at the running handoff card.
 
 When `PI_RELAY_SLACK_LIVE_ENABLED` or required credentials are absent, the test is skipped and prints which configuration is missing. The normal `npm test` run is safe without live Slack secrets.
 

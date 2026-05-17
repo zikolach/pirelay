@@ -101,7 +101,7 @@ export interface SlackPostMessagePayload {
   channel: string;
   text: string;
   threadTs?: string;
-  blocks?: SlackButtonElement[][];
+  blocks?: SlackBlock[];
 }
 
 export interface SlackUploadFilePayload {
@@ -113,10 +113,23 @@ export interface SlackUploadFilePayload {
   threadTs?: string;
 }
 
+export type SlackBlock = SlackSectionBlock | SlackActionsBlock;
+
+export interface SlackSectionBlock {
+  type: "section";
+  text: { type: "plain_text"; text: string; emoji?: true };
+}
+
+export interface SlackActionsBlock {
+  type: "actions";
+  elements: SlackButtonElement[];
+}
+
 export interface SlackButtonElement {
   type: "button";
   text: string;
   value: string;
+  actionId?: string;
   style?: "primary" | "danger";
 }
 
@@ -182,11 +195,11 @@ export class SlackChannelAdapter implements ChannelAdapter {
 
   async sendText(address: ChannelRouteAddress, text: string, options?: { buttons?: ChannelButtonLayout }): Promise<void> {
     const threadTs = slackThreadTs(address);
-    for (const chunk of channelTextChunks(this, text || " ")) {
-      await this.api.postMessage({ channel: address.conversationId, text: chunk, threadTs });
-    }
-    if (options?.buttons && options.buttons.length > 0) {
-      await this.api.postMessage({ channel: address.conversationId, text: "Actions:", threadTs, blocks: slackBlocksForButtons(options.buttons) });
+    const chunks = channelTextChunks(this, text || " ");
+    for (const [index, chunk] of chunks.entries()) {
+      const isLast = index === chunks.length - 1;
+      const blocks = isLast && options?.buttons && options.buttons.length > 0 ? slackBlocksForTextAndButtons(chunk, options.buttons) : undefined;
+      await this.api.postMessage({ channel: address.conversationId, text: chunk, threadTs, blocks });
     }
   }
 
@@ -414,13 +427,24 @@ function slackFileToInboundFile(file: SlackFilePayload, config: Pick<SlackRelayC
   };
 }
 
-function slackBlocksForButtons(layout: ChannelButtonLayout): SlackButtonElement[][] {
-  return layout.map((row) => row.map((button) => ({
-    type: "button",
-    text: button.label,
-    value: button.actionData,
-    style: button.style === "primary" ? "primary" : button.style === "danger" ? "danger" : undefined,
-  })));
+function slackBlocksForTextAndButtons(text: string, layout: ChannelButtonLayout): SlackBlock[] {
+  return [
+    { type: "section", text: { type: "plain_text", text: text || " ", emoji: true } },
+    ...slackBlocksForButtons(layout),
+  ];
+}
+
+function slackBlocksForButtons(layout: ChannelButtonLayout): SlackActionsBlock[] {
+  return layout.map((row) => ({
+    type: "actions",
+    elements: row.map((button) => ({
+      type: "button",
+      text: button.label,
+      value: button.actionData,
+      actionId: button.actionData,
+      style: button.style === "primary" ? "primary" : button.style === "danger" ? "danger" : undefined,
+    })),
+  }));
 }
 
 export interface SlackActionTarget {

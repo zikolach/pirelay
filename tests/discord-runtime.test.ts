@@ -586,7 +586,7 @@ describe("DiscordRuntime", () => {
 
     session.notification.lastAssistantText = "Docs tests passed.";
     await runtime.notifyTurnCompleted(session, "completed");
-    expect(ops.messages.at(-1)?.content).toContain("Status: completed");
+    expect(ops.messages.at(-1)?.content).toContain("Status: Completed");
     expect(ops.messages.some((message) => message.channelId === "dm-leak" && message.content.includes("Docs tests passed"))).toBe(false);
 
     await store.upsertChannelBinding({ channel: "discord", conversationId: "room1", userId: "u1", sessionKey: session.sessionKey, sessionId: session.sessionId, sessionLabel: session.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "channel" } });

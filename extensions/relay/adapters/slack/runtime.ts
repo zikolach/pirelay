@@ -1,11 +1,11 @@
 import { appendFileSync } from "node:fs";
-import type { ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import type { ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
-import { parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
+import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
@@ -60,7 +60,7 @@ export class SlackRuntime {
   private readonly activeSessionByConversationUser = new Map<string, string>();
   private historyPollTimer?: ReturnType<typeof setInterval>;
   private historyPollInFlight = false;
-  private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
+  private latestHistoryTs = initialSlackHistoryTimestamp();
   private readonly seenEventKeys = new Map<string, number>();
   private readonly consumedResponseUrls = new Map<string, number>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
@@ -438,6 +438,10 @@ export class SlackRuntime {
       return;
     }
     if (delegatedCommand && routedMessage.conversation.kind !== "private") {
+      if (isPeerBotIdentity(message.sender) || (slackConfig && isSlackIdentityAllowed(message.sender, slackConfig))) {
+        await this.findSlackBinding(routedMessage);
+        await this.livePreseededBinding(routedMessage, { setActiveSelection: false });
+      }
       const scopedMessage = delegationSourceScoped ? { ...routedMessage, metadata: { ...routedMessage.metadata, delegationSourceScoped: true } } : routedMessage;
       if (await this.handleDelegationMessage(scopedMessage, delegatedCommand)) return;
       return;
@@ -502,7 +506,11 @@ export class SlackRuntime {
       if (active?.machineId && active.machineId !== (this.config.machineId ?? "local")) return undefined;
       if (!active) {
         const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
-        if (bindings.length === 0 || !command) return undefined;
+        if (bindings.length === 0) {
+          if (process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING === "true" && command) return message;
+          return undefined;
+        }
+        if (!command) return undefined;
       }
     }
     return hasLocalMention ? { ...message, text: stripLeadingSlackMentions(message.text) } : message;
@@ -515,8 +523,13 @@ export class SlackRuntime {
     if (command.kind === "create" && command.target.kind === "machine" && !isLocalSlackMachineSelector(command.target.machineId, this.config, slackConfig)) {
       return false;
     }
+    if ("taskId" in command && command.taskId) {
+      const existing = await this.store.getDelegationTask(command.taskId, { runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs });
+      if (!existing) return false;
+    }
     const pairedBindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
-    if (pairedBindings.length === 0) return false;
+    const canHandleWithoutBinding = process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING === "true" && command.kind === "create";
+    if (pairedBindings.length === 0 && !canHandleWithoutBinding) return false;
     const room = delegationRoomFromMessage(message, this.instanceId);
     const duplicate = await this.store.rememberDelegationEvent(delegationIngressEventKey({ message, room, command }));
     const decision = await evaluateDelegationIngress({
@@ -535,7 +548,7 @@ export class SlackRuntime {
         get: (taskId) => this.store.getDelegationTask(taskId, { runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs }),
         list: (options) => this.store.listDelegationTasks({ ...options, runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs }),
       },
-      eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : [],
+      eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : this.routes.size === 0 ? undefined : [],
     });
     switch (decision.kind) {
       case "ignore":
@@ -644,12 +657,14 @@ export class SlackRuntime {
       : transitionDelegationTask(task, { kind: "fail", reason: summary });
     const next = transition.ok ? transition.task : task;
     await this.store.upsertDelegationTask(next);
-    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: next.room.conversationId, userId: "delegation", ...(next.room.threadId ? { threadTs: next.room.threadId } : {}) } as ChannelRouteAddress, renderDelegationTaskCard(next, { commandPrefix: "relay task" }).text);
+    const card = renderDelegationTaskCard(next, { commandPrefix: "relay task" });
+    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: next.room.conversationId, userId: "delegation", ...(next.room.threadId ? { threadTs: next.room.threadId } : {}) } as ChannelRouteAddress, card.text, { buttons: delegationTaskActionButtons(card.actions) });
     return true;
   }
 
   private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {
-    await this.sendText(message, renderDelegationTaskCard(task, { commandPrefix: "relay task" }).text);
+    const card = renderDelegationTaskCard(task, { commandPrefix: "relay task" });
+    await this.sendText(message, card.text, delegationTaskActionButtons(card.actions));
   }
 
   private async handleBoundMessage(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute): Promise<void> {
@@ -1042,20 +1057,20 @@ export class SlackRuntime {
     );
   }
 
-  private async livePreseededBinding(message: ChannelInboundMessage): Promise<ChannelPersistedBindingRecord | undefined> {
-    if (process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING !== "true" || message.conversation.kind === "private" || this.routes.size !== 1) return undefined;
-    const route = [...this.routes.values()][0];
-    if (!route) return undefined;
+  private async livePreseededBinding(message: ChannelInboundMessage, options: { setActiveSelection?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
+    if (process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING !== "true" || message.conversation.kind === "private") return undefined;
+    const firstRoute = [...this.routes.values()][0];
     const now = new Date().toISOString();
+    const routeSeed = `${message.conversation.id}:${message.sender.userId}`;
     const binding = await this.store.upsertChannelBinding({
       channel: SLACK_CHANNEL,
       instanceId: this.instanceId,
       conversationId: message.conversation.id,
       userId: message.sender.userId,
-      sessionKey: route.sessionKey,
-      sessionId: route.sessionId,
-      sessionFile: route.sessionFile,
-      sessionLabel: route.sessionLabel,
+      sessionKey: firstRoute?.sessionKey ?? `live-preseed:${routeSeed}`,
+      sessionId: firstRoute?.sessionId ?? `live-preseed:${routeSeed}`,
+      sessionFile: firstRoute?.sessionFile,
+      sessionLabel: firstRoute?.sessionLabel ?? "shared-room",
       boundAt: now,
       lastSeenAt: now,
       identity: { username: message.sender.username, displayName: message.sender.displayName, metadata: message.sender.metadata },
@@ -1063,7 +1078,7 @@ export class SlackRuntime {
     });
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     this.recentBindingBySessionKey.set(binding.sessionKey, binding);
-    await this.setActiveSelection(message, binding.sessionKey);
+    if (options.setActiveSelection !== false) await this.setActiveSelection(message, binding.sessionKey);
     return binding;
   }
 
@@ -1137,7 +1152,7 @@ export class SlackRuntime {
     return undefined;
   }
 
-  private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string): Promise<void> {
+  private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string, buttons?: ChannelButtonLayout): Promise<void> {
     const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
     if (responseUrl && this.operations?.postResponse && !this.wasResponseUrlConsumed(responseUrl)) {
       this.rememberConsumedResponseUrl(responseUrl);
@@ -1148,7 +1163,7 @@ export class SlackRuntime {
         debugSlackRuntime(`Slack response_url delivery failed: ${safeSlackRuntimeError(error)}`);
       }
     }
-    await this.adapter?.sendText(slackAddress(message), text);
+    await this.adapter?.sendText(slackAddress(message), text, { buttons });
   }
 
   private wasResponseUrlConsumed(responseUrl: string): boolean {
@@ -1415,12 +1430,27 @@ function actionFromDelegationSurface(action: ChannelInboundAction): boolean {
 }
 
 function isLocalSlackMachineSelector(selector: string, config: TelegramTunnelConfig, slackConfig: NonNullable<TelegramTunnelConfig["slack"]>): boolean {
-  const normalized = selector.trim().toLowerCase();
-  const aliases = [config.machineId ?? "local", config.machineDisplayName, ...(config.machineAliases ?? []), ...(slackConfig.sharedRoom?.machineAliases ?? [])]
+  const normalized = normalizeSlackMachineSelector(selector);
+  const aliases = [
+    config.machineId ?? "local",
+    config.machineDisplayName,
+    ...(config.machineAliases ?? []),
+    ...(slackConfig.sharedRoom?.machineAliases ?? []),
+  ]
     .filter((value): value is string => Boolean(value))
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => normalizeSlackMachineSelector(value))
     .filter(Boolean);
   return aliases.includes(normalized);
+}
+
+function normalizeSlackMachineSelector(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 128);
 }
 
 function slackPairingFailureMessage(reason: "wrong-channel" | "unsupported-conversation" | "unauthorized" | "command-mismatch" | "expired"): string {
@@ -1496,6 +1526,12 @@ function slackUploadFailureMessage(error: unknown): string {
 
 function safeSlackRuntimeError(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+function initialSlackHistoryTimestamp(): string {
+  const configuredOldest = process.env.PI_RELAY_SLACK_HISTORY_OLDEST_TS?.trim();
+  if (configuredOldest && Number.isFinite(Number(configuredOldest))) return configuredOldest;
+  return (Date.now() / 1_000).toFixed(6);
 }
 
 function debugSlackRuntime(message: string): void {

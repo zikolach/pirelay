@@ -102,6 +102,7 @@ describe("Slack live suite configuration", () => {
       expect(parsed.config.apps.map((app) => app.instanceId)).toEqual(["slack-live-a", "slack-live-b"]);
       expect(parsed.config.realAgent).toBe(false);
       expect(parsed.config.timeoutMs).toBe(42);
+      expect(parsed.config.delegation).toBeUndefined();
     }
   });
 
@@ -128,6 +129,36 @@ describe("Slack live suite configuration", () => {
       expect(parsed.config.realAgent).toBe(true);
       expect(parsed.config.timeoutMs).toBe(300_000);
       expect(slackLiveTargetPrompt({ targetBotUserId: "U_A", runId: "run-1", realAgent: parsed.config.realAgent })).toContain("Reply with exactly this marker");
+    }
+  });
+
+  it("parses optional delegated live config and maps settings", () => {
+    const parsed = readSlackLiveSuiteConfig({
+      PI_RELAY_SLACK_LIVE_ENABLED: "true",
+      PI_RELAY_SLACK_LIVE_WORKSPACE_ID: "T1",
+      PI_RELAY_SLACK_LIVE_CHANNEL_ID: "C1",
+      PI_RELAY_SLACK_LIVE_AUTHORIZED_USER_ID: "U_DRIVER",
+      PI_RELAY_SLACK_LIVE_DRIVER_TOKEN: "xoxp-driver-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_TOKEN: "xoxb-a-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_SIGNING_SECRET: "signing-a-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_APP_TOKEN: "xapp-a-secret",
+      PI_RELAY_SLACK_LIVE_BOT_A_PI_COMMAND: "pi a",
+      PI_RELAY_SLACK_LIVE_BOT_B_TOKEN: "xoxb-b-secret",
+      PI_RELAY_SLACK_LIVE_BOT_B_SIGNING_SECRET: "signing-b-secret",
+      PI_RELAY_SLACK_LIVE_BOT_B_APP_TOKEN: "xapp-b-secret",
+      PI_RELAY_SLACK_LIVE_BOT_B_PI_COMMAND: "pi b",
+      PI_RELAY_SLACK_LIVE_DELEGATION_ENABLED: "true",
+      PI_RELAY_SLACK_LIVE_DELEGATION_AUTONOMY: "propose-only",
+      PI_RELAY_SLACK_LIVE_DELEGATION_REQUIRE_HUMAN_APPROVAL: "yes",
+    });
+
+    expect(parsed.ready).toBe(true);
+    if (parsed.ready) {
+      expect(parsed.config.delegation).toMatchObject({
+        enabled: true,
+        autonomy: "propose-only",
+        requireHumanApproval: true,
+      });
     }
   });
 });
@@ -174,6 +205,33 @@ describe("Slack live Pi harness planning", () => {
     expect(serialized).toContain("PI_RELAY_SLACK_BOT_TOKEN");
     expect(serialized).not.toContain("xoxb-a-secret");
     expect(serialized).not.toContain("signing-a-secret");
+  });
+
+  it("persists delegation settings into generated live bot configs when enabled", () => {
+    const delegatedConfig: SlackLiveSuiteConfig = {
+      ...config,
+      realAgent: true,
+      delegation: {
+        enabled: true,
+        autonomy: "propose-only",
+        requireHumanApproval: true,
+      },
+    };
+    const first = slackLivePiConfig(delegatedConfig, config.apps[0], "/tmp/a");
+
+    expect(first).toMatchObject({
+      messengers: {
+        slack: {
+          default: {
+            delegation: {
+              enabled: true,
+              autonomy: "propose-only",
+              requireHumanApproval: true,
+            },
+          },
+        },
+      },
+    });
   });
 
   it("launches two isolated child processes and tears down temporary state", async () => {

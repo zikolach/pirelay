@@ -118,9 +118,11 @@ describe("SlackChannelAdapter", () => {
     await adapter.answerAction(buildSlackActionId({ channelId: "D1", userId: "U1", responseUrl: "https://hooks.slack.test/response" }), { text: "Done" });
     await expect(adapter.downloadFile({ id: "F1", kind: "image", metadata: { url: "https://slack.test/file" } })).resolves.toEqual(new Uint8Array([8]));
 
-    expect(postMessage).toHaveBeenCalledTimes(4);
+    expect(postMessage).toHaveBeenCalledTimes(3);
     expect(postMessage.mock.calls[0]?.[0]).toMatchObject({ channel: "D1", text: "x".repeat(40) });
-    expect((postMessage.mock.calls.at(-1)?.[0] as { blocks: Array<Array<unknown>> }).blocks[0]![0]).toMatchObject({ text: "Full", value: "full:t:chat" });
+    expect((postMessage.mock.calls.at(-1)?.[0] as { blocks: Array<{ type: string; elements?: unknown[] }> }).blocks[0]).toMatchObject({ type: "section" });
+    expect((postMessage.mock.calls.at(-1)?.[0] as { blocks: Array<{ type: string; elements?: unknown[] }> }).blocks[1]?.elements?.[0]).toMatchObject({ text: "Full", value: "full:t:chat", actionId: "full:t:chat" });
+    expect(postMessage.mock.calls.at(-1)?.[0]).not.toMatchObject({ text: "Actions:" });
     expect(uploadFile).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", fileName: "out.md", caption: "Latest output" }));
     expect(postEphemeral).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", user: "U1", text: "Pi is working…", threadTs: "thread-1" }));
     expect(postResponse).toHaveBeenCalledWith("https://hooks.slack.test/response", { text: "Done", ephemeral: true });

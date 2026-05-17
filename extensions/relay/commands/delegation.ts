@@ -1,5 +1,6 @@
 import type { DelegationTaskRecord, DelegationTaskStatus, DelegationTaskTarget } from "../core/agent-delegation.js";
-import { renderDelegationTaskSummary, safeDelegationText } from "../core/agent-delegation.js";
+import { safeDelegationText } from "../core/agent-delegation.js";
+import type { ChannelButtonLayout } from "../core/channel-adapter.js";
 import type { MessengerKind } from "../core/messenger-ref.js";
 import { parseRemoteCommandInvocation } from "./remote.js";
 
@@ -24,6 +25,24 @@ export interface DelegationTaskAction {
 export interface DelegationTaskCard {
   text: string;
   actions: DelegationTaskAction[];
+  fallbackText: string;
+  accessibilityText: string;
+  presentation: DelegationTaskPresentation;
+}
+
+export interface DelegationTaskPresentationField {
+  label: string;
+  value: string;
+}
+
+export interface DelegationTaskPresentation {
+  title: string;
+  status: { value: DelegationTaskStatus; label: string; icon: string };
+  fields: DelegationTaskPresentationField[];
+  latest?: DelegationTaskPresentationField;
+  actions: DelegationTaskAction[];
+  fallbackText: string;
+  accessibilityText: string;
 }
 
 export interface PlatformDelegationActionSurface {
@@ -78,23 +97,111 @@ export function delegationTaskActionsForStatus(task: Pick<DelegationTaskRecord, 
       return [action("approve", "Approve"), action("cancel", "Cancel"), action("status", "Status")];
     case "claimed":
     case "running":
-    case "blocked":
       return [action("cancel", "Cancel"), action("status", "Status")];
     default:
       return [action("status", "Status")];
   }
 }
 
-export function renderDelegationTaskCard(task: DelegationTaskRecord, options: { commandPrefix?: string; includeActions?: boolean; maxTextChars?: number } = {}): DelegationTaskCard {
+export function renderDelegationTaskPresentation(task: DelegationTaskRecord, options: { commandPrefix?: string; includeActions?: boolean; maxTextChars?: number } = {}): DelegationTaskPresentation {
   const includeActions = options.includeActions ?? true;
-  const summary = renderDelegationTaskSummary(task);
   const actions = includeActions ? delegationTaskActionsForStatus(task, { commandPrefix: options.commandPrefix }) : [];
-  const actionText = actions.length > 0 ? `\n\nActions: ${actions.map((action) => action.command).join(" | ")}` : "";
+  const status = delegationPresentationStatus(task.status);
+  const source = task.sourceSessionLabel ? `${task.sourceMachineLabel ?? task.sourceMachineId}/${task.sourceSessionLabel}` : task.sourceMachineLabel ?? task.sourceMachineId;
+  const fields: DelegationTaskPresentationField[] = [
+    { label: "Status", value: status.label },
+    { label: "From", value: source },
+    { label: "Target", value: renderDelegationTargetLabel(task.target) },
+    { label: "Goal", value: task.goal },
+    task.constraints ? { label: "Constraints", value: task.constraints } : undefined,
+    { label: "Expires", value: task.expiresAt },
+    task.claimedBy ? { label: "Claimed by", value: renderDelegationClaimant(task.claimedBy) } : undefined,
+  ].filter((field): field is DelegationTaskPresentationField => Boolean(field));
+  const latestText = task.lastSafeSummary ?? [...task.audit].reverse().find((event) => event.summary && isVisibleDelegationAuditSummary(event.kind))?.summary;
+  const latest = latestText ? { label: terminalDelegationStatus(task.status) ? "Result" : "Latest", value: latestText } : undefined;
+  const fallbackText = actions.length > 0 ? actions.map((action) => action.command).join("\n") : `${options.commandPrefix ?? "/task"} status ${task.id}`;
+  const title = `${status.icon} Delegation ${task.id}`;
+  const fieldText = fields.map((field) => `${field.label}: ${field.value}`).join("\n");
+  const latestLine = latest ? `\n${latest.label}: ${latest.value}` : "";
+  const fallbackBlock = actions.length > 0 ? `\n\nFallback commands:\n${fallbackText}` : "";
+  const accessibilityText = `${title}\n${fieldText}${latestLine}${fallbackBlock}`;
   const maxTextChars = options.maxTextChars ?? 3900;
+  const boundedAccessibility = safeDelegationText(accessibilityText, { maxLength: maxTextChars, fallback: `${title}\n${fieldText}`.slice(0, maxTextChars) });
   return {
-    text: safeDelegationText(`${summary}${actionText}`, { maxLength: maxTextChars, fallback: summary.slice(0, maxTextChars) }),
+    title,
+    status,
+    fields,
+    latest,
     actions,
+    fallbackText: safeDelegationText(fallbackText, { maxLength: maxTextChars, fallback: fallbackText.slice(0, maxTextChars) }),
+    accessibilityText: boundedAccessibility,
   };
+}
+
+export function renderDelegationTaskCard(task: DelegationTaskRecord, options: { commandPrefix?: string; includeActions?: boolean; maxTextChars?: number } = {}): DelegationTaskCard {
+  const presentation = renderDelegationTaskPresentation(task, options);
+  return {
+    text: presentation.accessibilityText,
+    actions: presentation.actions,
+    fallbackText: presentation.fallbackText,
+    accessibilityText: presentation.accessibilityText,
+    presentation,
+  };
+}
+
+export function delegationTaskActionButtons(actions: readonly DelegationTaskAction[]): ChannelButtonLayout | undefined {
+  if (actions.length === 0) return undefined;
+  return [actions.map((action) => ({
+    label: action.label,
+    actionData: action.actionId,
+    style: action.kind === "claim" || action.kind === "approve" ? "primary" : action.kind === "cancel" || action.kind === "decline" ? "danger" : "default",
+  }))];
+}
+
+function delegationPresentationStatus(status: DelegationTaskStatus): DelegationTaskPresentation["status"] {
+  switch (status) {
+    case "proposed":
+      return { value: status, label: "Proposed", icon: "🧩" };
+    case "awaiting-approval":
+      return { value: status, label: "Awaiting approval", icon: "⏳" };
+    case "claimable":
+      return { value: status, label: "Claimable", icon: "🧩" };
+    case "claimed":
+      return { value: status, label: "Claimed", icon: "📌" };
+    case "running":
+      return { value: status, label: "Running", icon: "🏃" };
+    case "completed":
+      return { value: status, label: "Completed", icon: "✅" };
+    case "blocked":
+      return { value: status, label: "Blocked", icon: "🚧" };
+    case "failed":
+      return { value: status, label: "Failed", icon: "❌" };
+    case "declined":
+      return { value: status, label: "Declined", icon: "↩️" };
+    case "cancelled":
+      return { value: status, label: "Cancelled", icon: "🛑" };
+    case "expired":
+      return { value: status, label: "Expired", icon: "⌛" };
+    case "rejected":
+      return { value: status, label: "Rejected", icon: "⛔" };
+  }
+}
+
+function renderDelegationTargetLabel(target: DelegationTaskTarget): string {
+  return target.displayName ?? (target.kind === "machine" ? target.machineId : `#${target.capability}`);
+}
+
+function renderDelegationClaimant(claimant: DelegationTaskRecord["claimedBy"]): string {
+  if (!claimant) return "unknown";
+  return claimant.sessionLabel ? `${claimant.machineId}/${claimant.sessionLabel}` : claimant.machineId;
+}
+
+function terminalDelegationStatus(status: DelegationTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "blocked" || status === "declined" || status === "cancelled" || status === "expired" || status === "rejected";
+}
+
+function isVisibleDelegationAuditSummary(kind: string): boolean {
+  return kind === "blocked" || kind === "completed" || kind === "failed" || kind === "declined" || kind === "cancelled" || kind === "expired" || kind === "rejected" || kind === "running" || kind === "claimed";
 }
 
 export function platformDelegationActionSurface(platform: MessengerKind | (string & {}), task: DelegationTaskRecord): PlatformDelegationActionSurface {

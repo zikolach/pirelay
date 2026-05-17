@@ -8,7 +8,7 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveTele
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { TelegramApiClient } from "./api.js";
-import { TelegramChannelAdapter, telegramCapabilities } from "./adapter.js";
+import { TelegramChannelAdapter, telegramCapabilities, toTelegramKeyboard } from "./adapter.js";
 import {
   advanceGuidedAnswerFlow,
   buildChoiceInjection,
@@ -46,13 +46,14 @@ import type {
   TelegramInboundImageReference,
   TelegramInboundMessage,
   TelegramInboundUpdate,
+  TelegramInlineKeyboard,
   TelegramPromptContent,
   TelegramTunnelConfig,
   TunnelRuntime,
   TelegramUserSummary,
 } from "../../core/types.js";
 import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
-import { parseDelegationCommand, renderDelegationTaskCard } from "../../commands/delegation.js";
+import { delegationTaskActionButtons, parseDelegationActionId, parseDelegationCommand, renderDelegationTaskCard, type DelegationActionKind, type DelegationCommand } from "../../commands/delegation.js";
 import { redactSecrets } from "../../config/setup.js";
 import { telegramBotCommands } from "../../commands/surfaces.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
@@ -810,6 +811,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
+    const delegationAction = parseDelegationActionId(callback.data);
+    if (delegationAction) {
+      const command = delegationCommandFromCallbackAction(delegationAction.kind, delegationAction.taskId);
+      const handled = await this.handleTelegramDelegationMessage(telegramMessageFromCallback(callback, `task ${delegationAction.kind} ${delegationAction.taskId}`), command);
+      await this.api.answerCallbackQuery(callback.callbackQueryId, handled ? "Delegation action handled." : "Delegation action was ignored or stale.");
+      return;
+    }
+
     const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config: this.config });
     const action = telegramActionFromPipelineResult(initialPipeline.result) ?? parseTelegramActionCallbackData(callback.data);
     if (!action) {
@@ -1156,7 +1165,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async sendTelegramDelegationTaskCard(message: TelegramInboundMessage, task: DelegationTaskRecord): Promise<void> {
     const commandPrefix = await this.delegationTaskCommandPrefixForMessage(message);
-    await this.api.sendPlainText(message.chat.id, renderDelegationTaskCard(task, { commandPrefix }).text);
+    const card = renderDelegationTaskCard(task, { commandPrefix });
+    await this.sendTextWithKeyboard(message.chat.id, card.text, telegramDelegationKeyboard(card.actions));
   }
 
   private async finishActiveTelegramDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<boolean> {
@@ -1172,7 +1182,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const next = transition.ok ? transition.task : task;
     await this.store.upsertDelegationTask(next);
     const commandPrefix = await this.delegationTaskCommandPrefixForConversationId(next.room.conversationId);
-    await this.api.sendPlainText(Number(next.room.conversationId), renderDelegationTaskCard(next, { commandPrefix }).text);
+    const card = renderDelegationTaskCard(next, { commandPrefix });
+    await this.sendTextWithKeyboard(Number(next.room.conversationId), card.text, telegramDelegationKeyboard(card.actions));
     return true;
   }
 
@@ -2233,7 +2244,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     });
   }
 
-  private async sendTextWithKeyboard(chatId: number, text: string, keyboard: ReturnType<typeof buildSessionDashboardKeyboard>): Promise<void> {
+  private async sendTextWithKeyboard(chatId: number, text: string, keyboard: TelegramInlineKeyboard | undefined): Promise<void> {
     const maybeApi = this.api as TelegramApiClient & { sendPlainTextWithKeyboard?: TelegramApiClient["sendPlainTextWithKeyboard"] };
     if (typeof maybeApi.sendPlainTextWithKeyboard === "function") {
       await maybeApi.sendPlainTextWithKeyboard(chatId, text, keyboard);
@@ -2331,6 +2342,37 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       this.sharedRoomOutputDestinations.delete(route.sessionKey);
     }
   }
+}
+
+function telegramDelegationKeyboard(actions: ReturnType<typeof renderDelegationTaskCard>["actions"]): ReturnType<typeof toTelegramKeyboard> | undefined {
+  const buttons = delegationTaskActionButtons(actions);
+  return buttons ? toTelegramKeyboard(buttons) : undefined;
+}
+
+function delegationCommandFromCallbackAction(kind: DelegationActionKind, taskId: string): DelegationCommand {
+  switch (kind) {
+    case "claim":
+      return { kind, taskId };
+    case "approve":
+      return { kind, taskId };
+    case "status":
+      return { kind, taskId };
+    case "decline":
+      return { kind, taskId };
+    case "cancel":
+      return { kind, taskId };
+  }
+}
+
+function telegramMessageFromCallback(callback: TelegramInboundCallback, text: string): TelegramInboundMessage {
+  return {
+    kind: "message",
+    updateId: callback.updateId,
+    messageId: callback.messageId ?? callback.updateId,
+    text,
+    chat: callback.chat,
+    user: callback.user,
+  };
 }
 
 function parseTelegramGroupCommandTarget(text: string): TelegramGroupCommandTarget | undefined {
