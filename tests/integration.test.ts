@@ -2845,9 +2845,12 @@ describe("PiRelay integration behavior", () => {
     await store.setSetup({ botId: 123456, botUsername: "pirelay_bot", botDisplayName: "PiRelay", validatedAt: new Date().toISOString() });
     const runtime = new InProcessTunnelRuntime(config, store);
     const sent: string[] = [];
+    const callbackAnswers: string[] = [];
     (runtime as any).api = {
       sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
       sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbackAnswers.push(text ?? ""),
     };
 
     await (runtime as any).processInbound({
@@ -2869,6 +2872,19 @@ describe("PiRelay integration behavior", () => {
       user: { id: 999, username: "peer", isBot: true },
     });
 
-    expect(await store.listDelegationTasks({ roomConversationId: "-1001" })).toEqual([expect.objectContaining({ status: "awaiting-approval" })]);
+    const [task] = await store.listDelegationTasks({ roomConversationId: "-1001" });
+    expect(task).toMatchObject({ status: "awaiting-approval" });
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 12,
+      callbackQueryId: "delegation-cb-1",
+      data: `pirelay:delegation:approve:${task!.id}`,
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 42, username: "human", isBot: false },
+    });
+
+    expect(callbackAnswers.at(-1)).toBe("Pair privately first.");
+    expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "awaiting-approval" });
   });
 });

@@ -608,6 +608,14 @@ export class SlackRuntime {
       await this.sendDelegationTaskCard(message, next);
       return;
     }
+    const availability = probeRouteAvailability(route);
+    if (availability.kind === "unavailable" || !availability.idle) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: availability.kind === "unavailable" ? routeActionDisplayMessage(availability) : "The target session is busy; delegated work can only be claimed while the target session is idle." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
     const persisted = await this.store.tryUpsertDelegationTask(task);
     if (!persisted.applied) {
       await this.sendText(message, `Delegation task ${task.id} changed before this claim could be applied.`);

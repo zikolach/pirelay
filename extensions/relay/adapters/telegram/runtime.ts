@@ -813,6 +813,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
     const delegationAction = parseDelegationActionId(callback.data);
     if (delegationAction) {
+      if (!await this.isTelegramDelegationCallbackAuthorized(callback)) return;
       const command = delegationCommandFromCallbackAction(delegationAction.kind, delegationAction.taskId);
       const handled = await this.handleTelegramDelegationMessage(telegramMessageFromCallback(callback, `task ${delegationAction.kind} ${delegationAction.taskId}`), command);
       await this.api.answerCallbackQuery(callback.callbackQueryId, handled ? "Delegation action handled." : "Delegation action was ignored or stale.");
@@ -1027,6 +1028,21 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
   }
 
+  private async isTelegramDelegationCallbackAuthorized(callback: TelegramInboundCallback): Promise<boolean> {
+    if (!isTelegramGroupConversation(callback.chat.type)) return true;
+    if (callback.user.isBot) return true;
+    if (this.config.allowUserIds.length > 0 && !this.config.allowUserIds.includes(callback.user.id)) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Unauthorized.");
+      return false;
+    }
+    const entries = await this.sessionEntriesForTelegramUser(callback.user.id);
+    if (entries.length > 0) return true;
+    const setup = await this.ensureSetup();
+    await this.api.answerCallbackQuery(callback.callbackQueryId, "Pair privately first.");
+    await this.api.sendPlainText(callback.chat.id, `Pair with this bot in a private Telegram chat first, then use /sessions@${setup.botUsername} from the group.`);
+    return false;
+  }
+
   private async handleTelegramDelegationMessage(message: TelegramInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationCommand>>): Promise<boolean> {
     if (!this.config.delegation?.enabled) return false;
     const channelMessage = this.telegramChannelMessage(message);
@@ -1122,6 +1138,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
     if (!route) {
       const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendTelegramDelegationTaskCard(message, next);
+      return;
+    }
+    const availability = probeRouteAvailability(route);
+    if (availability.kind === "unavailable" || !availability.idle) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: availability.kind === "unavailable" ? routeActionDisplayMessage(availability) : "The target session is busy; delegated work can only be claimed while the target session is idle." });
       const next = blocked.ok ? blocked.task : task;
       await this.store.upsertDelegationTask(next);
       await this.sendTelegramDelegationTaskCard(message, next);

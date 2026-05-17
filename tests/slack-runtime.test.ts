@@ -1146,6 +1146,54 @@ describe("SlackRuntime foundations", () => {
     }
   });
 
+  it("blocks Slack delegation claims while the target route is busy", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.machineId = "pirelay__mini_";
+    runtimeConfig.machineDisplayName = "pirelay__mini_";
+    runtimeConfig.slack = {
+      ...runtimeConfig.slack!,
+      allowChannelMessages: true,
+      delegation: { enabled: true, autonomy: "auto-claim-targeted", requireHumanApproval: false },
+      sharedRoom: runtimeConfig.slack!.sharedRoom ? { ...runtimeConfig.slack!.sharedRoom, machineAliases: ["pirelay__mini_"] } : { enabled: true, roomHint: "C1", machineAliases: ["pirelay__mini_"] },
+    };
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    testRoute.actions.context = { isIdle: () => false } as never;
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const preseeded = process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+    process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = "true";
+
+    try {
+      const runtime = new SlackRuntime(runtimeConfig, { operations });
+      await runtime.registerRoute(testRoute);
+      await runtime.start();
+      const sendChannelMessage = async (text: string, ts: string) => operations.handler!({
+        type: "event_callback",
+        envelopeId: `busy-delegation-env-${ts}`,
+        eventId: `busy-delegation-event-${ts}`,
+        event: { type: "message", channel: "C1", channel_type: "channel", user: "U_DRIVER", text, ts, team: "T1" },
+      });
+
+      await sendChannelMessage("relay delegate pirelay__mini_ run busy task", "1800");
+      const [task] = await store.listDelegationTasks({ roomConversationId: "C1" });
+      await sendChannelMessage(`relay task claim ${task!.id}`, "1801");
+
+      expect(testRoute.actions.sendUserMessage).not.toHaveBeenCalledWith(expect.stringContaining(`delegated task ${task!.id}`));
+      await expect(store.getDelegationTask(task!.id)).resolves.toMatchObject({ status: "blocked" });
+      expect(operations.posts.at(-1)?.text).toContain("Status: Blocked");
+      testRoute.notification.lastAssistantText = "Unrelated running turn completed.";
+      await runtime.notifyTurnCompleted(testRoute, "completed");
+      await expect(store.getDelegationTask(task!.id)).resolves.toMatchObject({ status: "blocked" });
+    } finally {
+      if (preseeded === undefined) {
+        delete process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING;
+      } else {
+        process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING = preseeded;
+      }
+    }
+  });
+
   it("supports delegation create while preseeded and without a registered route", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
