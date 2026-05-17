@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,11 +85,22 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   async stop(): Promise<void> {
     this.started = false;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
-    this.rejectPending(new Error("Broker runtime stopped."));
-    this.socket?.destroy();
-    this.socket = undefined;
+    this.disconnectClient(new Error("Broker runtime stopped."));
+  }
+
+  async restartBrokerProcess(): Promise<void> {
+    this.started = false;
+    this.disconnectClient(new Error("Broker runtime restarted."));
+    const pid = await this.readBrokerPid();
+    if (pid !== undefined && this.isProcessAlive(pid)) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if (!isNoSuchProcessError(error)) throw new Error(`Failed to stop PiRelay broker process ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      await this.waitForBrokerProcessExit(pid);
+    }
+    await this.unlinkBrokerFiles();
   }
 
   async ensureSetup(): Promise<SetupCache> {
@@ -126,6 +137,14 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   private serializeRoute(route: SessionRoute): BrokerRouteState {
     return relayRouteStateForRoute(route, { channel: BROKER_CHANNEL });
+  }
+
+  private disconnectClient(error: Error): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.rejectPending(error);
+    this.socket?.destroy();
+    this.socket = undefined;
   }
 
   private async ensureConnected(): Promise<void> {
@@ -419,6 +438,49 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }
   }
 
+  private async readBrokerPid(): Promise<number | undefined> {
+    try {
+      const raw = (await readFile(this.pidPath, "utf8")).trim();
+      const pid = Number(raw);
+      if (Number.isInteger(pid) && pid > 0) return pid;
+      throw new Error(`Invalid broker pid file contents: ${raw || "empty"}`);
+    } catch (error) {
+      if (isMissingFileError(error)) return undefined;
+      throw new Error(`Could not read PiRelay broker pid file: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      if (isNoSuchProcessError(error)) return false;
+      throw new Error(`Could not inspect PiRelay broker process ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async waitForBrokerProcessExit(pid: number): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (!this.isProcessAlive(pid)) return;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    }
+    throw new Error(`PiRelay broker process ${pid} did not stop in time.`);
+  }
+
+  private async unlinkBrokerFiles(): Promise<void> {
+    await Promise.all([this.unlinkBrokerFile(this.socketPath), this.unlinkBrokerFile(this.pidPath)]);
+  }
+
+  private async unlinkBrokerFile(path: string): Promise<void> {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if (!isMissingFileError(error)) throw new Error(`Could not remove PiRelay broker file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private async spawnBroker(): Promise<void> {
     const brokerPath = fileURLToPath(new URL("./process.js", import.meta.url));
     const child = spawn(process.execPath, [brokerPath], {
@@ -477,4 +539,12 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }, this.reconnectDelayMs);
     this.reconnectTimer.unref?.();
   }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
+}
+
+function isNoSuchProcessError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ESRCH";
 }

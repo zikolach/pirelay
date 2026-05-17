@@ -45,10 +45,10 @@ function shortenMiddle(text: string, maxLength: number): string {
   return `${text.slice(0, left)}…${text.slice(text.length - right)}`;
 }
 
-function withLifecycleNotificationTimeout(delivery: Promise<void>, timeoutMs = LIFECYCLE_NOTIFICATION_TIMEOUT_MS): Promise<void> {
+function withLifecycleNotificationTimeout(label: string, delivery: Promise<void>, timeoutMs = LIFECYCLE_NOTIFICATION_TIMEOUT_MS): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<void>((_resolve, reject) => {
-    timeout = setTimeout(() => reject(new Error("lifecycle notification timed out")), timeoutMs);
+    timeout = setTimeout(() => reject(new Error(`${label} lifecycle timed out`)), timeoutMs);
   });
   return Promise.race([delivery, timeoutPromise]).finally(() => {
     if (timeout) clearTimeout(timeout);
@@ -159,6 +159,7 @@ function getCommandHelp(): string {
     "  connect [telegram|discord|slack] [name]  Create a channel pairing instruction",
     "  doctor      Diagnose configured relay channels",
     "  send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]  Send a workspace file",
+    "  restart     Restart relay runtimes and kill/restart the broker process",
     "  disconnect  Revoke relay bindings for this session",
     "  status      Show current local relay state",
     "  trusted     List locally trusted relay users",
@@ -172,6 +173,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let telegramRuntimeStatus: { enabled: boolean; started: boolean; error?: string } | undefined;
   const discordRuntimes = new Map<string, DiscordRuntime>();
   const slackRuntimes = new Map<string, SlackRuntime>();
+  const volatileTelegramBindings = new Map<string, TelegramBindingMetadata>();
+  const relayStatusDiagnostics = new Map<string, string>();
   let currentRoute: SessionRoute | undefined;
   let latestContext: ExtensionContext | undefined;
   let closeConnectQrScreen: (() => void) | undefined;
@@ -202,6 +205,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   function invalidateLiveContextForRoute(route: SessionRoute): void {
     const ctx = liveContextForRoute(route);
     if (ctx && latestContext === ctx) latestContext = undefined;
+  }
+
+  function relayStatusIcon(ctx: ExtensionContext, text: string, tone: Parameters<Theme["fg"]>[0]): string {
+    return ctx.ui.theme ? ctx.ui.theme.fg(tone, text) : text;
   }
 
   function safeSetStatus(key: string, value: string, ctx = latestContext): void {
@@ -346,14 +353,20 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtimes;
   }
 
-  async function stopAndClearRuntimes(ctx: ExtensionContext): Promise<{ telegramStopped: boolean; discordStopped: string[]; slackStopped: string[] }> {
+  async function stopAndClearRuntimes(ctx: ExtensionContext, options: { restartBrokerProcess?: boolean } = {}): Promise<{ telegramStopped: boolean; discordStopped: string[]; slackStopped: string[]; brokerRestarted: boolean }> {
     let telegramStopped = false;
+    let brokerRestarted = false;
     const discordStopped: string[] = [];
     const slackStopped: string[] = [];
     const failures: unknown[] = [];
     if (runtime) {
       try {
-        await runtime.stop();
+        if (options.restartBrokerProcess && runtime.restartBrokerProcess) {
+          await runtime.restartBrokerProcess();
+          brokerRestarted = true;
+        } else {
+          await runtime.stop();
+        }
         runtime = undefined;
         telegramRuntimeStatus = { enabled: true, started: false };
         telegramStopped = true;
@@ -384,7 +397,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const message = first instanceof Error ? first.message : String(first);
       ctx.ui.notify(`Stopped PiRelay runtimes with ${failures.length} warning(s): ${redactSecrets(message)}`, "warning");
     }
-    return { telegramStopped, discordStopped, slackStopped };
+    return { telegramStopped, discordStopped, slackStopped, brokerRestarted };
   }
 
   function statusKeyForChannel(channel: RelayStatusLineChannel, instanceId = "default"): string {
@@ -409,13 +422,16 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const store = new TunnelStateStore(config.stateDir);
     const snapshot = await store.loadBindingAuthoritySnapshot();
     if (channel === "telegram") {
-      const routeBinding = currentRoute.binding;
+      const routeBinding = currentRoute.binding ?? volatileTelegramBindings.get(currentRoute.sessionKey);
+      if (snapshot.kind === "state-unavailable") return routeBinding ? telegramStatusBinding(routeBinding) : undefined;
       const outcome = resolveTelegramBindingAuthority(
         snapshot,
         { sessionKey: currentRoute.sessionKey, chatId: routeBinding?.chatId, userId: routeBinding?.userId, includePaused: true, allowVolatileFallback: true },
         routeBinding,
       );
-      return authorityOutcomeAllowsDelivery(outcome) ? telegramStatusBinding(outcome.binding) : undefined;
+      if (!authorityOutcomeAllowsDelivery(outcome)) return undefined;
+      currentRoute.binding = outcome.binding;
+      return telegramStatusBinding(outcome.binding);
     }
     const outcome = resolveChannelBindingAuthority(
       snapshot,
@@ -425,10 +441,15 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   async function setMessengerStatus(ctx: ExtensionContext, channel: RelayStatusLineChannel, state: Omit<Parameters<typeof formatRelayStatusLine>[0], "channel" | "binding"> & { binding?: RelayStatusLineBindingState }, instanceId = "default"): Promise<void> {
-    safeSetStatus(statusKeyForChannel(channel, instanceId), formatRelayStatusLine({ channel, ...state }), ctx);
+    const key = statusKeyForChannel(channel, instanceId);
+    if (state.error) relayStatusDiagnostics.set(key, `${channel}${instanceId === "default" ? "" : `:${instanceId}`}: ${state.error}`);
+    else relayStatusDiagnostics.delete(key);
+    const colorize = ctx.ui.theme ? (tone: Parameters<Theme["fg"]>[0], text: string) => ctx.ui.theme.fg(tone, text) : undefined;
+    safeSetStatus(key, formatRelayStatusLine({ channel, ...state }, { colorize }), ctx);
   }
 
   function clearStatus(key: string, ctx = latestContext): void {
+    relayStatusDiagnostics.delete(key);
     safeSetStatus(key, "", ctx);
   }
 
@@ -616,6 +637,15 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       }
       throw error;
     }
+    if (route) {
+      if (revoked || !binding) volatileTelegramBindings.delete(route.sessionKey);
+      else volatileTelegramBindings.set(route.sessionKey, binding);
+    }
+    if (route && currentRoute?.sessionKey === route.sessionKey) {
+      currentRoute.binding = revoked ? undefined : binding ?? undefined;
+    }
+    const live = liveContextForRoute(route);
+    if (live) refreshRelayStatusesSoon(live);
   }
 
   function channelLabel(channel: string): string {
@@ -733,6 +763,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         setLocalStatus: (key, value) => {
           const live = liveContextForRoute(route);
           if (!live) return;
+          if (key === "relay-binding-authority") {
+            relayStatusDiagnostics.set(key, value);
+            safeSetStatus(key, relayStatusIcon(live, "relay ⚠", "warning"), live);
+            return;
+          }
           safeSetStatus(key, value, live);
         },
         clearLocalStatus: (key) => {
@@ -868,21 +903,22 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     } catch {
       return;
     }
-    const deliveries: Array<Promise<void> | undefined> = [];
-    if (onlyStarted?.telegram ?? true) deliveries.push(notifyTelegramLifecycle(config, route, kind));
+    const deliveries: Array<{ label: string; delivery: Promise<void> | undefined }> = [];
+    if (onlyStarted?.telegram ?? true) deliveries.push({ label: "telegram", delivery: notifyTelegramLifecycle(config, route, kind) });
     for (const [instanceId, discord] of discordRuntimes) {
       if (onlyStarted?.discordInstances && !onlyStarted.discordInstances.has(instanceId)) continue;
-      deliveries.push(discord.notifyLifecycle?.(route, kind));
+      deliveries.push({ label: instanceId === "default" ? "discord" : `discord:${instanceId}`, delivery: discord.notifyLifecycle?.(route, kind) });
     }
     for (const [instanceId, slack] of slackRuntimes) {
       if (onlyStarted?.slackInstances && !onlyStarted.slackInstances.has(instanceId)) continue;
-      deliveries.push(slack.notifyLifecycle?.(route, kind));
+      deliveries.push({ label: instanceId === "default" ? "slack" : `slack:${instanceId}`, delivery: slack.notifyLifecycle?.(route, kind) });
     }
-    const results = await Promise.allSettled(deliveries.filter((delivery): delivery is Promise<void> => Boolean(delivery)).map((delivery) => withLifecycleNotificationTimeout(delivery)));
+    const results = await Promise.allSettled(deliveries.filter((item): item is { label: string; delivery: Promise<void> } => Boolean(item.delivery)).map((item) => withLifecycleNotificationTimeout(item.label, item.delivery)));
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (rejected) {
-      const message = rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason);
-      safeSetStatus("relay-lifecycle", `relay lifecycle warning: ${redactSecrets(message)}`, ctx);
+      const message = redactSecrets(rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason));
+      relayStatusDiagnostics.set("relay-lifecycle", `lifecycle: ${message}`);
+      safeSetStatus("relay-lifecycle", relayStatusIcon(ctx, "relay ⚠", "warning"), ctx);
     } else {
       clearStatus("relay-lifecycle", ctx);
     }
@@ -895,11 +931,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         latest = entry.data as BindingEntryData;
       }
     }
-    if (latest?.revoked) return undefined;
-    if (latest?.binding) return latest.binding;
+    const sessionKey = sessionKeyOf(ctx.sessionManager.getSessionId(), ctx.sessionManager.getSessionFile());
+    if (latest?.revoked) {
+      volatileTelegramBindings.delete(sessionKey);
+      return undefined;
+    }
+    if (latest?.binding) {
+      volatileTelegramBindings.set(sessionKey, latest.binding);
+      return latest.binding;
+    }
+    const volatile = volatileTelegramBindings.get(sessionKey);
+    if (volatile) return volatile;
 
     const store = new TunnelStateStore(config.stateDir);
-    const sessionKey = sessionKeyOf(ctx.sessionManager.getSessionId(), ctx.sessionManager.getSessionFile());
     const localBinding = await store.getBindingBySessionKey(sessionKey);
     if (!localBinding || localBinding.status === "revoked") return undefined;
     return localBinding;
@@ -1102,13 +1146,31 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return true;
   }
 
+  async function handleRelayRestart(ctx: ExtensionContext): Promise<void> {
+    await ensureRuntime(ctx, false);
+    const stopped = await stopAndClearRuntimes(ctx, { restartBrokerProcess: true });
+    configCache = undefined;
+    await resetStoppedRuntimeStatuses(ctx, stopped);
+    await syncRoute(ctx);
+    ctx.ui.notify(stopped.brokerRestarted ? "PiRelay broker process and runtimes restarted for this session." : "PiRelay runtimes restarted for this session.", "info");
+  }
+
+  function renderRelayStatusDiagnostics(): string | undefined {
+    if (relayStatusDiagnostics.size === 0) return undefined;
+    return [
+      "Runtime status details:",
+      ...[...relayStatusDiagnostics.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `- ${key}: ${value}`),
+    ].join("\n");
+  }
+
   async function handleRelayDoctor(ctx: ExtensionContext): Promise<void> {
     try {
       const migrationPlan = await planRelayConfigMigrationForEnv();
       if (migrationPlan) await promptAndApplyConfigMigration(ctx, migrationPlan);
       const config = await ensureConfig(ctx, true);
       const facts = await collectRelaySetupFacts(config);
-      ctx.ui.notify(renderRelayDoctorReport(config, relaySetupDiagnostics(config, facts)), "info");
+      const diagnostics = renderRelayStatusDiagnostics();
+      ctx.ui.notify([renderRelayDoctorReport(config, relaySetupDiagnostics(config, facts)), diagnostics].filter(Boolean).join("\n\n"), "info");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(redactSecrets([
@@ -1645,6 +1707,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
               return;
             case "send-file":
               await handleSendFile(ctx, intent.sendFileTarget, intent.sendFilePath, intent.sendFileCaption);
+              return;
+            case "restart":
+              await handleRelayRestart(ctx);
               return;
             case "disconnect":
               await handleDisconnect(ctx);

@@ -136,6 +136,9 @@ These adapter foundations are DM-first and use channel-specific credentials/conf
 25. Pair one Pi session to Telegram and Slack or Discord, send remote `/disconnect` from only one conversation, then complete a Pi turn from the still-paired messenger; verify the disconnected conversation receives no completion, progress, image/file, or button output while `/sessions` still returns safe no-paired-session guidance there.
 26. Repeat the previous step while a turn is already running; verify a disconnect racing with completion suppresses output to the revoked conversation.
 27. From local Pi, run `/relay disconnect` and verify all Telegram, Discord, and Slack bindings for the current session are revoked and no messenger can continue controlling that session until re-paired.
+28. In a shared room with delegation enabled, send `/delegate <machine> run a harmless status check`; verify a visible task card appears, non-target machine bots stay silent, `/task claim <id>` injects a bounded delegated-task prompt only into the claimant session, and completion is reported back to the room.
+29. Repeat with an untrusted bot-authored `/delegate` message and verify no task is created, no prompt is injected, and no media/download/callback side effects occur.
+30. Repeat with a trusted peer bot targeting a different machine and verify the local broker stays silent except for local observation state.
 
 ## 7. Optional Telegram two-bot shared-room smoke checklist
 

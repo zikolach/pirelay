@@ -1,6 +1,7 @@
 import type { MessengerRef } from "../core/messenger-ref.js";
 import type { RelayBinding, RelayPendingPairing } from "../core/adapter-contracts.js";
 import type { RelayActionState, RelayActiveSelection, RelaySessionRouteDescriptor } from "../core/session-contracts.js";
+import type { DelegationTaskAuditEvent, DelegationTaskRecord } from "../core/agent-delegation.js";
 
 export interface RelayPersistedBindingRecord extends RelayBinding {
   status: "active" | "revoked";
@@ -23,6 +24,9 @@ export interface RelayStoreData {
   actions: Record<string, RelayActionState>;
   routes: Record<string, RelaySessionRouteDescriptor>;
   migrations: RelayStateMigrationRecord[];
+  delegationTasks: Record<string, DelegationTaskRecord>;
+  delegationAudit: DelegationTaskAuditEvent[];
+  delegationHandledEvents: string[];
 }
 
 export function emptyRelayStore(): RelayStoreData {
@@ -34,6 +38,9 @@ export function emptyRelayStore(): RelayStoreData {
     actions: {},
     routes: {},
     migrations: [],
+    delegationTasks: {},
+    delegationAudit: [],
+    delegationHandledEvents: [],
   };
 }
 

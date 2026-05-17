@@ -101,7 +101,7 @@ describe("telegram action callbacks", () => {
 
   it("only offers full-output actions when the inline summary is truncated", () => {
     expect(shouldOfferFullOutputActions("Hey! Morning — ready when you are.")).toBe(false);
-    expect(shouldOfferFullOutputActions(`${"x".repeat(320)}`)).toBe(false);
-    expect(shouldOfferFullOutputActions(`${"x".repeat(321)}`)).toBe(true);
+    expect(shouldOfferFullOutputActions(`${"x".repeat(2_000)}`)).toBe(false);
+    expect(shouldOfferFullOutputActions(`${"x".repeat(2_001)}`)).toBe(true);
   });
 });

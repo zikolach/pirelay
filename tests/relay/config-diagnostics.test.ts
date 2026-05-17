@@ -110,4 +110,38 @@ describe("relay diagnostics", () => {
     expect(rendered).toContain("Duplicate bot/account fingerprint");
     expect(rendered).not.toContain("same-token");
   });
+
+  it("reports delegation readiness and unsafe settings without printing secrets", () => {
+    const config = baseConfig();
+    config.messengers = [{
+      ref: { kind: "discord", instanceId: "default" },
+      enabled: true,
+      displayName: "discord",
+      token: "discord-token",
+      applicationId: "app-1",
+      allowUserIds: [],
+      allowGuildIds: [],
+      sharedRoom: { enabled: true },
+      delegation: {
+        enabled: true,
+        autonomy: "auto-claim-targeted",
+        trustedPeers: [{ peerId: "bot-a", displayName: "Bot A", allowCreate: true }],
+        localCapabilities: ["linux-tests"],
+        taskExpiryMs: 60000,
+        runningTimeoutMs: 60000,
+        maxDepth: 1,
+        maxVisibleSummaryChars: 320,
+        maxHistory: 20,
+        requireHumanApproval: false,
+      },
+      ingressPolicy: { kind: "owner", machineId: "laptop" },
+      limits: { maxTextChars: 3900, maxFileBytes: 1, allowedImageMimeTypes: ["image/png"] },
+      unsupported: false,
+    }];
+
+    const rendered = renderRelayDiagnostics(config);
+    expect(rendered).toContain("discord: delegation auto-claim-targeted; trusted peers: 1; capabilities: linux-tests");
+    expect(rendered).toContain("delegation can auto-claim");
+    expect(rendered).not.toContain("discord-token");
+  });
 });

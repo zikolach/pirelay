@@ -98,7 +98,31 @@ For no-federation shared rooms, use one dedicated bot/app identity per machine i
 
 - Telegram: invite each machine bot to the group/supergroup. Enable BotFather Bot-to-Bot Communication Mode for both bots only when testing bot-authored workflows; `/command@bot` addressed commands remain the reliable privacy-mode fallback.
 - Discord: enable guild-channel shared rooms only with dedicated applications, allowed guild ids, Message Content Intent, and channel permissions. Prefer `relay <command>` and mentions over platform slash-command assumptions.
-- Slack: channel events and app mentions can be configured, but Slack shared-room ordinary text/channel command/media pre-routing is diagnostic/deferred until explicit runtime support exists. Keep channel control disabled unless you are testing that gap deliberately.
+- Slack: channel events, app mentions, ordinary channel text, and `relay <command>` fallbacks are supported only after `allowChannelMessages`, shared-room enablement, app invitation, and explicit channel pairing are configured.
+
+Agent delegation is disabled by default. Enable it per messenger instance with a `delegation` block, for example:
+
+```json
+{
+  "relay": { "machineId": "laptop", "capabilities": ["linux-tests"] },
+  "messengers": {
+    "discord": {
+      "default": {
+        "sharedRoom": { "enabled": true },
+        "delegation": {
+          "enabled": true,
+          "autonomy": "propose-only",
+          "trustedPeers": [
+            { "peerId": "1234567890", "allowCreate": true, "targetMachineIds": ["laptop"] }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Supported autonomy levels are `off`, `propose-only`, `auto-claim-targeted`, and `auto-claim-safe-capability`. Peer-bot trust is separate from human `allowUserIds`; do not put tokens, hidden prompts, transcripts, or raw tool inputs in delegation task goals.
 
 See `docs/shared-room-parity.md` for the current parity matrix.
 

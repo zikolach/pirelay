@@ -1,4 +1,5 @@
 import type { BrokerPeerConfig, MessengerIngressPolicy } from "../broker/protocol.js";
+import type { DelegationAutonomyLevel, TrustedDelegationPeer } from "../core/agent-delegation.js";
 import type { MessengerKind, MessengerRef } from "../core/messenger-ref.js";
 
 export interface RelayDefaultsConfig {
@@ -15,9 +16,36 @@ export interface RelayMachineConfig {
   stateDir: string;
   displayName?: string;
   aliases: string[];
+  capabilities?: string[];
   brokerNamespace?: string;
   brokerGroup?: string;
   brokerPeers: BrokerPeerConfig[];
+}
+
+export interface RelayAgentDelegationConfig {
+  enabled?: boolean;
+  autonomy?: DelegationAutonomyLevel;
+  trustedPeers?: TrustedDelegationPeer[];
+  localCapabilities?: string[];
+  taskExpiryMs?: number;
+  runningTimeoutMs?: number;
+  maxDepth?: number;
+  maxVisibleSummaryChars?: number;
+  maxHistory?: number;
+  requireHumanApproval?: boolean;
+}
+
+export interface ResolvedRelayAgentDelegationConfig {
+  enabled: boolean;
+  autonomy: DelegationAutonomyLevel;
+  trustedPeers: TrustedDelegationPeer[];
+  localCapabilities: string[];
+  taskExpiryMs: number;
+  runningTimeoutMs: number;
+  maxDepth: number;
+  maxVisibleSummaryChars: number;
+  maxHistory: number;
+  requireHumanApproval: boolean;
 }
 
 export interface MessengerSharedRoomConfig {
@@ -54,6 +82,7 @@ export interface MessengerInstanceFileConfig {
   allowGuildIds?: string[];
   allowChannelMessages?: boolean;
   sharedRoom?: MessengerSharedRoomConfig;
+  delegation?: RelayAgentDelegationConfig;
   ingressPolicy?: MessengerIngressPolicy;
   ownerMachineId?: string;
   brokerGroup?: string;
@@ -123,6 +152,7 @@ export interface ResolvedMessengerInstanceConfig {
   allowGuildIds: string[];
   allowChannelMessages?: boolean;
   sharedRoom: MessengerSharedRoomConfig;
+  delegation?: ResolvedRelayAgentDelegationConfig;
   ingressPolicy: MessengerIngressPolicy;
   ownerMachineId?: string;
   brokerGroup?: string;

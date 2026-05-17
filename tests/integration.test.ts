@@ -34,9 +34,11 @@ async function flushAsyncActions(): Promise<void> {
 async function createRuntimeConfig(prefix = "pi-telegram-integration-"): Promise<TelegramTunnelConfig> {
   const stateDir = await mkdtemp(join(tmpdir(), prefix));
   tempDirs.push(stateDir);
+  const configPath = join(stateDir, "config.json");
+  vi.stubEnv("PI_RELAY_CONFIG", configPath);
   return {
     botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-    configPath: join(stateDir, "config.json"),
+    configPath,
     stateDir,
     pairingExpiryMs: 300_000,
     busyDeliveryMode: "followUp",
@@ -418,8 +420,8 @@ describe("PiRelay integration behavior", () => {
     await pi.runCommand("relay", "status", context);
 
     expect(statuses).toContainEqual({ key: "relay-sync", value: "telegram sync error: broker unavailable" });
-    expect(statuses).toContainEqual({ key: "relay", value: "telegram error: broker unavailable" });
-    expect(statuses).not.toContainEqual({ key: "relay", value: "telegram: ready unpaired" });
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ✖" });
+    expect(statuses).not.toContainEqual({ key: "relay", value: "tg ◇" });
   });
 
   it("sends Telegram lifecycle notifications for offline, restored, and disconnect events", async () => {
@@ -438,6 +440,7 @@ describe("PiRelay integration behavior", () => {
       setup: undefined,
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
+      restartBrokerProcess: vi.fn(async () => undefined),
       ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
       registerRoute: vi.fn(async () => undefined),
       unregisterRoute: vi.fn(async () => undefined),
@@ -499,7 +502,7 @@ describe("PiRelay integration behavior", () => {
 
     const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
-    const { context, statuses } = createMockContext(sessionId);
+    const { context, statuses, notifications } = createMockContext(sessionId);
     relayExtension(pi.api as any);
 
     await pi.emit("session_start", {}, context);
@@ -539,7 +542,7 @@ describe("PiRelay integration behavior", () => {
 
     const { default: relayExtension } = await import("../extensions/relay/index.js");
     const pi = createMockPi();
-    const { context, statuses } = createMockContext(sessionId);
+    const { context, statuses, notifications } = createMockContext(sessionId);
     relayExtension(pi.api as any);
 
     await pi.emit("session_start", {}, context);
@@ -548,7 +551,11 @@ describe("PiRelay integration behavior", () => {
     await shutdown;
 
     expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(binding.sessionKey);
-    expect(statuses).toContainEqual({ key: "relay-lifecycle", value: "relay lifecycle warning: lifecycle notification timed out" });
+    expect(statuses).toContainEqual({ key: "relay-lifecycle", value: "relay ⚠" });
+
+    await pi.runCommand("relay", "doctor", context);
+    expect(notifications.at(-1)?.message).toContain("Runtime status details:");
+    expect(notifications.at(-1)?.message).toContain("telegram lifecycle timed out");
   });
 
   it("unregisters Discord routes on session shutdown", async () => {
@@ -631,7 +638,7 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_shutdown", {}, context);
 
     expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(binding.sessionKey);
-    expect(statuses).toContainEqual({ key: "relay-lifecycle", value: "relay lifecycle warning: network down" });
+    expect(statuses).toContainEqual({ key: "relay-lifecycle", value: "relay ⚠" });
   });
 
   it("opens interactive setup wizard when UI is available", async () => {
@@ -892,6 +899,7 @@ describe("PiRelay integration behavior", () => {
       setup: undefined,
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
+      restartBrokerProcess: vi.fn(async () => undefined),
       ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
       registerRoute: vi.fn(async () => undefined),
       unregisterRoute: vi.fn(async () => undefined),
@@ -934,8 +942,64 @@ describe("PiRelay integration behavior", () => {
 
     expect(fakeSlackRuntime.stop).toHaveBeenCalledTimes(1);
     expect(fakeRuntime.stop).toHaveBeenCalledTimes(1);
-    expect(statuses).toContainEqual({ key: "relay", value: "telegram: starting" });
-    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: starting" });
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ◌" });
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ◌" });
+  });
+
+  it("restarts active relay runtimes on demand", async () => {
+    const config = await createRuntimeConfig("pi-relay-restart-command-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    vi.stubEnv("PI_RELAY_SLACK_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_SLACK_BOT_TOKEN", "slack-token");
+    vi.stubEnv("PI_RELAY_SLACK_SIGNING_SECRET", "slack-secret");
+    vi.stubEnv("PI_RELAY_SLACK_APP_TOKEN", "xapp-token");
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      restartBrokerProcess: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    let slackStarted = false;
+    const fakeSlackRuntime = {
+      start: vi.fn(async () => { slackStarted = true; }),
+      stop: vi.fn(async () => { slackStarted = false; }),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => ({ enabled: true, started: slackStarted, appId: "A1", teamId: "T1" })),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    vi.doMock("../extensions/relay/adapters/slack/runtime.js", () => ({
+      getOrCreateSlackRuntime: () => fakeSlackRuntime,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications, statuses } = createMockContext("relay-restart-command");
+    relayExtension(pi.api as any);
+
+    await pi.runCommand("relay", "connect slack", context);
+    expect(fakeRuntime.registerRoute).toHaveBeenCalledTimes(1);
+    expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
+
+    await pi.runCommand("relay", "restart", context);
+
+    expect(fakeRuntime.restartBrokerProcess).toHaveBeenCalledTimes(1);
+    expect(fakeRuntime.stop).not.toHaveBeenCalled();
+    expect(fakeSlackRuntime.stop).toHaveBeenCalledTimes(1);
+    expect(fakeRuntime.registerRoute).toHaveBeenCalledTimes(2);
+    expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(2);
+    expect(notifications.at(-1)?.message).toBe("PiRelay broker process and runtimes restarted for this session.");
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ◌" });
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ◌" });
   });
 
   it("does not show Slack ready when required credentials are incomplete", async () => {
@@ -979,7 +1043,7 @@ describe("PiRelay integration behavior", () => {
 
     await pi.runCommand("relay", "status", context);
 
-    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: off" });
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ○" });
   });
 
   it("scopes Slack status lines by configured instance", async () => {
@@ -1040,8 +1104,8 @@ describe("PiRelay integration behavior", () => {
 
     await pi.runCommand("relay", "status", context);
 
-    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: ready unpaired" });
-    expect(statuses).toContainEqual({ key: "slack-relay:beta", value: "slack: paired channel" });
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ◇" });
+    expect(statuses).toContainEqual({ key: "slack-relay:beta", value: "sl ● #" });
   });
 
   it("does not write setup config when confirmation is cancelled", async () => {
@@ -1161,6 +1225,46 @@ describe("PiRelay integration behavior", () => {
     expect(notifications.some((entry) => entry.message.includes("Relay setup doctor"))).toBe(true);
   });
 
+  it("keeps paired Telegram status visible when state is temporarily unavailable", async () => {
+    const config = await createRuntimeConfig("pi-status-volatile-state-unavailable-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const sessionId = "volatile-state-status";
+    const binding = createBinding(sessionId, 7001, 9001);
+    binding.sessionKey = sessionKeyOf(sessionId, `/tmp/${sessionId}.jsonl`);
+    binding.sessionFile = `/tmp/${sessionId}.jsonl`;
+    binding.sessionLabel = "volatile-state-status.jsonl";
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, branch, statuses } = createMockContext(sessionId);
+    branch.push({ type: "custom", customType: "relay-binding", data: { version: 1, binding, revoked: false } });
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ● ✉" });
+
+    await writeFile(join(config.stateDir, "state.json"), "{not-json", "utf8");
+    await pi.runCommand("relay", "status", context);
+
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ● ✉" });
+    expect(statuses).not.toContainEqual({ key: "relay", value: "tg ◇" });
+  });
+
   it("keeps local prompts and skill commands usable after connect, pairing, and route sync", async () => {
     const config = await createRuntimeConfig("pi-telegram-extension-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
@@ -1209,7 +1313,7 @@ describe("PiRelay integration behavior", () => {
     expect(renderer({ content: "Slack paired with U5FUPDYM9." }, {}, { fg: (_name: string, text: string) => text }).render(120)[0]).toBe("Relay › Slack paired with U5FUPDYM9.");
 
     await pi.runCommand("relay", "connect telegram", context);
-    expect(statuses).toContainEqual({ key: "relay", value: "telegram: ready unpaired" });
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ◇" });
     const route = [...registeredRoutes.values()][0];
     expect(route).toBeDefined();
 
@@ -1219,9 +1323,13 @@ describe("PiRelay integration behavior", () => {
     binding.sessionLabel = route!.sessionLabel;
     route!.binding = binding;
     route!.actions.persistBinding(binding, false);
+    await waitFor(() => statuses.some((entry) => entry.key === "relay" && entry.value === "tg ● ✉"));
+    route!.binding = undefined;
+    route!.actions.refreshLocalStatus?.();
+    await waitFor(() => statuses.some((entry) => entry.key === "relay" && entry.value === "tg ● ✉"));
     route!.actions.appendAudit("Telegram relay paired with @owner.");
     route!.actions.notifyLocal?.("Telegram paired with @owner for docs.", "info");
-    await waitFor(() => statuses.some((entry) => entry.key === "relay" && entry.value === "telegram: paired dm"));
+    await waitFor(() => statuses.some((entry) => entry.key === "relay" && entry.value === "tg ● ✉"));
     branch.push(...pi.appendedEntries);
 
     blockFutureRouteSync = true;
@@ -1338,13 +1446,13 @@ describe("PiRelay integration behavior", () => {
 
     expect(fakeDiscordRuntime.registerRoute).toHaveBeenCalled();
     expect(fakeDiscordRuntime.start).toHaveBeenCalledTimes(1);
-    expect(statuses).toContainEqual({ key: "discord-relay", value: "discord: ready unpaired" });
+    expect(statuses).toContainEqual({ key: "discord-relay", value: "dc ◇" });
     const discordRouteCall = fakeDiscordRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
     const discordRoute = discordRouteCall?.[0] as SessionRoute;
     const discordStore = new TunnelStateStore(config.stateDir);
     await discordStore.upsertChannelBinding({ channel: "discord", instanceId: "default", conversationId: "D1", userId: "U1", sessionKey: discordRoute.sessionKey, sessionId: discordRoute.sessionId, sessionLabel: discordRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { conversationKind: "private" } });
     discordRoute.actions.notifyLocal?.("Discord paired with U1 for docs.", "info");
-    await waitFor(() => statuses.some((entry) => entry.key === "discord-relay" && entry.value === "discord: paired dm"));
+    await waitFor(() => statuses.some((entry) => entry.key === "discord-relay" && entry.value === "dc ● ✉"));
     expect(notifications.some((entry) => entry.message.includes("relay pair"))).toBe(true);
     expect(notifications.some((entry) => entry.message.includes("QR redirect unavailable"))).toBe(true);
     const store = new TunnelStateStore(config.stateDir);
@@ -1508,7 +1616,7 @@ describe("PiRelay integration behavior", () => {
     expect(clipboardTexts.at(-1)).toMatch(/^relay pair \d{3}-\d{3}\n$/);
     expect(closeCount).toBe(0);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(1);
-    expect(statuses).toContainEqual({ key: "slack-relay", value: "slack: ready unpaired" });
+    expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ◇" });
     expect(notifications.some((entry) => entry.message.includes("pairing command copied to clipboard"))).toBe(true);
     const registerCallsAfterConnect = fakeSlackRuntime.registerRoute.mock.calls.length;
     const routeForPairingCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
@@ -1520,7 +1628,7 @@ describe("PiRelay integration behavior", () => {
     expect(closeCount).toBe(1);
     expect(notifications.some((entry) => entry.message.includes("Slack pairing PIN ready"))).toBe(true);
     expect(notifications).toContainEqual({ message: "Slack paired with U5FUPDYM9 for docs.", level: "info" });
-    await waitFor(() => statuses.some((entry) => entry.key === "slack-relay" && entry.value === "slack: paired dm"));
+    await waitFor(() => statuses.some((entry) => entry.key === "slack-relay" && entry.value === "sl ● ✉"));
     await pi.emit("agent_start", {}, context);
     expect(fakeSlackRuntime.registerRoute.mock.calls.length).toBeGreaterThan(registerCallsAfterConnect);
     const latestRegisterCall = fakeSlackRuntime.registerRoute.mock.calls.at(-1) as unknown[] | undefined;
@@ -2830,5 +2938,59 @@ describe("PiRelay integration behavior", () => {
     });
 
     expect(deliveries).toEqual([{ text: "after reconnect prompt", deliverAs: undefined }]);
+  });
+
+  it("keeps Telegram human delegation behind private pairing while allowing trusted peer bots", async () => {
+    const config = await createRuntimeConfig("pi-telegram-delegation-auth-");
+    config.delegation = {
+      enabled: true,
+      autonomy: "propose-only",
+      trustedPeers: [{ peerId: "999", allowCreate: true, targetMachineIds: ["local"], conversationIds: ["-1001"] }],
+    };
+    const store = new TunnelStateStore(config.stateDir);
+    await store.setSetup({ botId: 123456, botUsername: "pirelay_bot", botDisplayName: "PiRelay", validatedAt: new Date().toISOString() });
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    const callbackAnswers: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbackAnswers.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 10,
+      messageId: 10,
+      text: "/delegate@pirelay_bot local run tests",
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 42, username: "human", isBot: false },
+    });
+
+    expect(sent.at(-1)).toContain("Pair with this bot in a private Telegram chat first");
+    expect(await store.listDelegationTasks({ roomConversationId: "-1001" })).toHaveLength(0);
+
+    await (runtime as any).processInbound({
+      updateId: 11,
+      messageId: 11,
+      text: "/delegate@pirelay_bot local run trusted peer task",
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 999, username: "peer", isBot: true },
+    });
+
+    const [task] = await store.listDelegationTasks({ roomConversationId: "-1001" });
+    expect(task).toMatchObject({ status: "awaiting-approval" });
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 12,
+      callbackQueryId: "delegation-cb-1",
+      data: `pirelay:delegation:approve:${task!.id}`,
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 42, username: "human", isBot: false },
+    });
+
+    expect(callbackAnswers.at(-1)).toBe("Pair privately first.");
+    expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "awaiting-approval" });
   });
 });

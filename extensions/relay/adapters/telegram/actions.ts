@@ -13,7 +13,7 @@ export type TelegramActionCallback =
   | { kind: "dashboard"; sessionRef: string; action: DashboardAction };
 
 const MAX_BUTTON_LABEL = 56;
-const FULL_OUTPUT_ACTION_MIN_CHARS = 320;
+const FULL_OUTPUT_ACTION_MIN_CHARS = 2_000;
 
 function encodePart(value: string): string {
   return encodeURIComponent(value);

@@ -97,6 +97,7 @@ export function buildHelpText(options: { includeBrokerOnly?: boolean; title?: st
   const sharedRoomLines = options.includeSharedRoomHints === false ? [] : [
     "",
     "Shared-room machine bots: use /use <machine> <session> to select a machine session, /to <machine> <session> <prompt> for one-shot prompts, or mention/reply to a machine bot when plain room text is unavailable. In Telegram privacy-mode groups, address the bot explicitly with its username: /sessions@<bot_username>, /use@<bot_username> <session>, /to@<bot_username> <session> <prompt>.",
+    "Agent delegation (when enabled for a trusted shared room): use /delegate <machine|#capability> <goal> to create a visible task card, then /task@<bot_username> <claim|decline|cancel|status|history> [task-id] in Telegram groups (or /task <claim|decline|cancel|status|history> [task-id] in private/other clients) for task controls.",
   ];
   return [
     options.title ?? "PiRelay commands:",

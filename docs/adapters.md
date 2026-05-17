@@ -77,7 +77,9 @@ Run one PiRelay broker per machine. If the same bot/account is configured on mul
 
 Discord has an opt-in live DM-first runtime backed by the Discord adapter and live client operations. Slack remains a DM-first foundation with mockable platform operations. Adapters normalize direct-message text, action callbacks, files/images, identity metadata, and platform limits into shared relay contracts. Discord guild messages and Slack channel events remain rejected by default unless explicitly enabled.
 
-Shared-room parity is tracked in `docs/shared-room-parity.md`. Telegram supports addressed group commands and optional Bot-to-Bot Communication Mode when both BotFather bots enable it. Discord has the closest runtime parity for shared guild channels. Slack can parse app mentions, but ordinary channel text, channel-command fallback, and media routing are intentionally reported as unsupported until Slack gets Discord-like pre-routing.
+Shared-room parity is tracked in `docs/shared-room-parity.md`. Telegram supports addressed group commands and optional Bot-to-Bot Communication Mode when both BotFather bots enable it. Discord supports gated guild-channel shared rooms with text fallbacks, mentions, buttons, and delegation task cards. Slack supports explicitly enabled and paired channel/thread control with app mentions, ordinary text, `relay <command>` fallbacks, and delegation text cards; media parity remains narrower than private-chat flows.
+
+Agent delegation is handled above adapter-specific ingress as a structured task-card/control surface. Adapters may expose buttons or text fallbacks, but they must preserve sender bot metadata, reject untrusted peers before prompt injection, ignore local-bot/self-authored events, and keep arbitrary bot-authored output inert.
 
 ## Future adapters
 

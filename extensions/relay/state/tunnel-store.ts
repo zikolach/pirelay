@@ -7,6 +7,7 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityStateFromData, resolveC
 import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../broker/channel-registry.js";
 import { decideRelayLifecycleNotification, relayLifecycleStorageKey, type RelayLifecycleEventKind, type RelayLifecycleNotificationDecision } from "../notifications/lifecycle.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
+import { expireDelegationTaskIfNeeded, expireDelegationTaskIfRunningTimedOut, markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord, type DelegationTaskRoomRef } from "../core/agent-delegation.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
 function emptyStore(): TunnelStoreData {
@@ -17,6 +18,9 @@ function emptyStore(): TunnelStoreData {
     activeChannelSelections: {},
     trustedRelayUsers: {},
     lifecycleNotifications: {},
+    delegationTasks: {},
+    delegationAudit: [],
+    delegationHandledEvents: [],
   };
 }
 
@@ -30,6 +34,9 @@ function parseStoreData(raw: string): TunnelStoreData {
     activeChannelSelections: parsed.activeChannelSelections ?? {},
     trustedRelayUsers: parsed.trustedRelayUsers ?? {},
     lifecycleNotifications: parsed.lifecycleNotifications ?? {},
+    delegationTasks: parsed.delegationTasks ?? {},
+    delegationAudit: parsed.delegationAudit ?? [],
+    delegationHandledEvents: parsed.delegationHandledEvents ?? [],
   };
 }
 
@@ -392,6 +399,98 @@ export class TunnelStateStore {
     return removed;
   }
 
+  async upsertDelegationTask(task: DelegationTaskRecord, options: { maxAuditEntries?: number } = {}): Promise<DelegationTaskRecord> {
+    return (await this.tryUpsertDelegationTask(task, options)).task;
+  }
+
+  async tryUpsertDelegationTask(task: DelegationTaskRecord, options: { maxAuditEntries?: number } = {}): Promise<{ applied: boolean; task: DelegationTaskRecord; reason?: "conflict" }> {
+    const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
+    let result: { applied: boolean; task: DelegationTaskRecord; reason?: "conflict" } = { applied: true, task };
+    await this.update((data) => {
+      const current = data.delegationTasks[task.id];
+      if (current && !delegationTaskIncludesAudit(task, current)) {
+        result = { applied: false, task: current, reason: "conflict" };
+        return;
+      }
+      saveDelegationTask(data, task, maxAuditEntries);
+      result = { applied: true, task };
+    });
+    return result;
+  }
+
+  async getDelegationTask(taskId: string, options: { runningTimeoutMs?: number; now?: string } = {}): Promise<DelegationTaskRecord | undefined> {
+    let task: DelegationTaskRecord | undefined;
+    await this.update((data) => {
+      const current = data.delegationTasks[taskId];
+      if (!current) return;
+      const next = normalizeDelegationTaskForRead(current, options);
+      if (next !== current) {
+        saveDelegationTask(data, next, 200);
+      }
+      task = next;
+    });
+    return task;
+  }
+
+  async listDelegationTasks(options: { room?: DelegationTaskRoomRef; roomConversationId?: string; sourceMachineId?: string; targetMachineId?: string; limit?: number; runningTimeoutMs?: number; now?: string } = {}): Promise<DelegationTaskRecord[]> {
+    const limit = Math.max(1, options.limit ?? 50);
+    const data = await this.update((draft) => {
+      for (const [taskId, current] of Object.entries(draft.delegationTasks)) {
+        const next = normalizeDelegationTaskForRead(current, options);
+        if (next === current) continue;
+        saveDelegationTask(draft, next, 200);
+      }
+    });
+    return Object.values(data.delegationTasks)
+      .filter((task) => !options.room || delegationRoomMatches(task.room, options.room))
+      .filter((task) => !options.roomConversationId || task.room.conversationId === options.roomConversationId)
+      .filter((task) => !options.sourceMachineId || task.sourceMachineId === options.sourceMachineId)
+      .filter((task) => !options.targetMachineId || task.target.kind === "machine" && task.target.machineId === options.targetMachineId)
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || right.id.localeCompare(left.id))
+      .slice(0, limit);
+  }
+
+  async rememberDelegationEvent(eventId: string, options: { maxEntries?: number } = {}): Promise<boolean> {
+    const normalized = eventId.trim();
+    if (!normalized) return false;
+    let duplicate = false;
+    const maxEntries = Math.max(1, options.maxEntries ?? 500);
+    await this.update((data) => {
+      duplicate = data.delegationHandledEvents.includes(normalized);
+      if (!duplicate) data.delegationHandledEvents = [...data.delegationHandledEvents, normalized].slice(-maxEntries);
+    });
+    return duplicate;
+  }
+
+  async appendDelegationAudit(event: DelegationTaskAuditEvent, options: { maxAuditEntries?: number } = {}): Promise<void> {
+    const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
+    await this.update((data) => {
+      data.delegationAudit = [...data.delegationAudit, event].slice(-maxAuditEntries);
+    });
+  }
+
+  async listDelegationAudit(options: { taskId?: string; limit?: number } = {}): Promise<DelegationTaskAuditEvent[]> {
+    const limit = Math.max(1, options.limit ?? 50);
+    return (await this.load()).delegationAudit
+      .filter((event) => !options.taskId || event.taskId === options.taskId)
+      .sort((left, right) => Date.parse(right.at) - Date.parse(left.at) || right.eventId.localeCompare(left.eventId))
+      .slice(0, limit);
+  }
+
+  async markInFlightDelegationTasksStaleAfterRestart(now = toIsoNow()): Promise<DelegationTaskRecord[]> {
+    const changed: DelegationTaskRecord[] = [];
+    await this.update((data) => {
+      for (const [taskId, task] of Object.entries(data.delegationTasks)) {
+        const next = markDelegationTaskStaleAfterRestart(task, now);
+        if (next === task || next.status === task.status && next.updatedAt === task.updatedAt) continue;
+        data.delegationTasks[taskId] = next;
+        data.delegationAudit = [...data.delegationAudit, ...next.audit.slice(task.audit.length)].slice(-200);
+        changed.push(next);
+      }
+    });
+    return changed;
+  }
+
   async recordLifecycleNotification(input: {
     channel: ChannelBinding["channel"];
     instanceId?: string;
@@ -484,6 +583,31 @@ function trustedRelayUserStorageKey(channel: ChannelBinding["channel"], instance
 
 function channelSelectionStorageKey(channel: ChannelBinding["channel"], conversationId: string, userId: string): string {
   return `${channel}:${conversationId}:${userId}`;
+}
+
+function normalizeDelegationTaskForRead(task: DelegationTaskRecord, options: { runningTimeoutMs?: number; now?: string } = {}): DelegationTaskRecord {
+  const now = options.now ?? toIsoNow();
+  const expired = expireDelegationTaskIfNeeded(task, now);
+  return options.runningTimeoutMs ? expireDelegationTaskIfRunningTimedOut(expired, options.runningTimeoutMs, now) : expired;
+}
+
+function saveDelegationTask(data: TunnelStoreData, task: DelegationTaskRecord, maxAuditEntries: number): void {
+  const existingEventIds = new Set(data.delegationTasks[task.id]?.audit.map((event) => event.eventId) ?? []);
+  const newAuditEvents = task.audit.filter((event) => !existingEventIds.has(event.eventId));
+  data.delegationTasks[task.id] = task;
+  data.delegationAudit = [...data.delegationAudit, ...newAuditEvents].slice(-maxAuditEntries);
+}
+
+function delegationTaskIncludesAudit(candidate: DelegationTaskRecord, current: DelegationTaskRecord): boolean {
+  const candidateEventIds = new Set(candidate.audit.map((event) => event.eventId));
+  return current.audit.every((event) => candidateEventIds.has(event.eventId));
+}
+
+function delegationRoomMatches(left: DelegationTaskRoomRef, right: DelegationTaskRoomRef): boolean {
+  return left.messenger === right.messenger
+    && left.instanceId === right.instanceId
+    && left.conversationId === right.conversationId
+    && left.threadId === right.threadId;
 }
 
 function activeTelegramBindingFromData(data: TunnelStoreData, sessionKey: string, expected: { chatId?: number; userId?: number; includePaused?: boolean }): PersistedBindingRecord | undefined {

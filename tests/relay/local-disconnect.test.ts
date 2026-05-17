@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TunnelStateStore } from "../../extensions/relay/state/tunnel-store.js";
 import { sessionKeyOf } from "../../extensions/relay/core/utils.js";
 import type { TelegramBindingMetadata, TelegramTunnelConfig, TunnelRuntime } from "../../extensions/relay/core/types.js";
@@ -11,9 +11,11 @@ const tempDirs: string[] = [];
 async function config(): Promise<TelegramTunnelConfig> {
   const stateDir = await mkdtemp(join(tmpdir(), "pirelay-local-disconnect-"));
   tempDirs.push(stateDir);
+  const configPath = join(stateDir, "config.json");
+  vi.stubEnv("PI_RELAY_CONFIG", configPath);
   return {
     botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-    configPath: join(stateDir, "config.json"),
+    configPath,
     stateDir,
     pairingExpiryMs: 300_000,
     busyDeliveryMode: "followUp",
@@ -94,6 +96,25 @@ function mockPi() {
   };
 }
 
+beforeEach(() => {
+  for (const name of [
+    "PI_RELAY_DISCORD_ENABLED",
+    "PI_RELAY_DISCORD_BOT_TOKEN",
+    "PI_RELAY_DISCORD_APPLICATION_ID",
+    "PI_RELAY_DISCORD_CLIENT_ID",
+    "PI_RELAY_SLACK_ENABLED",
+    "PI_RELAY_SLACK_BOT_TOKEN",
+    "PI_RELAY_SLACK_SIGNING_SECRET",
+    "PI_RELAY_SLACK_APP_TOKEN",
+    "PI_RELAY_SLACK_APP_ID",
+    "PI_RELAY_SLACK_EVENT_MODE",
+    "PI_RELAY_SLACK_WORKSPACE_ID",
+    "PI_RELAY_SLACK_BOT_USER_ID",
+    "PI_RELAY_SLACK_ALLOW_USER_IDS",
+    "PI_RELAY_SLACK_ALLOW_CHANNEL_MESSAGES",
+  ]) vi.stubEnv(name, undefined);
+});
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   vi.doUnmock("../../extensions/relay/adapters/telegram/runtime.js");
@@ -146,7 +167,7 @@ describe("local relay disconnect", () => {
 
     expect(notifications.at(-1)?.message).toBe("PiRelay disconnected for this session.");
     expect(notifications.map((entry) => entry.message).join("\n")).not.toContain("Telegram tunnel disconnected");
-    expect(statuses).toContainEqual({ key: "relay", value: "telegram: ready unpaired" });
+    expect(statuses).toContainEqual({ key: "relay", value: "tg ◇" });
     expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(sessionKey);
     expect(await store.getBindingBySessionKey(sessionKey)).toMatchObject({ status: "revoked" });
     expect(await store.getChannelBindingBySessionKey("discord", sessionKey)).toBeUndefined();
