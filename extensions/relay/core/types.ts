@@ -4,6 +4,7 @@ import type { StructuredAnswerMetadata } from "./guided-answer.js";
 import type { ChannelBinding } from "./channel-adapter.js";
 import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
 import type { RelayLifecycleNotificationRecord } from "../notifications/lifecycle.js";
+import type { DelegationAutonomyLevel, DelegationTaskAuditEvent, DelegationTaskRecord, TrustedDelegationPeer } from "./agent-delegation.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
@@ -24,6 +25,19 @@ export interface SharedRoomRelayConfig {
   machineAliases?: string[];
 }
 
+export interface AgentDelegationRelayConfig {
+  enabled?: boolean;
+  autonomy?: DelegationAutonomyLevel;
+  trustedPeers?: TrustedDelegationPeer[];
+  localCapabilities?: string[];
+  taskExpiryMs?: number;
+  runningTimeoutMs?: number;
+  maxDepth?: number;
+  maxVisibleSummaryChars?: number;
+  maxHistory?: number;
+  requireHumanApproval?: boolean;
+}
+
 export interface DiscordRelayConfig {
   enabled?: boolean;
   botToken?: string;
@@ -33,6 +47,7 @@ export interface DiscordRelayConfig {
   allowGuildChannels?: boolean;
   allowGuildIds?: string[];
   sharedRoom?: SharedRoomRelayConfig;
+  delegation?: AgentDelegationRelayConfig;
   maxTextChars?: number;
   maxFileBytes?: number;
   allowedImageMimeTypes?: string[];
@@ -50,6 +65,7 @@ export interface SlackRelayConfig {
   allowUserIds?: string[];
   allowChannelMessages?: boolean;
   sharedRoom?: SharedRoomRelayConfig;
+  delegation?: AgentDelegationRelayConfig;
   maxTextChars?: number;
   maxFileBytes?: number;
   allowedImageMimeTypes?: string[];
@@ -62,6 +78,8 @@ export interface TelegramTunnelConfig {
   machineId?: string;
   machineDisplayName?: string;
   machineAliases?: string[];
+  machineCapabilities?: string[];
+  delegation?: AgentDelegationRelayConfig;
   brokerNamespace?: string;
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;
@@ -187,6 +205,9 @@ export interface TunnelStoreData {
   activeChannelSelections: Record<string, ChannelActiveSelectionRecord>;
   trustedRelayUsers: Record<string, TrustedRelayUserRecord>;
   lifecycleNotifications: Record<string, RelayLifecycleNotificationRecord>;
+  delegationTasks: Record<string, DelegationTaskRecord>;
+  delegationAudit: DelegationTaskAuditEvent[];
+  delegationHandledEvents: string[];
 }
 
 export interface ParsedTelegramCommand {

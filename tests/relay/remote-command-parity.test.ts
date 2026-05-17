@@ -60,7 +60,9 @@ describe("remote command parity metadata", () => {
     expect(help).toContain("/sessions@<bot_username>");
     expect(help).toContain("/use@<bot_username> <session>");
     expect(help).toContain("/to@<bot_username> <session> <prompt>");
+    expect(help).toContain("/task@<bot_username>");
     expect(help).not.toContain("/sessions@bot");
+    expect(help).not.toContain("/task@bot");
   });
 
   it("keeps Discord native command metadata namespaced around /relay subcommands", () => {

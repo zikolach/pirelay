@@ -101,7 +101,7 @@ export interface SlackPostMessagePayload {
   channel: string;
   text: string;
   threadTs?: string;
-  blocks?: SlackButtonElement[][];
+  blocks?: SlackBlock[];
 }
 
 export interface SlackUploadFilePayload {
@@ -113,10 +113,23 @@ export interface SlackUploadFilePayload {
   threadTs?: string;
 }
 
+export type SlackBlock = SlackSectionBlock | SlackActionsBlock;
+
+export interface SlackSectionBlock {
+  type: "section";
+  text: { type: "plain_text"; text: string; emoji?: true };
+}
+
+export interface SlackActionsBlock {
+  type: "actions";
+  elements: SlackButtonElement[];
+}
+
 export interface SlackButtonElement {
   type: "button";
   text: string;
   value: string;
+  actionId?: string;
   style?: "primary" | "danger";
 }
 
@@ -182,11 +195,11 @@ export class SlackChannelAdapter implements ChannelAdapter {
 
   async sendText(address: ChannelRouteAddress, text: string, options?: { buttons?: ChannelButtonLayout }): Promise<void> {
     const threadTs = slackThreadTs(address);
-    for (const chunk of channelTextChunks(this, text || " ")) {
-      await this.api.postMessage({ channel: address.conversationId, text: chunk, threadTs });
-    }
-    if (options?.buttons && options.buttons.length > 0) {
-      await this.api.postMessage({ channel: address.conversationId, text: "Actions:", threadTs, blocks: slackBlocksForButtons(options.buttons) });
+    const chunks = channelTextChunks(this, text || " ");
+    for (const [index, chunk] of chunks.entries()) {
+      const isLast = index === chunks.length - 1;
+      const blocks = isLast && options?.buttons && options.buttons.length > 0 ? slackBlocksForTextAndButtons(chunk, options.buttons) : undefined;
+      await this.api.postMessage({ channel: address.conversationId, text: chunk, threadTs, blocks });
     }
   }
 
@@ -289,16 +302,18 @@ export function slackEnvelopeToChannelEvent(envelope: SlackEnvelope, config: Sla
     const action = envelope.actions?.[0];
     const channelId = envelope.channel?.id ?? "";
     const user = envelope.user ?? { id: "unknown" };
+    const messageTs = envelope.message?.ts;
+    const threadTs = pickSlackThreadTs(messageTs, envelope.message?.thread_ts, slackConversationFromId(channelId));
     return {
       kind: "action",
       channel: SLACK_CHANNEL,
       updateId: envelope.trigger_id ?? `${channelId}:${envelope.message?.ts ?? Date.now()}`,
       actionId: buildSlackActionId({ channelId, userId: user.id, responseUrl: envelope.response_url, triggerId: envelope.trigger_id }),
-      messageId: envelope.message?.ts,
+      messageId: messageTs ?? `${channelId}:${Date.now()}`,
       actionData: action?.value ?? action?.action_id ?? "",
       conversation: slackConversationFromId(channelId),
       sender: slackIdentity(user.id, user.username ?? user.name, user.team_id ?? envelope.team?.id),
-    metadata: { teamId: envelope.team?.id, threadTs: envelope.message?.thread_ts ?? envelope.message?.ts },
+      metadata: { teamId: user.team_id ?? envelope.team?.id, threadTs },
     };
   }
   if (!envelope.event) throw new Error("Slack envelope does not contain a supported event.");
@@ -345,17 +360,25 @@ function sanitizeSlackSlashText(text: string | undefined): string {
 export function slackEventToChannelEvent(event: SlackMessageEvent, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundMessage | undefined {
   if (!event.user || event.bot_id || (event.subtype && event.subtype !== "file_share")) return undefined;
   const teamId = event.team;
+  const messageTs = event.ts;
+  const conversation = slackConversation(event.channel, event.channel_type);
   return {
     kind: "message",
     channel: SLACK_CHANNEL,
-    updateId: event.ts,
-    messageId: event.ts,
+    updateId: messageTs ?? "unknown",
+    messageId: messageTs ?? "unknown",
     text: event.text ?? "",
     attachments: (event.files ?? []).map((file) => slackFileToInboundFile(file, config)),
-    conversation: slackConversation(event.channel, event.channel_type),
+    conversation,
     sender: slackIdentity(event.user, event.username, teamId),
-    metadata: { teamId, threadTs: event.thread_ts ?? event.ts },
+    metadata: { teamId, threadTs: pickSlackThreadTs(messageTs, event.thread_ts, conversation) },
   };
+}
+
+function pickSlackThreadTs(messageTs: string | undefined, threadTs: string | undefined, conversation?: ChannelConversation): string | undefined {
+  if (typeof threadTs === "string" && threadTs && threadTs !== messageTs) return threadTs;
+  if (conversation?.kind === "private" && messageTs) return messageTs;
+  return undefined;
 }
 
 function slackThreadTs(address: ChannelRouteAddress): string | undefined {
@@ -404,13 +427,24 @@ function slackFileToInboundFile(file: SlackFilePayload, config: Pick<SlackRelayC
   };
 }
 
-function slackBlocksForButtons(layout: ChannelButtonLayout): SlackButtonElement[][] {
-  return layout.map((row) => row.map((button) => ({
-    type: "button",
-    text: button.label,
-    value: button.actionData,
-    style: button.style === "primary" ? "primary" : button.style === "danger" ? "danger" : undefined,
-  })));
+function slackBlocksForTextAndButtons(text: string, layout: ChannelButtonLayout): SlackBlock[] {
+  return [
+    { type: "section", text: { type: "plain_text", text: text || " ", emoji: true } },
+    ...slackBlocksForButtons(layout),
+  ];
+}
+
+function slackBlocksForButtons(layout: ChannelButtonLayout): SlackActionsBlock[] {
+  return layout.map((row) => ({
+    type: "actions",
+    elements: row.map((button) => ({
+      type: "button",
+      text: button.label,
+      value: button.actionData,
+      actionId: button.actionData,
+      style: button.style === "primary" ? "primary" : button.style === "danger" ? "danger" : undefined,
+    })),
+  }));
 }
 
 export interface SlackActionTarget {

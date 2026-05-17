@@ -267,12 +267,16 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 | pause delivery | `/pause` | `relay pause` | `/relay pause` |
 | resume delivery | `/resume` | `relay resume` | `/relay resume` |
 | disconnect binding | `/disconnect` | `relay disconnect` | `/relay disconnect` |
+| create delegation task (opt-in shared rooms) | `/delegate <machine\|#capability> <goal>` | `relay delegate <machine\|#capability> <goal>` | `/relay delegate <machine\|#capability> <goal>` |
+| control delegation task | `/task@<bot_username> <claim\|decline\|cancel\|status\|history> [task-id]` (or `/task <claim\|decline\|cancel\|status\|history> [task-id]` in private/other clients) | `relay task <claim\|decline\|cancel\|status\|history> [task-id]` | `/relay task <claim\|decline\|cancel\|status\|history> [task-id]` |
 
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. In quiet mode PiRelay keeps terminal notifications concise and offers `/full`/download actions for the full answer. In normal, verbose, and completion-only modes it sends the full final answer, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 
 Remote `/disconnect` is scoped to the requesting chat/conversation only: it revokes that Telegram, Discord, or Slack binding and suppresses future session output/buttons there, without disconnecting other messengers that remain paired to the same Pi session. Local `/relay disconnect` is broader and disconnects the current session from all paired messenger bindings.
 
 Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
+
+Agent delegation is disabled by default and only applies in explicitly enabled shared rooms. Delegation task cards are visible room messages; bot-authored ordinary output remains inert, peer-bot trust is configured separately from human allow-lists, and claimed work is injected as a bounded delegated-task prompt with completion/failure reported back to the room.
 
 ## Prompt routing behavior
 

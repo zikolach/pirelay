@@ -2,6 +2,8 @@
 
 PiRelay shared rooms use one dedicated machine bot/app per Pi machine in the same messenger room. Defaults remain conservative: private chats are always the safest pairing surface, and shared-room control must be explicitly enabled per platform.
 
+Agent delegation is an additional opt-in layer for shared rooms. When enabled, authorized humans or trusted peer bots can create visible task cards with `/delegate <machine|#capability> <goal>` and control them with `/task <claim|decline|cancel|status|history> [task-id]`. Bot-authored ordinary output remains inert; only validated delegation commands/actions are machine-actionable.
+
 ## Telegram
 
 - Private chats: supported.
@@ -21,13 +23,13 @@ PiRelay shared rooms use one dedicated machine bot/app per Pi machine in the sam
 ## Slack
 
 - Private chats: supported.
-- Shared rooms: partially declared at adapter level, but Discord-like channel pre-routing is not yet runtime-parity.
+- Shared rooms: supported for explicitly enabled channel/thread control when `allowChannelMessages`, shared-room enablement, app membership, and user authorization are configured.
 - App mentions: detected and classified as local, remote, or ambiguous by user ID.
-- Deferred/diagnostic-only shared-room surfaces: ordinary channel text, channel command fallback, and media attachments in shared rooms. Diagnostics should say this explicitly instead of implying full Telegram/Discord parity.
-- Safe default: keep channel control disabled unless an implementation adds explicit pre-routing, authorization, active selection, non-target silence, and safe response handling.
+- Ordinary channel text and `relay <command>` fallback: supported after channel pairing and active-selection checks; non-target machine bots stay silent.
+- Safe default: keep channel control disabled unless the app is installed in the intended room with explicit user allow-lists and a tested pairing path.
 
 ## Capability summary
 
 - Telegram: mentions/replies/platform addressed commands/media supported; ordinary text depends on group privacy and permissions.
 - Discord: ordinary text/mentions/platform text prefix/media supported when guild channel mode is enabled and authorized.
-- Slack: mentions can be parsed; ordinary text/platform commands/media shared-room routing is intentionally marked unsupported until Slack runtime pre-routing is implemented.
+- Slack: app mentions, ordinary text, and platform command fallbacks are supported for explicitly enabled and paired channel/thread control; media parity remains narrower than private-chat flows.

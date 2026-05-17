@@ -267,7 +267,7 @@ function socketPayloadToSlackEnvelope(envelope: SlackSocketModeEnvelope): SlackE
   if (!isRecord(envelope)) return undefined;
   const payload = envelope.payload;
   if (!isRecord(payload)) return undefined;
-  const envelopeType = stringField(envelope, "type") ?? stringField(payload, "type");
+  const envelopeType = stringField(payload, "type") ?? stringField(envelope, "type");
   if (envelopeType === "event_callback") {
     return {
       type: "event_callback",
@@ -298,16 +298,20 @@ function slackSocketSlashCommandEnvelope(payload: Record<string, unknown>): Slac
   };
 }
 
-function slackBlocks(rows: SlackPostMessagePayload["blocks"]): unknown[] | undefined {
-  return rows?.map((row) => ({
-    type: "actions",
-    elements: row.map((button) => ({
-      type: "button",
-      text: { type: "plain_text", text: button.text },
-      value: button.value,
-      style: button.style,
-    })),
-  }));
+function slackBlocks(blocks: SlackPostMessagePayload["blocks"]): unknown[] | undefined {
+  return blocks?.map((block) => {
+    if (block.type === "section") return block;
+    return {
+      type: "actions",
+      elements: block.elements.map((button) => ({
+        type: "button",
+        text: { type: "plain_text", text: button.text },
+        action_id: button.actionId,
+        value: button.value,
+        style: button.style,
+      })),
+    };
+  });
 }
 
 function removeUndefined(input: Record<string, unknown>): Record<string, unknown> {

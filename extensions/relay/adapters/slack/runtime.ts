@@ -1,10 +1,11 @@
 import { appendFileSync } from "node:fs";
-import type { ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import type { ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
+import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
@@ -16,6 +17,8 @@ import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDest
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEvent, slackEventToChannelEvent, slackMentionedUserIds, type SlackApiOperations, type SlackAuthTestResult, type SlackEnvelope, type SlackMessageEvent } from "./adapter.js";
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
+import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
+import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -57,11 +60,12 @@ export class SlackRuntime {
   private readonly activeSessionByConversationUser = new Map<string, string>();
   private historyPollTimer?: ReturnType<typeof setInterval>;
   private historyPollInFlight = false;
-  private latestHistoryTs = (Date.now() / 1_000).toFixed(6);
+  private latestHistoryTs = initialSlackHistoryTimestamp();
   private readonly seenEventKeys = new Map<string, number>();
   private readonly consumedResponseUrls = new Map<string, number>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private botIdentity?: SlackAuthTestResult;
   private started = false;
   private startPromise?: Promise<void>;
@@ -106,7 +110,8 @@ export class SlackRuntime {
       throw new Error(this.lastError);
     }
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.initializeRuntime()
+    this.startPromise = this.store.markInFlightDelegationTasksStaleAfterRestart()
+      .then(() => this.initializeRuntime())
       .then(() => this.operations!.startSocketMode!(async (envelope) => this.handleEnvelope(envelope)))
       .then(() => {
         this.started = true;
@@ -185,6 +190,7 @@ export class SlackRuntime {
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     await this.stopThinkingReaction(route.sessionKey);
     this.clearProgressState(route);
+    if (await this.finishActiveDelegationTask(route, status)) return;
     if (!this.adapter) return;
     const binding = await this.activeBindingForRoute(route, { includePaused: true });
     if (!binding || binding.paused && status === "completed") return;
@@ -345,6 +351,10 @@ export class SlackRuntime {
     if (!this.adapter || event.channel !== SLACK_CHANNEL) return;
     try {
       if (event.kind === "action") {
+        if (actionFromDelegationSurface(event)) {
+          await this.handleDelegationAction(event);
+          return;
+        }
         await this.handleAction(event);
         return;
       }
@@ -382,6 +392,34 @@ export class SlackRuntime {
     await this.adapter.answerAction(action.actionId, { text: "Slack action received." });
   }
 
+  private async handleDelegationAction(action: ChannelInboundAction): Promise<void> {
+    const slackConfig = this.configForInstance();
+    if (!this.adapter || action.conversation.kind === "private") return;
+    const command = delegationCommandFromAction(action);
+    if (!command) return;
+    const taskId = command.kind === "create" ? undefined : command.taskId;
+    if (taskId) {
+      const existing = await this.store.getDelegationTask(taskId, { runningTimeoutMs: slackConfig?.delegation?.runningTimeoutMs });
+      if (!existing) {
+        await this.adapter.answerAction(action.actionId, { text: "Delegation action was ignored or stale." });
+        return;
+      }
+    }
+    const message: ChannelInboundMessage = {
+      kind: "message",
+      channel: action.channel,
+      updateId: action.updateId,
+      messageId: action.messageId ?? action.actionId,
+      text: action.actionData,
+      attachments: [],
+      conversation: action.conversation,
+      sender: action.sender,
+      metadata: action.metadata,
+    };
+    const handled = await this.handleDelegationMessage(message, command);
+    await this.adapter.answerAction(action.actionId, { text: handled ? "Delegation action handled." : "Delegation action was ignored or stale." });
+  }
+
   private async handleMessage(message: ChannelInboundMessage): Promise<void> {
     const slackConfig = this.configForInstance();
     const localBotUserId = this.localBotUserId();
@@ -391,9 +429,25 @@ export class SlackRuntime {
       await this.handlePairing(message, pairingCode);
       return;
     }
-    if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) return;
+    const delegatedCommand = parseDelegationInvocation(message.text, { prefixes: ["relay", "pirelay"] }) ?? parseDelegationInvocation(stripLeadingSlackMentions(message.text), { prefixes: ["relay", "pirelay"] });
+    if (isPeerBotIdentity(message.sender) && !delegatedCommand) return;
+    const delegationSourceScoped = delegatedCommand?.kind === "create" ? this.isSlackDelegationSourceScopedToLocal(message) : false;
     const routedMessage = await this.applySharedRoomPreRouting(message);
-    if (!routedMessage) return;
+    if (!routedMessage) {
+      if (delegatedCommand) return;
+      return;
+    }
+    if (delegatedCommand && routedMessage.conversation.kind !== "private") {
+      if (isPeerBotIdentity(message.sender) || (slackConfig && isSlackIdentityAllowed(message.sender, slackConfig))) {
+        await this.findSlackBinding(routedMessage);
+        await this.livePreseededBinding(routedMessage, { setActiveSelection: false });
+      }
+      const scopedMessage = delegationSourceScoped ? { ...routedMessage, metadata: { ...routedMessage.metadata, delegationSourceScoped: true } } : routedMessage;
+      if (await this.handleDelegationMessage(scopedMessage, delegatedCommand)) return;
+      return;
+    }
+    if (isPeerBotIdentity(message.sender)) return;
+    if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) return;
     const binding = await this.findSlackBinding(routedMessage) ?? await this.livePreseededBinding(routedMessage);
     if (!binding) {
       await this.sendText(message, message.conversation.kind === "private"
@@ -452,10 +506,173 @@ export class SlackRuntime {
       if (active?.machineId && active.machineId !== (this.config.machineId ?? "local")) return undefined;
       if (!active) {
         const bindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
-        if (bindings.length === 0 || !command) return undefined;
+        if (bindings.length === 0) {
+          if (process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING === "true" && command) return message;
+          return undefined;
+        }
+        if (!command) return undefined;
       }
     }
     return hasLocalMention ? { ...message, text: stripLeadingSlackMentions(message.text) } : message;
+  }
+
+
+  private async handleDelegationMessage(message: ChannelInboundMessage, command: NonNullable<ReturnType<typeof parseDelegationInvocation>>): Promise<boolean> {
+    const slackConfig = this.configForInstance();
+    if (!this.adapter || !slackConfig?.delegation?.enabled || !slackConfig.sharedRoom?.enabled || !slackConfig.allowChannelMessages) return false;
+    if (command.kind === "create" && command.target.kind === "machine" && !isLocalSlackMachineSelector(command.target.machineId, this.config, slackConfig)) {
+      return false;
+    }
+    if ("taskId" in command && command.taskId) {
+      const existing = await this.store.getDelegationTask(command.taskId, { runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs });
+      if (!existing) return false;
+    }
+    const pairedBindings = await this.store.getChannelBindingsForConversation(SLACK_CHANNEL, message.conversation.id, this.instanceId);
+    const canHandleWithoutBinding = process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING === "true" && command.kind === "create";
+    if (pairedBindings.length === 0 && !canHandleWithoutBinding) return false;
+    const room = delegationRoomFromMessage(message, this.instanceId);
+    const duplicate = await this.store.rememberDelegationEvent(delegationIngressEventKey({ message, room, command }));
+    const decision = await evaluateDelegationIngress({
+      command,
+      message,
+      policy: { ...slackConfig.delegation, localCapabilities: [...(this.config.machineCapabilities ?? []), ...(slackConfig.delegation.localCapabilities ?? [])] },
+      room,
+      localMachineId: this.config.machineId ?? "local",
+      localMachineLabel: this.config.machineDisplayName,
+      localBotUserId: this.localBotUserId(),
+      isAuthorizedHuman: isSlackIdentityAllowed(message.sender, slackConfig),
+      eventAlreadyHandled: duplicate,
+      requireCapabilityCreateSourceScope: true,
+      createSourceScoped: message.metadata?.delegationSourceScoped === true,
+      lookup: {
+        get: (taskId) => this.store.getDelegationTask(taskId, { runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs }),
+        list: (options) => this.store.listDelegationTasks({ ...options, runningTimeoutMs: slackConfig.delegation?.runningTimeoutMs }),
+      },
+      eligibleRoutes: this.routes.size === 1 ? [...this.routes.values()] : this.routes.size === 0 ? undefined : [],
+    });
+    switch (decision.kind) {
+      case "ignore":
+        if (decision.reason === "not-delegation" || decision.reason === "self-authored" || decision.reason === "not-eligible") return false;
+        if (decision.message && isSlackIdentityAllowed(message.sender, slackConfig)) await this.sendText(message, decision.message);
+        return true;
+      case "reject":
+        await this.sendText(message, decision.message);
+        return true;
+      case "render-task":
+        await this.store.upsertDelegationTask(decision.task);
+        await this.sendDelegationTaskCard(message, decision.task);
+        return true;
+      case "status":
+      case "history":
+        await this.sendText(message, decision.text);
+        return true;
+      case "approve":
+      case "cancel":
+      case "decline":
+        await this.persistDelegationTaskMutation(message, decision.task);
+        return true;
+      case "claim":
+        await this.startClaimedDelegationTask(message, decision.task, decision.prompt, decision.requiresHuman);
+        return true;
+    }
+  }
+
+  private async persistDelegationTaskMutation(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<DelegationTaskRecord | undefined> {
+    const result = await this.store.tryUpsertDelegationTask(task);
+    if (!result.applied) {
+      await this.sendText(message, `Delegation task ${task.id} changed before this action could be applied.`);
+      await this.sendDelegationTaskCard(message, result.task);
+      return undefined;
+    }
+    await this.sendDelegationTaskCard(message, result.task);
+    return result.task;
+  }
+
+  private async startClaimedDelegationTask(message: ChannelInboundMessage, task: DelegationTaskRecord, prompt: string, requiresHuman: boolean): Promise<void> {
+    if (requiresHuman) {
+      await this.sendText(message, `Delegation task ${task.id} requires human approval before execution.`);
+      return;
+    }
+    const route = task.claimedBy?.sessionKey ? this.routes.get(task.claimedBy.sessionKey) : this.routes.size === 1 ? [...this.routes.values()][0] : undefined;
+    if (route && this.activeDelegationTaskBySessionKey.has(route.sessionKey)) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "The target session already has active delegated work." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    if (!route) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: "No eligible online local session is available." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    const availability = probeRouteAvailability(route);
+    if (availability.kind === "unavailable" || !availability.idle) {
+      const blocked = transitionDelegationTask(task, { kind: "block", reason: availability.kind === "unavailable" ? routeActionDisplayMessage(availability) : "The target session is busy; delegated work can only be claimed while the target session is idle." });
+      const next = blocked.ok ? blocked.task : task;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    const persisted = await this.store.tryUpsertDelegationTask(task);
+    if (!persisted.applied) {
+      await this.sendText(message, `Delegation task ${task.id} changed before this claim could be applied.`);
+      await this.sendDelegationTaskCard(message, persisted.task);
+      return;
+    }
+    const claimedTask = persisted.task;
+    const outcome = await deliverRoutePrompt(route, {
+      content: prompt,
+      deliverAs: this.config.busyDeliveryMode === "steer" ? "steer" : "followUp",
+      onCommit: async () => {
+        route.lastActivityAt = Date.now();
+        this.activeDelegationTaskBySessionKey.set(route.sessionKey, claimedTask.id);
+      },
+    });
+    if (outcome.kind === "unavailable") {
+      const blocked = transitionDelegationTask(claimedTask, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : claimedTask;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    if (outcome.kind === "failed") {
+      const blocked = transitionDelegationTask(claimedTask, { kind: "block", reason: routeActionDisplayMessage(outcome) });
+      const next = blocked.ok ? blocked.task : claimedTask;
+      await this.store.upsertDelegationTask(next);
+      await this.sendDelegationTaskCard(message, next);
+      return;
+    }
+    if (outcome.kind !== "success") return;
+    const started = transitionDelegationTask(claimedTask, { kind: "start", summary: `Started in ${route.sessionLabel}.` });
+    const next = started.ok ? started.task : claimedTask;
+    await this.store.upsertDelegationTask(next);
+    await this.sendDelegationTaskCard(message, next);
+  }
+
+  private async finishActiveDelegationTask(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<boolean> {
+    if (!this.adapter) return false;
+    const taskId = this.activeDelegationTaskBySessionKey.get(route.sessionKey);
+    if (!taskId) return false;
+    this.activeDelegationTaskBySessionKey.delete(route.sessionKey);
+    const task = await this.store.getDelegationTask(taskId);
+    if (!task) return false;
+    const summary = route.notification.lastAssistantText ?? route.notification.lastFailure ?? status;
+    const transition = status === "completed"
+      ? transitionDelegationTask(task, { kind: "complete", summary })
+      : transitionDelegationTask(task, { kind: "fail", reason: summary });
+    const next = transition.ok ? transition.task : task;
+    await this.store.upsertDelegationTask(next);
+    const card = renderDelegationTaskCard(next, { commandPrefix: "relay task" });
+    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: next.room.conversationId, userId: "delegation", ...(next.room.threadId ? { threadTs: next.room.threadId } : {}) } as ChannelRouteAddress, card.text, { buttons: delegationTaskActionButtons(card.actions) });
+    return true;
+  }
+
+  private async sendDelegationTaskCard(message: ChannelInboundMessage, task: DelegationTaskRecord): Promise<void> {
+    const card = renderDelegationTaskCard(task, { commandPrefix: "relay task" });
+    await this.sendText(message, card.text, delegationTaskActionButtons(card.actions));
   }
 
   private async handleBoundMessage(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute): Promise<void> {
@@ -848,20 +1065,20 @@ export class SlackRuntime {
     );
   }
 
-  private async livePreseededBinding(message: ChannelInboundMessage): Promise<ChannelPersistedBindingRecord | undefined> {
-    if (process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING !== "true" || message.conversation.kind === "private" || this.routes.size !== 1) return undefined;
-    const route = [...this.routes.values()][0];
-    if (!route) return undefined;
+  private async livePreseededBinding(message: ChannelInboundMessage, options: { setActiveSelection?: boolean } = {}): Promise<ChannelPersistedBindingRecord | undefined> {
+    if (process.env.PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING !== "true" || message.conversation.kind === "private") return undefined;
+    const firstRoute = [...this.routes.values()][0];
     const now = new Date().toISOString();
+    const routeSeed = `${message.conversation.id}:${message.sender.userId}`;
     const binding = await this.store.upsertChannelBinding({
       channel: SLACK_CHANNEL,
       instanceId: this.instanceId,
       conversationId: message.conversation.id,
       userId: message.sender.userId,
-      sessionKey: route.sessionKey,
-      sessionId: route.sessionId,
-      sessionFile: route.sessionFile,
-      sessionLabel: route.sessionLabel,
+      sessionKey: firstRoute?.sessionKey ?? `live-preseed:${routeSeed}`,
+      sessionId: firstRoute?.sessionId ?? `live-preseed:${routeSeed}`,
+      sessionFile: firstRoute?.sessionFile,
+      sessionLabel: firstRoute?.sessionLabel ?? "shared-room",
       boundAt: now,
       lastSeenAt: now,
       identity: { username: message.sender.username, displayName: message.sender.displayName, metadata: message.sender.metadata },
@@ -869,7 +1086,7 @@ export class SlackRuntime {
     });
     this.ownedBindingSessionKeys.add(binding.sessionKey);
     this.recentBindingBySessionKey.set(binding.sessionKey, binding);
-    await this.setActiveSelection(message, binding.sessionKey);
+    if (options.setActiveSelection !== false) await this.setActiveSelection(message, binding.sessionKey);
     return binding;
   }
 
@@ -891,6 +1108,11 @@ export class SlackRuntime {
     for (const [key, activeSessionKey] of this.activeSessionByConversationUser) {
       if (activeSessionKey === sessionKey) this.activeSessionByConversationUser.delete(key);
     }
+  }
+
+  private isSlackDelegationSourceScopedToLocal(message: ChannelInboundMessage): boolean {
+    const localBotUserId = this.localBotUserId();
+    return Boolean(localBotUserId && slackMentionedUserIds(message.text).includes(localBotUserId));
   }
 
   private async activeSelectionRecordForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<{ sessionKey: string; machineId?: string } | undefined> {
@@ -938,7 +1160,7 @@ export class SlackRuntime {
     return undefined;
   }
 
-  private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string): Promise<void> {
+  private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string, buttons?: ChannelButtonLayout): Promise<void> {
     const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
     if (responseUrl && this.operations?.postResponse && !this.wasResponseUrlConsumed(responseUrl)) {
       this.rememberConsumedResponseUrl(responseUrl);
@@ -949,7 +1171,7 @@ export class SlackRuntime {
         debugSlackRuntime(`Slack response_url delivery failed: ${safeSlackRuntimeError(error)}`);
       }
     }
-    await this.adapter?.sendText(slackAddress(message), text);
+    await this.adapter?.sendText(slackAddress(message), text, { buttons });
   }
 
   private wasResponseUrlConsumed(responseUrl: string): boolean {
@@ -1149,20 +1371,23 @@ function hasHistoryReader(operations: SlackApiOperations | undefined): operation
 
 function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent | SlackMessageEventFromHistory, config: Parameters<typeof slackEventToChannelEvent>[1]): ChannelInboundMessage | undefined {
   if (!event.bot_id) return slackEventToChannelEvent(event, config);
+
   const senderUser = event.user;
   if (!senderUser || event.subtype && event.subtype !== "bot_message") return undefined;
+  const messageTs = event.ts;
+  const conversation = {
+    channel: SLACK_CHANNEL,
+    id: event.channel,
+    kind: event.channel_type === "im" ? "private" : event.channel_type === "channel" || event.channel_type === "group" ? "channel" : event.channel_type === "mpim" ? "group" : "unknown",
+  } as const;
   return {
     kind: "message",
     channel: SLACK_CHANNEL,
-    updateId: event.ts,
-    messageId: event.ts,
+    updateId: messageTs,
+    messageId: messageTs,
     text: event.text ?? "",
     attachments: [],
-    conversation: {
-      channel: SLACK_CHANNEL,
-      id: event.channel,
-      kind: event.channel_type === "im" ? "private" : event.channel_type === "channel" || event.channel_type === "group" ? "channel" : event.channel_type === "mpim" ? "group" : "unknown",
-    },
+    conversation,
     sender: {
       channel: SLACK_CHANNEL,
       userId: senderUser,
@@ -1170,8 +1395,14 @@ function slackEventToChannelEventIncludingBotMessages(event: SlackMessageEvent |
       displayName: event.username,
       metadata: { teamId: event.team, botId: event.bot_id },
     },
-    metadata: { teamId: event.team, botId: event.bot_id, liveStubBotMessage: true },
+    metadata: { teamId: event.team, botId: event.bot_id, liveStubBotMessage: true, threadTs: pickSlackThreadTs(messageTs, (event as { thread_ts?: string }).thread_ts, conversation.kind === "private") },
   };
+}
+
+function pickSlackThreadTs(messageTs: string | undefined, threadTs: string | undefined, isPrivateConversation = false): string | undefined {
+  if (typeof threadTs === "string" && threadTs && threadTs !== messageTs) return threadTs;
+  if (isPrivateConversation && messageTs) return messageTs;
+  return undefined;
 }
 
 function parseSlackPairingCode(text: string): string | undefined {
@@ -1202,13 +1433,32 @@ function stripLeadingSlackMentions(text: string): string {
   return text.replace(/^(?:\s*<@[A-Z0-9_]+>)+\s*/, "");
 }
 
+function actionFromDelegationSurface(action: ChannelInboundAction): boolean {
+  return !!delegationCommandFromAction(action);
+}
+
 function isLocalSlackMachineSelector(selector: string, config: TelegramTunnelConfig, slackConfig: NonNullable<TelegramTunnelConfig["slack"]>): boolean {
-  const normalized = selector.trim().toLowerCase();
-  const aliases = [config.machineId ?? "local", config.machineDisplayName, ...(config.machineAliases ?? []), ...(slackConfig.sharedRoom?.machineAliases ?? [])]
+  const normalized = normalizeSlackMachineSelector(selector);
+  const aliases = [
+    config.machineId ?? "local",
+    config.machineDisplayName,
+    ...(config.machineAliases ?? []),
+    ...(slackConfig.sharedRoom?.machineAliases ?? []),
+  ]
     .filter((value): value is string => Boolean(value))
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => normalizeSlackMachineSelector(value))
     .filter(Boolean);
   return aliases.includes(normalized);
+}
+
+function normalizeSlackMachineSelector(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 128);
 }
 
 function slackPairingFailureMessage(reason: "wrong-channel" | "unsupported-conversation" | "unauthorized" | "command-mismatch" | "expired"): string {
@@ -1284,6 +1534,12 @@ function slackUploadFailureMessage(error: unknown): string {
 
 function safeSlackRuntimeError(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+function initialSlackHistoryTimestamp(): string {
+  const configuredOldest = process.env.PI_RELAY_SLACK_HISTORY_OLDEST_TS?.trim();
+  if (configuredOldest && Number.isFinite(Number(configuredOldest))) return configuredOldest;
+  return (Date.now() / 1_000).toFixed(6);
 }
 
 function debugSlackRuntime(message: string): void {

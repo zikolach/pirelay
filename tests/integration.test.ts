@@ -34,9 +34,11 @@ async function flushAsyncActions(): Promise<void> {
 async function createRuntimeConfig(prefix = "pi-telegram-integration-"): Promise<TelegramTunnelConfig> {
   const stateDir = await mkdtemp(join(tmpdir(), prefix));
   tempDirs.push(stateDir);
+  const configPath = join(stateDir, "config.json");
+  vi.stubEnv("PI_RELAY_CONFIG", configPath);
   return {
     botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-    configPath: join(stateDir, "config.json"),
+    configPath,
     stateDir,
     pairingExpiryMs: 300_000,
     busyDeliveryMode: "followUp",
@@ -2830,5 +2832,59 @@ describe("PiRelay integration behavior", () => {
     });
 
     expect(deliveries).toEqual([{ text: "after reconnect prompt", deliverAs: undefined }]);
+  });
+
+  it("keeps Telegram human delegation behind private pairing while allowing trusted peer bots", async () => {
+    const config = await createRuntimeConfig("pi-telegram-delegation-auth-");
+    config.delegation = {
+      enabled: true,
+      autonomy: "propose-only",
+      trustedPeers: [{ peerId: "999", allowCreate: true, targetMachineIds: ["local"], conversationIds: ["-1001"] }],
+    };
+    const store = new TunnelStateStore(config.stateDir);
+    await store.setSetup({ botId: 123456, botUsername: "pirelay_bot", botDisplayName: "PiRelay", validatedAt: new Date().toISOString() });
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    const callbackAnswers: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbackAnswers.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 10,
+      messageId: 10,
+      text: "/delegate@pirelay_bot local run tests",
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 42, username: "human", isBot: false },
+    });
+
+    expect(sent.at(-1)).toContain("Pair with this bot in a private Telegram chat first");
+    expect(await store.listDelegationTasks({ roomConversationId: "-1001" })).toHaveLength(0);
+
+    await (runtime as any).processInbound({
+      updateId: 11,
+      messageId: 11,
+      text: "/delegate@pirelay_bot local run trusted peer task",
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 999, username: "peer", isBot: true },
+    });
+
+    const [task] = await store.listDelegationTasks({ roomConversationId: "-1001" });
+    expect(task).toMatchObject({ status: "awaiting-approval" });
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 12,
+      callbackQueryId: "delegation-cb-1",
+      data: `pirelay:delegation:approve:${task!.id}`,
+      chat: { id: -1001, type: "supergroup", title: "ops" },
+      user: { id: 42, username: "human", isBot: false },
+    });
+
+    expect(callbackAnswers.at(-1)).toBe("Pair privately first.");
+    expect(await store.getDelegationTask(task!.id)).toMatchObject({ status: "awaiting-approval" });
   });
 });

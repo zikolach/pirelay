@@ -26,9 +26,15 @@ export interface SlackLiveSuiteConfig {
   eventMode: SlackLiveEventMode;
   realAgent: boolean;
   timeoutMs: number;
+  delegation?: SlackLiveDelegationConfig;
   apps: [SlackLiveAppConfig, SlackLiveAppConfig];
 }
 
+export interface SlackLiveDelegationConfig {
+  enabled: boolean;
+  autonomy: "off" | "propose-only" | "auto-claim-targeted" | "auto-claim-safe-capability";
+  requireHumanApproval: boolean;
+}
 export type SlackLiveConfigReadResult =
   | { ready: true; config: SlackLiveSuiteConfig }
   | { ready: false; missing: string[]; skipReason: string };
@@ -36,6 +42,7 @@ export type SlackLiveConfigReadResult =
 export interface SlackAuthIdentity {
   teamId: string;
   userId: string;
+  userName?: string;
   botId?: string;
 }
 
@@ -159,6 +166,7 @@ export function readSlackLiveSuiteConfig(env: NodeJS.ProcessEnv = process.env): 
       eventMode,
       realAgent,
       timeoutMs: parsePositiveInteger(env.PI_RELAY_SLACK_LIVE_TIMEOUT_MS, realAgent ? 300_000 : 120_000),
+      delegation: readSlackLiveDelegationConfig(env),
       apps: [
         readSlackLiveApp(env, "a", "A", "PI_RELAY_SLACK_LIVE_BOT_A"),
         readSlackLiveApp(env, "b", "B", "PI_RELAY_SLACK_LIVE_BOT_B"),
@@ -203,6 +211,7 @@ export class SlackWebApiClient implements SlackLiveApiClient {
     return {
       teamId: stringField(response, "team_id") ?? "",
       userId: stringField(response, "user_id") ?? "",
+      userName: stringField(response, "user"),
       botId: stringField(response, "bot_id"),
     };
   }
@@ -324,52 +333,60 @@ async function preflightApp(config: SlackLiveSuiteConfig, app: SlackLiveAppConfi
   let identity: SlackAuthIdentity | undefined;
   try {
     identity = await client.authTest(app.botToken);
+    const appLabel = app.displayName ?? identity.userName ?? `Slack live bot ${app.role.toUpperCase()}`;
     checkWorkspace(config.workspaceId, identity.teamId, findings, app.instanceId);
     if (app.expectedBotUserId && app.expectedBotUserId !== identity.userId) {
-      findings.push({ severity: "error", code: "slack-live-bot-user-mismatch", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} authenticated as ${identity.userId}, not expected bot user ${app.expectedBotUserId}.` });
+      findings.push({ severity: "error", code: "slack-live-bot-user-mismatch", appInstanceId: app.instanceId, message: `Slack app ${appLabel} authenticated as ${identity.userId}, not expected bot user ${app.expectedBotUserId}.` });
     }
-    findings.push({ severity: "ok", code: "slack-live-app-installed", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} is installed in the expected workspace.` });
+    findings.push({ severity: "ok", code: "slack-live-app-installed", appInstanceId: app.instanceId, message: `Slack app ${appLabel} is installed in the expected workspace.` });
   } catch (error) {
-    findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${app.displayName} is not installed or cannot access the workspace.`, secrets));
+    const appLabel = app.displayName ?? "Slack app";
+    findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${appLabel} is not installed or cannot access the workspace.`, secrets));
     return undefined;
   }
+
+  const appLabel = identity.userName ?? app.displayName ?? `Slack live bot ${app.role.toUpperCase()}`;
 
   try {
     const scopes = await client.authScopes(app.botToken);
     pushMissingScopes(findings, app.instanceId, scopes, requiredBotScopes(config.channelId));
   } catch (error) {
-    findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${app.displayName} scopes cannot be inspected.`, secrets));
+    findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${appLabel} scopes cannot be inspected.`, secrets));
   }
 
   try {
     const info = await client.conversationsInfo(app.botToken, config.channelId);
     if (info.isMember !== true) {
-      findings.push({ severity: "error", code: "slack-live-channel-membership-missing", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} is not a member of channel ${config.channelId}; invite it before running live traffic.` });
+      findings.push({ severity: "error", code: "slack-live-channel-membership-missing", appInstanceId: app.instanceId, message: `Slack app ${appLabel} is not a member of channel ${config.channelId}; invite it before running live traffic.` });
     } else {
-      findings.push({ severity: "ok", code: "slack-live-channel-membership-ok", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} can observe channel ${config.channelId}.` });
+      findings.push({ severity: "ok", code: "slack-live-channel-membership-ok", appInstanceId: app.instanceId, message: `Slack app ${appLabel} can observe channel ${config.channelId}.` });
     }
   } catch (error) {
-    findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${app.displayName} cannot inspect channel ${config.channelId}; check channel membership and read scopes.`, secrets));
+    findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${appLabel} cannot inspect channel ${config.channelId}; check channel membership and read scopes.`, secrets));
   }
 
   if (config.eventMode === "socket") {
     if (!app.appLevelToken) {
-      findings.push({ severity: "error", code: "slack-live-event-delivery-token-missing", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} is missing an app-level Socket Mode token; event delivery cannot be validated.` });
+      findings.push({ severity: "error", code: "slack-live-event-delivery-token-missing", appInstanceId: app.instanceId, message: `Slack app ${appLabel} is missing an app-level Socket Mode token; event delivery cannot be validated.` });
     } else {
       try {
         await client.appsConnectionsOpen(app.appLevelToken);
-        findings.push({ severity: "ok", code: "slack-live-event-delivery-ok", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} accepted a Socket Mode connection preflight.` });
+        findings.push({ severity: "ok", code: "slack-live-event-delivery-ok", appInstanceId: app.instanceId, message: `Slack app ${appLabel} accepted a Socket Mode connection preflight.` });
       } catch (error) {
-        findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${app.displayName} Socket Mode token cannot open an event connection; check Socket Mode and connections:write.`, secrets));
+        findings.push(slackPreflightErrorFinding(error, app.instanceId, `Slack app ${appLabel} Socket Mode token cannot open an event connection; check Socket Mode and connections:write.`, secrets));
       }
     }
   } else if (!app.signingSecret) {
-    findings.push({ severity: "error", code: "slack-live-signing-secret-missing", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} is missing a signing secret for webhook event verification.` });
+    findings.push({ severity: "error", code: "slack-live-signing-secret-missing", appInstanceId: app.instanceId, message: `Slack app ${appLabel} is missing a signing secret for webhook event verification.` });
   } else {
-    findings.push({ severity: "ok", code: "slack-live-signing-secret-present", appInstanceId: app.instanceId, message: `Slack app ${app.displayName} has webhook signing configured for local verification.` });
+    findings.push({ severity: "ok", code: "slack-live-signing-secret-present", appInstanceId: app.instanceId, message: `Slack app ${appLabel} has webhook signing configured for local verification.` });
   }
 
-  return { ...identity, instanceId: app.instanceId, displayName: app.displayName };
+  return {
+    ...identity,
+    instanceId: app.instanceId,
+    displayName: appLabel,
+  };
 }
 
 function slackPreflightErrorFinding(error: unknown, appInstanceId: string, fallback: string, secrets: readonly string[]): SlackPreflightFinding {
@@ -432,6 +449,22 @@ function readSlackLiveApp(env: NodeJS.ProcessEnv, role: SlackLiveAppRole, suffix
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readSlackLiveDelegationConfig(env: NodeJS.ProcessEnv): SlackLiveDelegationConfig | undefined {
+  if (!truthy(env.PI_RELAY_SLACK_LIVE_DELEGATION_ENABLED)) return undefined;
+
+  return {
+    enabled: true,
+    autonomy: parseSlackLiveDelegationAutonomy(env.PI_RELAY_SLACK_LIVE_DELEGATION_AUTONOMY),
+    requireHumanApproval: truthy(env.PI_RELAY_SLACK_LIVE_DELEGATION_REQUIRE_HUMAN_APPROVAL),
+  };
+}
+
+function parseSlackLiveDelegationAutonomy(value: string | undefined): SlackLiveDelegationConfig["autonomy"] {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "off" || normalized === "propose-only" || normalized === "auto-claim-targeted" || normalized === "auto-claim-safe-capability") return normalized;
+  return "auto-claim-targeted";
 }
 
 function truthy(value: string | undefined): boolean {
@@ -520,9 +553,10 @@ export class SlackLivePiHarness {
 
   async start(): Promise<SlackLivePiProcess[]> {
     if (this.rootDir) throw new Error("Slack live Pi harness is already started.");
+    const historyOldestTs = slackTimestampFromMillis(Date.now());
     this.rootDir = await mkdtemp(join(tmpdir(), "pirelay-slack-live-"));
     for (const app of this.config.apps) {
-      const processInfo = await this.startInstance(app, this.rootDir);
+      const processInfo = await this.startInstance(app, this.rootDir, historyOldestTs);
       this.processes.push(processInfo);
     }
     return [...this.processes];
@@ -538,7 +572,7 @@ export class SlackLivePiHarness {
     }
   }
 
-  private async startInstance(app: SlackLiveAppConfig, rootDir: string): Promise<SlackLivePiProcess> {
+  private async startInstance(app: SlackLiveAppConfig, rootDir: string, historyOldestTs: string): Promise<SlackLivePiProcess> {
     const instanceDir = join(rootDir, app.instanceId);
     const stateDir = join(instanceDir, "state");
     const configPath = join(instanceDir, "config.json");
@@ -562,6 +596,7 @@ export class SlackLivePiHarness {
         PI_RELAY_SLACK_APP_TOKEN: app.appLevelToken ?? "",
         PI_RELAY_SLACK_BOT_USER_ID: app.expectedBotUserId ?? "",
         PI_RELAY_SLACK_HISTORY_FALLBACK: "true",
+        PI_RELAY_SLACK_HISTORY_OLDEST_TS: historyOldestTs,
         PI_RELAY_SLACK_LIVE_PRESEEDED_BINDING: "true",
         PI_RELAY_SLACK_EVENT_MODE: this.config.eventMode,
         PI_RELAY_SLACK_WORKSPACE_ID: this.config.workspaceId,
@@ -576,6 +611,10 @@ export class SlackLivePiHarness {
 
 export function slackLiveBrokerNamespace(app: Pick<SlackLiveAppConfig, "instanceId">): string {
   return `slack-live-${app.instanceId}`.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 80);
+}
+
+function slackTimestampFromMillis(ms: number): string {
+  return (ms / 1_000).toFixed(6);
 }
 
 export function slackLivePiConfig(config: SlackLiveSuiteConfig, app: SlackLiveAppConfig, stateDir: string): Record<string, unknown> {
@@ -600,11 +639,12 @@ export function slackLivePiConfig(config: SlackLiveSuiteConfig, app: SlackLiveAp
           workspaceId: config.workspaceId,
           allowUserIds: [config.authorizedUserId],
           allowChannelMessages: true,
+          ...(config.delegation ? { delegation: { ...config.delegation } } : {}),
           sharedRoom: {
             enabled: true,
             roomHint: config.channelId,
             plainText: "addressed-only",
-            machineAliases: [app.role, app.displayName],
+            machineAliases: [app.role, app.displayName, app.expectedBotUserId].filter((value): value is string => Boolean(value)),
           },
         },
       },

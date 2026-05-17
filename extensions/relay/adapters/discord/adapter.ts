@@ -15,6 +15,7 @@ import type {
 import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } from "../../core/channel-adapter.js";
 import type { DiscordRelayConfig } from "../../core/types.js";
 import type { SharedRoomAddressing } from "../../core/shared-room.js";
+import { parseDelegationInvocation } from "../../commands/delegation.js";
 
 export interface DiscordApiOperations {
   connect?(handler: (event: DiscordGatewayEvent) => Promise<void>): Promise<void>;
@@ -216,8 +217,9 @@ export function discordGatewayEventToChannelEvent(event: DiscordGatewayEvent, co
     : discordMessageToChannelEvent(event.payload as DiscordMessagePayload, config);
 }
 
-export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes" | "applicationId" | "clientId">): ChannelInboundMessage | undefined {
-  if (message.author.bot || message.webhook_id) return undefined;
+export function discordMessageToChannelEvent(message: DiscordMessagePayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes" | "applicationId" | "clientId" | "delegation">): ChannelInboundMessage | undefined {
+  if (message.webhook_id) return undefined;
+  if (message.author.bot && (!config.delegation?.enabled || !parseDelegationInvocation(message.content ?? "", { prefixes: ["relay"] }))) return undefined;
   const conversation = discordConversation(message.channel_id, message.guild_id);
   const sender = discordIdentity(message.author, message.guild_id);
   return {
@@ -326,13 +328,13 @@ function discordConversation(channelId: string, guildId?: string): ChannelConver
   };
 }
 
-function discordIdentity(user: { id: string; username?: string; global_name?: string; discriminator?: string }, guildId?: string): ChannelIdentity {
+function discordIdentity(user: { id: string; username?: string; global_name?: string; discriminator?: string; bot?: boolean }, guildId?: string): ChannelIdentity {
   return {
     channel: DISCORD_CHANNEL,
     userId: user.id,
     username: user.username,
     displayName: user.global_name ?? user.username,
-    metadata: { discriminator: user.discriminator, guildId },
+    metadata: { discriminator: user.discriminator, guildId, isBot: user.bot === true },
   };
 }
 

@@ -53,6 +53,9 @@ function authorityState(req = requester()): TunnelStoreData {
     activeChannelSelections: {},
     trustedRelayUsers: {},
     lifecycleNotifications: {},
+    delegationTasks: {},
+    delegationAudit: [],
+    delegationHandledEvents: [],
   };
 }
 

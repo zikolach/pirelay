@@ -1984,6 +1984,36 @@ describe("InProcessTunnelRuntime", () => {
     expect(deliveries).toHaveLength(0);
   });
 
+  it("includes Telegram bot mentions on delegation cards in group chats", async () => {
+    const config = await createRuntimeConfig();
+    config.delegation = {
+      enabled: true,
+      autonomy: "propose-only",
+      trustedPeers: [{ peerId: "777", allowCreate: true, targetMachineIds: ["local"], conversationIds: ["-1001"] }],
+    };
+    const store = new TunnelStateStore(config.stateDir);
+    await store.setSetup({ botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() });
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const sent: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 1,
+      messageId: 1,
+      text: "/delegate@mini_builder_bot local run trusted-peer task",
+      chat: { id: -1001, type: "supergroup" },
+      user: { id: 777, username: "peer", isBot: true },
+    });
+
+    const task = (await store.listDelegationTasks({ roomConversationId: "-1001" }))[0];
+    expect(task).toBeDefined();
+    expect(sent.at(-1)).toContain("/task@mini_builder_bot");
+    expect(sent.at(-1)).toContain(`approve ${task!.id}`);
+  });
+
   it("keeps Telegram group active selection separate from the private chat binding", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
