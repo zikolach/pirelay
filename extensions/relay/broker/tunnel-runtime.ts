@@ -301,6 +301,15 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           await respond({ ok: true });
           return;
         }
+        case "resolveApprovalDecision": {
+          if (!route.actions.resolveApprovalDecision) {
+            await respond({ ok: false, error: "Approval request is stale." });
+            return;
+          }
+          const result = await route.actions.resolveApprovalDecision(request.decision as never);
+          await respond({ ok: true, result });
+          return;
+        }
         case "sendRequesterFile": {
           if (!isRecord(request.requester)) {
             await respond({ ok: false, error: "Missing requester context." });

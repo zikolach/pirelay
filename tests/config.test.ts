@@ -193,6 +193,23 @@ describe("telegram tunnel config", () => {
     expect(config.discord).toMatchObject({ applicationId: "app-123", clientId: "app-123" });
   });
 
+  it("loads approval gate config from file and environment overrides", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      approvalGates: { enabled: false, rules: [{ id: "file", tools: ["write"] }] },
+      messengers: { telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" } } },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+    vi.stubEnv("PI_RELAY_APPROVAL_ENABLED", "true");
+    vi.stubEnv("PI_RELAY_APPROVAL_RULES_JSON", JSON.stringify([{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }]));
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.approvalGates).toMatchObject({ enabled: true, rules: [{ id: "git" }] });
+  });
+
   it("preserves non-default Discord and Slack messenger instances for the live runtime", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
     tempDirs.push(dir);

@@ -67,7 +67,9 @@ When Pi has an interactive TUI, `/relay setup <messenger>` opens a secret-safe s
 
 Between adapters and relay core, PiRelay uses an interaction middleware pipeline for reusable messenger-neutral behavior. Middleware receives normalized relay events, runs in deterministic phases, and can produce prompts, channel-only responses, internal relay actions, blocked outcomes, or safe errors.
 
-Authorization is an explicit pipeline boundary: middleware that downloads media, transcribes audio, extracts documents, invokes callbacks, or injects prompts must not run before the identity and route are authorized.
+Authorization is an explicit pipeline boundary: middleware that downloads media, transcribes audio, extracts documents, invokes callbacks, approval decisions, or injects prompts must not run before the identity and route are authorized.
+
+Approval gates use the same adapter-neutral button/fallback model. Telegram renders inline callbacks, Discord renders components when available, and Slack renders Block Kit buttons; all adapters also accept the documented `relay approval ...` text fallback. Adapters must treat approval buttons as transport only: the session-owning route revalidates pending approval id, requester identity, active binding, expiry, and grant scope before unblocking any tool call.
 
 ## Multi-machine shared bots
 

@@ -1,5 +1,6 @@
 import type { BrokerPeerConfig, MessengerIngressPolicy } from "../broker/protocol.js";
 import type { DelegationAutonomyLevel, TrustedDelegationPeer } from "../core/agent-delegation.js";
+import type { ApprovalGateConfig } from "../core/approval-gates.js";
 import type { MessengerKind, MessengerRef } from "../core/messenger-ref.js";
 
 export interface RelayDefaultsConfig {
@@ -20,6 +21,7 @@ export interface RelayMachineConfig {
   brokerNamespace?: string;
   brokerGroup?: string;
   brokerPeers: BrokerPeerConfig[];
+  approvalGates?: ApprovalGateConfig;
 }
 
 export interface RelayAgentDelegationConfig {
@@ -93,6 +95,7 @@ export interface RelayConfigFile {
   relay?: Partial<RelayMachineConfig> & { machine?: { id?: string } };
   defaults?: Partial<RelayDefaultsConfig>;
   messengers?: Record<string, Record<string, MessengerInstanceFileConfig>>;
+  approvalGates?: ApprovalGateConfig;
   // Legacy input accepted only by migration/canonicalization.
   botToken?: string;
   TELEGRAM_BOT_TOKEN?: string;

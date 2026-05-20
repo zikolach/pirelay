@@ -8,6 +8,7 @@ import { channelBindingStorageKey, legacyChannelBindingStorageKey } from "../bro
 import { decideRelayLifecycleNotification, relayLifecycleStorageKey, type RelayLifecycleEventKind, type RelayLifecycleNotificationDecision } from "../notifications/lifecycle.js";
 import type { ChannelActiveSelectionRecord, ChannelPersistedBindingRecord, PendingPairingRecord, PersistedBindingRecord, SetupCache, TelegramBindingMetadata, TrustedRelayUserRecord, TunnelStoreData } from "../core/types.js";
 import { expireDelegationTaskIfNeeded, expireDelegationTaskIfRunningTimedOut, markDelegationTaskStaleAfterRestart, type DelegationTaskAuditEvent, type DelegationTaskRecord, type DelegationTaskRoomRef } from "../core/agent-delegation.js";
+import type { ApprovalAuditEvent, ApprovalGrantRecord, ApprovalRequestRecord } from "../core/approval-gates.js";
 import { createPairingNonce, createPairingPin, sessionKeyOf, sha256, toIsoNow } from "../core/utils.js";
 
 function emptyStore(): TunnelStoreData {
@@ -21,6 +22,9 @@ function emptyStore(): TunnelStoreData {
     delegationTasks: {},
     delegationAudit: [],
     delegationHandledEvents: [],
+    approvalRequests: {},
+    approvalGrants: {},
+    approvalAudit: [],
   };
 }
 
@@ -37,6 +41,9 @@ function parseStoreData(raw: string): TunnelStoreData {
     delegationTasks: parsed.delegationTasks ?? {},
     delegationAudit: parsed.delegationAudit ?? [],
     delegationHandledEvents: parsed.delegationHandledEvents ?? [],
+    approvalRequests: parsed.approvalRequests ?? {},
+    approvalGrants: parsed.approvalGrants ?? {},
+    approvalAudit: parsed.approvalAudit ?? [],
   };
 }
 
@@ -475,6 +482,91 @@ export class TunnelStateStore {
       .filter((event) => !options.taskId || event.taskId === options.taskId)
       .sort((left, right) => Date.parse(right.at) - Date.parse(left.at) || right.eventId.localeCompare(left.eventId))
       .slice(0, limit);
+  }
+
+  async upsertApprovalRequest(request: ApprovalRequestRecord): Promise<ApprovalRequestRecord> {
+    await this.update((data) => {
+      data.approvalRequests[request.approvalId] = request;
+    });
+    return request;
+  }
+
+  async getApprovalRequest(approvalId: string): Promise<ApprovalRequestRecord | undefined> {
+    return (await this.load()).approvalRequests[approvalId];
+  }
+
+  async updateApprovalRequest(approvalId: string, mutator: (request: ApprovalRequestRecord) => ApprovalRequestRecord | undefined): Promise<ApprovalRequestRecord | undefined> {
+    let updated: ApprovalRequestRecord | undefined;
+    await this.update((data) => {
+      const current = data.approvalRequests[approvalId];
+      if (!current) return;
+      updated = mutator(current);
+      if (updated) data.approvalRequests[approvalId] = updated;
+    });
+    return updated;
+  }
+
+  async upsertApprovalGrant(grant: ApprovalGrantRecord): Promise<ApprovalGrantRecord> {
+    await this.update((data) => {
+      data.approvalGrants[grant.grantId] = grant;
+    });
+    return grant;
+  }
+
+  async listApprovalGrants(): Promise<ApprovalGrantRecord[]> {
+    return Object.values((await this.load()).approvalGrants);
+  }
+
+  async revokeApprovalGrant(grantId: string, revokedAt = toIsoNow()): Promise<ApprovalGrantRecord | undefined> {
+    let revoked: ApprovalGrantRecord | undefined;
+    await this.update((data) => {
+      const current = data.approvalGrants[grantId];
+      if (!current) return;
+      revoked = { ...current, revokedAt };
+      data.approvalGrants[grantId] = revoked;
+    });
+    return revoked;
+  }
+
+  async markApprovalGrantUsed(grantId: string, usedAt = toIsoNow()): Promise<ApprovalGrantRecord | undefined> {
+    let used: ApprovalGrantRecord | undefined;
+    await this.update((data) => {
+      const current = data.approvalGrants[grantId];
+      if (!current) return;
+      used = { ...current, lastUsedAt: usedAt };
+      data.approvalGrants[grantId] = used;
+    });
+    return used;
+  }
+
+  async appendApprovalAudit(event: ApprovalAuditEvent, options: { maxAuditEntries?: number } = {}): Promise<void> {
+    const maxAuditEntries = Math.max(1, options.maxAuditEntries ?? 200);
+    await this.update((data) => {
+      data.approvalAudit = [...data.approvalAudit, event].slice(-maxAuditEntries);
+    });
+  }
+
+  async listApprovalAudit(options: { sessionKey?: string; limit?: number } = {}): Promise<ApprovalAuditEvent[]> {
+    const limit = Math.max(1, options.limit ?? 50);
+    return (await this.load()).approvalAudit
+      .filter((event) => !options.sessionKey || event.sessionKey === options.sessionKey)
+      .sort((left, right) => Date.parse(right.at) - Date.parse(left.at) || right.eventId.localeCompare(left.eventId))
+      .slice(0, limit);
+  }
+
+  async cancelPendingApprovalsForSession(sessionKey: string, reason = "session cancelled", now = toIsoNow()): Promise<ApprovalRequestRecord[]> {
+    const cancelled: ApprovalRequestRecord[] = [];
+    await this.update((data) => {
+      for (const [approvalId, request] of Object.entries(data.approvalRequests)) {
+        if (request.sessionKey !== sessionKey || request.status !== "pending") continue;
+        const next: ApprovalRequestRecord = { ...request, status: "cancelled", resolvedAt: now, decision: "deny" };
+        data.approvalRequests[approvalId] = next;
+        cancelled.push(next);
+        const audit: ApprovalAuditEvent = { eventId: `approval-cancel-${approvalId}-${now}`, kind: "cancelled", approvalId, sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, at: now, detail: reason };
+        data.approvalAudit = [...data.approvalAudit, audit].slice(-200);
+      }
+    });
+    return cancelled;
   }
 
   async markInFlightDelegationTasksStaleAfterRestart(now = toIsoNow()): Promise<DelegationTaskRecord[]> {

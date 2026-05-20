@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { DEFAULT_STATE_DIR, getDefaultConfigPath } from "../state/paths.js";
 import type { AgentDelegationRelayConfig, ConfigLoadResult, DiscordRelayConfig, SlackRelayConfig, TelegramTunnelConfig } from "../core/types.js";
+import type { ApprovalGateConfig } from "../core/approval-gates.js";
 import type { MessengerInstanceFileConfig, RelayConfigFile } from "./schema.js";
 import { DEFAULT_MAX_PROGRESS_MESSAGE_CHARS, DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_MODE, DEFAULT_RECENT_ACTIVITY_LIMIT, DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS, normalizeProgressMode } from "../notifications/progress.js";
 import { getDefaultRedactionPatterns } from "../core/utils.js";
@@ -59,6 +60,7 @@ interface ConfigFileShape extends RelayConfigFile {
   verboseProgressIntervalMs?: number;
   recentActivityLimit?: number;
   maxProgressMessageChars?: number;
+  approvalGates?: ApprovalGateConfig;
   discord?: DiscordRelayConfig & LegacyMessengerFileShape;
   slack?: SlackRelayConfig & LegacyMessengerFileShape;
 }
@@ -114,6 +116,24 @@ function parseBoolean(value: string | undefined, fallback: boolean | undefined):
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function parseApprovalRulesJson(value: string | undefined): ApprovalGateConfig["rules"] | undefined {
+  if (!value) return undefined;
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) throw new ConfigError("PI_RELAY_APPROVAL_RULES_JSON must be a JSON array.");
+  return parsed as ApprovalGateConfig["rules"];
+}
+
+function resolveApprovalGateFileConfig(fileConfig: ConfigFileShape | undefined): ApprovalGateConfig | undefined {
+  const base = fileConfig?.relay?.approvalGates ?? fileConfig?.approvalGates;
+  const enabled = parseBoolean(process.env.PI_RELAY_APPROVAL_ENABLED, base?.enabled);
+  const timeoutMs = parseNumber(process.env.PI_RELAY_APPROVAL_TIMEOUT_MS, base?.timeoutMs ?? 120_000);
+  const sessionGrants = parseBoolean(process.env.PI_RELAY_APPROVAL_SESSION_GRANTS, base?.sessionGrants);
+  const allowRemotePersistentGrants = parseBoolean(process.env.PI_RELAY_APPROVAL_REMOTE_PERSISTENT_GRANTS, base?.allowRemotePersistentGrants);
+  const rules = parseApprovalRulesJson(process.env.PI_RELAY_APPROVAL_RULES_JSON) ?? base?.rules;
+  if (enabled === undefined && !base && !rules) return undefined;
+  return { ...base, enabled, timeoutMs, sessionGrants, allowRemotePersistentGrants, rules };
 }
 
 function validateDelegationConfig(config: AgentDelegationRelayConfig | undefined, label: string): AgentDelegationRelayConfig | undefined {
@@ -409,6 +429,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     machineAliases,
     machineCapabilities,
     delegation: validateDelegationConfig(telegramConfig?.delegation, "telegram:default"),
+    approvalGates: resolveApprovalGateFileConfig(fileConfig),
     brokerNamespace,
     pairingExpiryMs,
     busyDeliveryMode,

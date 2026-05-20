@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { parseMessengerRef } from "../core/messenger-ref.js";
+import { approvalConfigFindings, resolveApprovalGateConfig } from "../core/approval-gates.js";
 import type { DiscordRelayConfig, SlackRelayConfig, TelegramTunnelConfig } from "../core/types.js";
 
 export type RelaySetupChannel = "telegram" | "discord" | "slack";
@@ -19,7 +20,7 @@ export interface RelaySetupFacts {
 }
 
 export interface RelayLocalCommandIntent {
-  subcommand?: "setup" | "connect" | "send-file" | "restart" | "disconnect" | "status" | "doctor" | "trusted" | "untrust";
+  subcommand?: "setup" | "connect" | "send-file" | "restart" | "disconnect" | "status" | "doctor" | "approvals" | "trusted" | "untrust";
   channel?: RelaySetupChannel;
   messengerRef?: string;
   sendFileTarget?: string;
@@ -49,7 +50,7 @@ export function completeRelayLocalCommand(prefix: string, options: { compatibili
   const parts = prefix.trim().split(/\s+/).filter(Boolean);
   const subcommands = options.compatibilityCommand
     ? ["setup", "connect", "disconnect", "status"]
-    : ["setup", "connect", "send-file", "restart", "doctor", "disconnect", "status", "trusted", "untrust"];
+    : ["setup", "connect", "send-file", "restart", "doctor", "approvals", "disconnect", "status", "trusted", "untrust"];
 
   if (parts.length === 0) return subcommands;
   if (parts.length === 1 && !endsWithSpace) {
@@ -94,7 +95,7 @@ export function parseRelayLocalCommand(args: string, options: { compatibilityCom
       args: rest.slice(1).join(" "),
     };
   }
-  if (subcommand === "doctor" || subcommand === "restart" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
+  if (subcommand === "doctor" || subcommand === "approvals" || subcommand === "restart" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
     return { subcommand, args: rest.join(" ") };
   }
 
@@ -118,6 +119,7 @@ export function relaySetupDiagnostics(config: TelegramTunnelConfig, facts: Relay
     ...telegramDiagnostics(config),
     ...discordDiagnostics(config.discord),
     ...slackDiagnostics(config.slack),
+    ...approvalDiagnostics(config),
     ...permissionDiagnostics(facts),
   ];
 }
@@ -170,6 +172,12 @@ export function renderRelayDoctorReport(config: TelegramTunnelConfig, findings: 
   }
 
   lines.push("");
+  lines.push("Approval gates");
+  for (const finding of approvalConfigFindings(resolveApprovalGateConfig(config.approvalGates))) {
+    lines.push(`  ℹ️ ${redactSecrets(finding)}`);
+  }
+  lines.push("");
+
   lines.push("Broker topology");
   lines.push("  ✅ PiRelay uses one local broker per machine/state directory.");
   lines.push("  ⚠️ If the same bot/account is configured on multiple machines, configure one ingress owner and broker federation before enabling polling on each machine.");
@@ -354,6 +362,19 @@ function slackDiagnostics(config: SlackRelayConfig | undefined): RelaySetupFindi
   return findings;
 }
 
+function approvalDiagnostics(config: TelegramTunnelConfig): RelaySetupFinding[] {
+  const approval = resolveApprovalGateConfig(config.approvalGates);
+  if (!approval.enabled) return [];
+  const findings: RelaySetupFinding[] = [];
+  if (approval.rules.length === 0) {
+    findings.push({ channel: "all", severity: "warning", code: "approval-rules-empty", message: "Approval gates are enabled but no rules are configured, so no operations will be gated." });
+  }
+  if (approval.allowRemotePersistentGrants) {
+    findings.push({ channel: "all", severity: "warning", code: "approval-persistent-grants-enabled", message: "Remote persistent approval grants are enabled. Keep rules narrow and review approval audit regularly." });
+  }
+  return findings;
+}
+
 function permissionDiagnostics(facts: RelaySetupFacts): RelaySetupFinding[] {
   const findings: RelaySetupFinding[] = [];
   if (typeof facts.configFileMode === "number" && (facts.configFileMode & 0o077) !== 0) {
@@ -449,7 +470,7 @@ function channelStatus(config: TelegramTunnelConfig, channel: RelaySetupChannel)
 }
 
 function normalizeSubcommand(value: string | undefined): RelayLocalCommandIntent["subcommand"] | undefined {
-  if (value === "setup" || value === "connect" || value === "send-file" || value === "restart" || value === "disconnect" || value === "status" || value === "doctor" || value === "trusted" || value === "untrust") return value;
+  if (value === "setup" || value === "connect" || value === "send-file" || value === "restart" || value === "disconnect" || value === "status" || value === "doctor" || value === "approvals" || value === "trusted" || value === "untrust") return value;
   return undefined;
 }
 

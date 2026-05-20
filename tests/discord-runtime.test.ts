@@ -1430,6 +1430,9 @@ describe("DiscordRuntime", () => {
     await ops.handler?.(discordMessage("/relay status", { userId: "u2" }));
     await ops.handler?.(discordMessage("/abort"));
     await ops.handler?.({ type: "interaction", payload: { id: "i1", token: "t1", channel_id: "dm1", user: { id: "u1" }, data: { custom_id: "x" } } });
+    const resolveApprovalDecision = vi.fn(async () => ({ ok: true, status: "approved" as const, message: "Approved once." }));
+    session.actions.resolveApprovalDecision = resolveApprovalDecision;
+    await ops.handler?.({ type: "interaction", payload: { id: "i-approval", token: "t-approval", channel_id: "dm1", user: { id: "u1" }, data: { custom_id: "pirelay:approval:approve-once:approval-1" } } });
     await ops.handler?.({ type: "interaction", payload: { id: "i2", token: "t2", channel_id: "dm1", user: { id: "u2" }, data: { custom_id: "x" } } });
     await store.upsertChannelBinding({
       channel: "discord",
@@ -1449,6 +1452,8 @@ describe("DiscordRuntime", () => {
     expect(ops.messages.some((message) => message.content.includes("not paired with a Pi session"))).toBe(true);
     expect(abort).toHaveBeenCalled();
     expect(ops.answers).toContainEqual({ interactionId: "i1", text: "Action received.", alert: undefined });
+    expect(resolveApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "approval-1", decision: "approve-once", channel: "discord", conversationId: "dm1", userId: "u1" }));
+    expect(ops.answers).toContainEqual({ interactionId: "i-approval", text: "Approved once.", alert: false });
     expect(ops.answers).toContainEqual({ interactionId: "i2", text: "This Discord action is not authorized.", alert: true });
     expect(ops.answers).toContainEqual({ interactionId: "i3", text: "This Discord action is no longer current.", alert: true });
     expect(await store.getChannelBinding("discord", "dm1", "u1")).toBeUndefined();

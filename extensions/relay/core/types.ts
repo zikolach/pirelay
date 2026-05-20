@@ -5,6 +5,7 @@ import type { ChannelBinding } from "./channel-adapter.js";
 import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
 import type { RelayLifecycleNotificationRecord } from "../notifications/lifecycle.js";
 import type { DelegationAutonomyLevel, DelegationTaskAuditEvent, DelegationTaskRecord, TrustedDelegationPeer } from "./agent-delegation.js";
+import type { ApprovalAuditEvent, ApprovalDecisionRequest, ApprovalDecisionResult, ApprovalGateConfig, ApprovalGrantRecord, ApprovalRequestRecord } from "./approval-gates.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
@@ -80,6 +81,7 @@ export interface TelegramTunnelConfig {
   machineAliases?: string[];
   machineCapabilities?: string[];
   delegation?: AgentDelegationRelayConfig;
+  approvalGates?: ApprovalGateConfig;
   brokerNamespace?: string;
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;
@@ -208,6 +210,9 @@ export interface TunnelStoreData {
   delegationTasks: Record<string, DelegationTaskRecord>;
   delegationAudit: DelegationTaskAuditEvent[];
   delegationHandledEvents: string[];
+  approvalRequests: Record<string, ApprovalRequestRecord>;
+  approvalGrants: Record<string, ApprovalGrantRecord>;
+  approvalAudit: ApprovalAuditEvent[];
 }
 
 export interface ParsedTelegramCommand {
@@ -297,6 +302,7 @@ export interface SessionRouteActions {
   promptLocalConfirmation(identity: RelayPairingIdentity): Promise<PairingApprovalDecision | boolean>;
   abort(): void;
   compact(): Promise<void>;
+  resolveApprovalDecision?(decision: ApprovalDecisionRequest): Promise<ApprovalDecisionResult>;
 }
 
 export type PairingApprovalDecision = "allow" | "trust" | "deny";

@@ -56,6 +56,9 @@ function authorityState(req = requester()): TunnelStoreData {
     delegationTasks: {},
     delegationAudit: [],
     delegationHandledEvents: [],
+    approvalRequests: {},
+    approvalGrants: {},
+    approvalAudit: [],
   };
 }
 

@@ -20,6 +20,7 @@ import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, par
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
 import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
+import { parseApprovalActionData, parseApprovalTextCommand } from "../../core/approval-gates.js";
 
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -205,6 +206,7 @@ export class DiscordRuntime {
     if (!this.adapter || event.channel !== DISCORD_CHANNEL) return;
     try {
       if (event.kind === "action") {
+        if (await this.handleApprovalAction(event)) return;
         if (await this.handleDelegationAction(event)) return;
         await this.handleAction(event);
         return;
@@ -388,6 +390,27 @@ export class DiscordRuntime {
 
   private isDiscordDelegationSourceScopedToLocal(message: ChannelInboundMessage): boolean {
     return this.sharedRoomAddressing(message)?.kind === "local";
+  }
+
+  private async handleApprovalAction(action: ChannelInboundAction): Promise<boolean> {
+    const parsed = parseApprovalActionData(action.actionData);
+    if (!parsed) return false;
+    const binding = await this.findDiscordBinding(action);
+    const route = binding ? this.routes.get(binding.sessionKey) : undefined;
+    if (!binding || !route?.actions.resolveApprovalDecision) {
+      await this.adapter?.answerAction(action.actionId, { text: "Approval request is stale.", alert: true });
+      return true;
+    }
+    const result = await route.actions.resolveApprovalDecision({
+      approvalId: parsed.approvalId,
+      decision: parsed.decision,
+      channel: DISCORD_CHANNEL,
+      instanceId: this.instanceId,
+      conversationId: action.conversation.id,
+      userId: action.sender.userId,
+    });
+    await this.adapter?.answerAction(action.actionId, { text: result.message, alert: !result.ok });
+    return true;
   }
 
   private async handleDelegationAction(action: ChannelInboundAction): Promise<boolean> {
@@ -693,6 +716,16 @@ export class DiscordRuntime {
   }
 
   private async handleCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: DiscordCommand): Promise<void> {
+    const approvalCommand = parseApprovalTextCommand(command.name, command.args);
+    if (approvalCommand) {
+      if (!route.actions.resolveApprovalDecision) {
+        await this.sendText(message, "Approval request is stale.");
+        return;
+      }
+      const result = await route.actions.resolveApprovalDecision({ approvalId: approvalCommand.approvalId, decision: approvalCommand.decision, channel: DISCORD_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId });
+      await this.sendText(message, result.message);
+      return;
+    }
     switch (command.name) {
       case "help":
         await this.sendText(message, DISCORD_HELP_TEXT);
@@ -1180,6 +1213,11 @@ export class DiscordRuntime {
       return;
     }
     await this.adapter?.answerAction(action.actionId, { text: "Action received." });
+  }
+
+  async sendApprovalRequestToRequester(requester: RelayFileDeliveryRequester, text: string, buttons?: ChannelButtonLayout): Promise<void> {
+    if (!this.adapter) throw new Error("Discord adapter is not started.");
+    await this.adapter.sendText({ channel: DISCORD_CHANNEL, conversationId: requester.conversationId, userId: requester.userId }, text, { buttons });
   }
 
   private async sendText(message: ChannelInboundMessage, text: string, buttons?: ChannelButtonLayout): Promise<void> {

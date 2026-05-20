@@ -234,7 +234,8 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 |---|---|
 | `/relay setup <telegram\|discord\|slack>` | open setup wizard or show headless setup guidance |
 | `/relay connect <telegram\|discord\|slack> [name]` | create an expiring pairing flow for the current session |
-| `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, and config/state permissions |
+| `/relay doctor` | diagnose configured relay channels, credentials, allow-lists, approval gates, and config/state permissions |
+| `/relay approvals` | show recent non-secret approval-gate audit events for the current session |
 | `/relay status` | show local relay status for the current session |
 | `/relay send-file <telegram\|discord\|slack\|messenger:instance\|all> <relative-path> [caption]` | send an explicit safe workspace file/artifact to paired messenger chat(s) |
 | `/relay trusted` | list locally trusted relay users |
@@ -275,6 +276,8 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 Remote `/disconnect` is scoped to the requesting chat/conversation only: it revokes that Telegram, Discord, or Slack binding and suppresses future session output/buttons there, without disconnecting other messengers that remain paired to the same Pi session. Local `/relay disconnect` is broader and disconnects the current session from all paired messenger bindings.
 
 Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
+
+Approval gates are optional remote confirmation guardrails for sensitive Pi tool calls such as `git push`, package publishing, destructive shell commands, or protected file writes. Configure `approvalGates.enabled` plus explicit rules; matching operations pause and ask the active authorized requester to Approve once, Approve for session, or Deny. Timeout, stale/revoked/paused bindings, offline sessions, or delivery failures block by default. See `docs/config.md` for examples.
 
 Agent delegation is disabled by default and only applies in explicitly enabled shared rooms. Delegation task cards are visible room messages; bot-authored ordinary output remains inert, peer-bot trust is configured separately from human allow-lists, and claimed work is injected as a bounded delegated-task prompt with completion/failure reported back to the room.
 

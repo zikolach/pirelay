@@ -1216,6 +1216,46 @@ describe("InProcessTunnelRuntime", () => {
     expect(route.remoteRequester?.messageId).toBeUndefined();
   });
 
+  it("routes Telegram approval callbacks through route authorization", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-approval-callback:/tmp/session-approval-callback.jsonl",
+      sessionId: "session-approval-callback",
+      sessionFile: "/tmp/session-approval-callback.jsonl",
+      sessionLabel: "session-approval-callback.jsonl",
+      chatId: 10022,
+      userId: 220,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    const resolveApprovalDecision = vi.fn(async () => ({ ok: true, status: "approved" as const, message: "Approved once." }));
+    route.actions.resolveApprovalDecision = resolveApprovalDecision;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const callbacks: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async () => undefined,
+      sendChatAction: async () => undefined,
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      updateId: 111,
+      callbackQueryId: "approval-cb",
+      data: "pirelay:approval:approve-once:approval-1",
+      chat: { id: 10022, type: "private" },
+      user: { id: 220, username: "owner" },
+    });
+
+    expect(resolveApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "approval-1", decision: "approve-once", channel: "telegram", conversationId: "10022", userId: "220" }));
+    expect(callbacks).toEqual(["Approved once."]);
+  });
+
   it("does not answer callback as unavailable for non-unavailable prompt failures", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
