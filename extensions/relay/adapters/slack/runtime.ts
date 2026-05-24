@@ -19,6 +19,7 @@ import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEven
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
+import { parseApprovalActionData, parseApprovalTextCommand } from "../../core/approval-gates.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -351,6 +352,7 @@ export class SlackRuntime {
     if (!this.adapter || event.channel !== SLACK_CHANNEL) return;
     try {
       if (event.kind === "action") {
+        if (await this.handleApprovalAction(event)) return;
         if (actionFromDelegationSurface(event)) {
           await this.handleDelegationAction(event);
           return;
@@ -365,6 +367,28 @@ export class SlackRuntime {
         await this.sendText(event, `PiRelay Slack error: ${this.lastError}`).catch(() => undefined);
       }
     }
+  }
+
+  private async handleApprovalAction(action: ChannelInboundAction): Promise<boolean> {
+    const parsed = parseApprovalActionData(action.actionData);
+    if (!parsed) return false;
+    const binding = await this.findSlackBinding(action);
+    const route = binding ? this.routes.get(binding.sessionKey) : undefined;
+    if (!binding || !route?.actions.resolveApprovalDecision || !this.adapter) {
+      await this.adapter?.answerAction(action.actionId, { text: "Approval request is stale." });
+      return true;
+    }
+    const result = await route.actions.resolveApprovalDecision({
+      approvalId: parsed.approvalId,
+      decision: parsed.decision,
+      channel: SLACK_CHANNEL,
+      instanceId: this.instanceId,
+      conversationId: action.conversation.id,
+      userId: action.sender.userId,
+      threadId: typeof action.metadata?.threadTs === "string" ? action.metadata.threadTs : undefined,
+    });
+    await this.adapter.answerAction(action.actionId, { text: result.message });
+    return true;
   }
 
   private async handleAction(action: ChannelInboundAction): Promise<void> {
@@ -721,6 +745,16 @@ export class SlackRuntime {
   }
 
   private async handleSlackCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: SlackCommand): Promise<void> {
+    const approvalCommand = parseApprovalTextCommand(command.name, command.args);
+    if (approvalCommand) {
+      if (!route.actions.resolveApprovalDecision) {
+        await this.sendText(message, "Approval request is stale.");
+        return;
+      }
+      const result = await route.actions.resolveApprovalDecision({ approvalId: approvalCommand.approvalId, decision: approvalCommand.decision, channel: SLACK_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId, threadId: typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined });
+      await this.sendText(message, result.message);
+      return;
+    }
     if (binding.paused && !commandAllowsWhilePaused(command.name)) {
       await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `relay resume` first.");
       return;
@@ -1158,6 +1192,11 @@ export class SlackRuntime {
       return latest;
     }
     return undefined;
+  }
+
+  async sendApprovalRequestToRequester(requester: RelayFileDeliveryRequester, text: string, buttons?: ChannelButtonLayout): Promise<void> {
+    if (!this.adapter) throw new Error("Slack adapter is not started.");
+    await this.adapter.sendText({ channel: SLACK_CHANNEL, conversationId: requester.conversationId, userId: requester.userId, ...(requester.threadId ? { threadTs: requester.threadId } : {}) } as ChannelRouteAddress, text, { buttons });
   }
 
   private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string, buttons?: ChannelButtonLayout): Promise<void> {

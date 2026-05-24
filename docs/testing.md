@@ -104,6 +104,7 @@ Check:
 12. Verify input images are not echoed back by `/images` unless a tool emitted them separately as output.
 13. From local Pi, run `/relay send-file telegram README.md`, `/relay send-file discord README.md`, `/relay send-file slack README.md`, and `/relay send-file all README.md` against paired chats; verify safe delivery summaries and that paused/missing bindings are skipped without raw ids in normal UX.
 14. Try local `/relay send-file slack ../secret.md`, absolute paths, hidden files, symlink escapes, oversized files, and unsupported binaries; verify no messenger API upload is attempted.
+15. With `approvalGates.enabled` and a rule for `git push` or `npm publish`, trigger a matching remote turn. Verify the messenger shows an approval request, Approve once allows exactly that operation, Approve for session allows a later matching operation only for the same requester/session, Deny/timeout blocks, and stale/revoked/paused bindings cannot approve.
 
 ## 6. Relay setup wizard, Discord, and Slack smoke checklist
 

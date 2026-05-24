@@ -20,6 +20,9 @@ function emptyState(): TunnelStoreData {
     delegationTasks: {},
     delegationAudit: [],
     delegationHandledEvents: [],
+    approvalRequests: {},
+    approvalGrants: {},
+    approvalAudit: [],
   };
 }
 

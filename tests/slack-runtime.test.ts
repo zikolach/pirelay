@@ -667,6 +667,12 @@ describe("SlackRuntime foundations", () => {
 
     await operations.handler!({ type: "block_actions", channel: { id: "D1" }, user: { id: "U_DRIVER", team_id: "T1" }, actions: [{ value: "summary" }], response_url: "https://hooks.slack.test/response" });
     expect(operations.responses.at(-1)?.text).toBe("done in thread");
+
+    const resolveApprovalDecision = vi.fn(async () => ({ ok: true, status: "approved" as const, message: "Approved once." }));
+    testRoute.actions.resolveApprovalDecision = resolveApprovalDecision;
+    await operations.handler!({ type: "block_actions", channel: { id: "D1" }, user: { id: "U_DRIVER", team_id: "T1" }, actions: [{ value: "pirelay:approval:approve-once:approval-1" }], response_url: "https://hooks.slack.test/approval" });
+    expect(resolveApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "approval-1", decision: "approve-once", channel: "slack", conversationId: "D1", userId: "U_DRIVER" }));
+    expect(operations.responses.at(-1)?.text).toBe("Approved once.");
     await send("/disconnect", "54");
     expect(operations.posts.at(-1)?.text).toContain("disconnected");
   });

@@ -95,6 +95,38 @@ function relayMachineCapabilities(fileConfig: RelayConfigFile, env: NodeJS.Proce
   return [...new Set([...fileCapabilities, ...envCapabilities].map((capability) => capability.trim()).filter(Boolean))];
 }
 
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function parseNumberEnv(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseApprovalRulesEnv(value: string | undefined): RelayConfigFile["approvalGates"] extends infer T ? T extends { rules?: infer R } ? R | undefined : undefined : undefined {
+  if (!value) return undefined;
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) throw new RelayConfigError("PI_RELAY_APPROVAL_RULES_JSON must be a JSON array.");
+  return parsed as never;
+}
+
+function resolveApprovalGates(fileConfig: RelayConfigFile, env: NodeJS.ProcessEnv): RelayConfigFile["approvalGates"] {
+  const base = fileConfig.relay?.approvalGates ?? fileConfig.approvalGates;
+  const enabled = parseBooleanEnv(env.PI_RELAY_APPROVAL_ENABLED) ?? base?.enabled;
+  const timeoutMs = parseNumberEnv(env.PI_RELAY_APPROVAL_TIMEOUT_MS) ?? base?.timeoutMs;
+  const sessionGrants = parseBooleanEnv(env.PI_RELAY_APPROVAL_SESSION_GRANTS) ?? base?.sessionGrants;
+  const allowRemotePersistentGrants = parseBooleanEnv(env.PI_RELAY_APPROVAL_REMOTE_PERSISTENT_GRANTS) ?? base?.allowRemotePersistentGrants;
+  const rules = parseApprovalRulesEnv(env.PI_RELAY_APPROVAL_RULES_JSON) ?? base?.rules;
+  if (enabled === undefined && timeoutMs === undefined && sessionGrants === undefined && allowRemotePersistentGrants === undefined && !rules && !base) return undefined;
+  return { ...base, enabled, timeoutMs, sessionGrants, allowRemotePersistentGrants, rules };
+}
+
 function resolveSecret(env: NodeJS.ProcessEnv, value: string | undefined, envName: string | undefined): string | undefined {
   if (value) return value;
   if (envName) return env[envName];
@@ -252,6 +284,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
     brokerNamespace: fileConfig.relay?.brokerNamespace ?? env.PI_RELAY_BROKER_NAMESPACE,
     brokerGroup: fileConfig.relay?.brokerGroup ?? env.PI_RELAY_BROKER_GROUP,
     brokerPeers: fileConfig.relay?.brokerPeers ?? [],
+    approvalGates: resolveApprovalGates(fileConfig, env),
   };
   if (relay.stateDir === LEGACY_TELEGRAM_TUNNEL_STATE_DIR || env.PI_TELEGRAM_TUNNEL_STATE_DIR) warnings.push("Using legacy Telegram tunnel state directory fallback; prefer ~/.pi/agent/pirelay.");
 

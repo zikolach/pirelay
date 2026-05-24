@@ -30,6 +30,7 @@ import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-a
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
 import { DEFAULT_SLACK_MAX_FILE_BYTES } from "../adapters/slack/adapter.js";
+import { approvalAuditEvent, approvalButtons, classifyApprovalOperation, createApprovalGrant, createApprovalRequest, grantMatchesOperation, renderApprovalRequest, resolveApprovalGateConfig, type ApprovalDecisionRequest, type ApprovalDecisionResult, type ApprovalGateConfig, type ApprovalGrantRecord, type ApprovalOperation, type ApprovalRequestRecord, type ResolvedApprovalGateConfig } from "../core/approval-gates.js";
 
 const BINDING_ENTRY_TYPE = "relay-binding";
 const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -158,6 +159,7 @@ function getCommandHelp(): string {
     "  setup [telegram|discord|slack]  Show channel setup guidance",
     "  connect [telegram|discord|slack] [name]  Create a channel pairing instruction",
     "  doctor      Diagnose configured relay channels",
+    "  approvals   Show recent approval-gate audit events",
     "  send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]  Send a workspace file",
     "  restart     Restart relay runtimes and kill/restart the broker process",
     "  disconnect  Revoke relay bindings for this session",
@@ -183,6 +185,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let latestTurnImages: LatestTurnImage[] = [];
   let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
   let progressSequence = 0;
+  const pendingApprovalResolvers = new Map<string, (result: ApprovalDecisionResult) => void>();
 
   function safeSessionKeyForContext(ctx: ExtensionContext): string | undefined {
     try {
@@ -689,6 +692,130 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return trust ? "trust" : "allow";
   }
 
+  function approvalConfig(config: TelegramTunnelConfig | undefined = configCache): ResolvedApprovalGateConfig {
+    return resolveApprovalGateConfig(config?.approvalGates as ApprovalGateConfig | undefined);
+  }
+
+  function approvalStore(config: TelegramTunnelConfig | undefined = configCache): TunnelStateStore | undefined {
+    return config ? new TunnelStateStore(config.stateDir) : undefined;
+  }
+
+  async function appendApprovalAudit(config: TelegramTunnelConfig, event: Parameters<typeof approvalAuditEvent>[0]): Promise<void> {
+    const resolved = approvalConfig(config);
+    await new TunnelStateStore(config.stateDir).appendApprovalAudit(approvalAuditEvent(event), { maxAuditEntries: resolved.maxAuditEvents });
+  }
+
+  async function findMatchingApprovalGrant(route: SessionRoute, requester: NonNullable<SessionRoute["remoteRequester"]>, operation: ApprovalOperation, config: TelegramTunnelConfig): Promise<ApprovalGrantRecord | undefined> {
+    const store = new TunnelStateStore(config.stateDir);
+    const grants = await store.listApprovalGrants();
+    return grants.find((grant) => grantMatchesOperation(grant, { route, requester, operation }));
+  }
+
+  async function sendApprovalRequest(record: ApprovalRequestRecord, config: TelegramTunnelConfig): Promise<void> {
+    const requester = record.requester;
+    const text = renderApprovalRequest(record, approvalConfig(config));
+    if (requester.channel === "telegram") {
+      const adapter = new TelegramChannelAdapter(config);
+      await adapter.sendText({ channel: "telegram", conversationId: requester.conversationId, userId: requester.userId }, text, {
+        buttons: approvalButtonsForConfig(record, config),
+      });
+      return;
+    }
+    if (requester.channel === "discord") {
+      const discord = discordRuntimes.get(requester.instanceId) as unknown as { sendApprovalRequestToRequester?: (requester: NonNullable<SessionRoute["remoteRequester"]>, text: string, buttons: ReturnType<typeof approvalButtonsForConfig>) => Promise<void> } | undefined;
+      if (!discord?.sendApprovalRequestToRequester) throw new Error("Discord approval delivery is not available for this instance.");
+      await discord.sendApprovalRequestToRequester(requester, text, approvalButtonsForConfig(record, config));
+      return;
+    }
+    if (requester.channel === "slack") {
+      const slack = slackRuntimes.get(requester.instanceId) as unknown as { sendApprovalRequestToRequester?: (requester: NonNullable<SessionRoute["remoteRequester"]>, text: string, buttons: ReturnType<typeof approvalButtonsForConfig>) => Promise<void> } | undefined;
+      if (!slack?.sendApprovalRequestToRequester) throw new Error("Slack approval delivery is not available for this instance.");
+      await slack.sendApprovalRequestToRequester(requester, text, approvalButtonsForConfig(record, config));
+      return;
+    }
+    throw new Error(`Approval delivery is not supported for ${requester.channel}.`);
+  }
+
+  function approvalButtonsForConfig(record: ApprovalRequestRecord, config: TelegramTunnelConfig): ReturnType<typeof approvalButtons> {
+    return approvalButtons(record, approvalConfig(config));
+  }
+
+  async function awaitApprovalDecision(record: ApprovalRequestRecord, timeoutMs: number): Promise<ApprovalDecisionResult> {
+    const timeout = new Promise<ApprovalDecisionResult>((resolve) => {
+      const timer = setTimeout(() => {
+        pendingApprovalResolvers.delete(record.approvalId);
+        resolve({ ok: false, status: "expired", message: "Approval expired; operation blocked." });
+      }, timeoutMs);
+      pendingApprovalResolvers.set(record.approvalId, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+    return timeout;
+  }
+
+  async function resolveApprovalDecision(decision: ApprovalDecisionRequest): Promise<ApprovalDecisionResult> {
+    const route = currentRoute;
+    const config = configCache;
+    const store = approvalStore(config);
+    if (!route || !config || !store) return { ok: false, status: "stale", message: "Approval target is offline or stale." };
+    const request = await store.getApprovalRequest(decision.approvalId);
+    if (!request || request.sessionKey !== route.sessionKey) return { ok: false, status: "stale", message: "Approval request is stale." };
+    if (request.status !== "pending") return { ok: false, status: request.status === "denied" ? "denied" : request.status === "approved" ? "approved" : "stale", message: "Approval request is no longer pending." };
+    if (Date.parse(request.expiresAt) <= Date.now()) {
+      await store.updateApprovalRequest(request.approvalId, (current) => ({ ...current, status: "expired", resolvedAt: toIsoNow(), decision: "deny" }));
+      await appendApprovalAudit(config, { kind: "expired", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, expiresAt: request.expiresAt });
+      return { ok: false, status: "expired", message: "Approval request expired." };
+    }
+    if (!requesterMatchesDecision(request, decision)) return { ok: false, status: "unauthorized", message: "This identity cannot approve that operation." };
+    const active = await approvalRequesterBindingIsActive(route, request.requester, store);
+    if (!active) return { ok: false, status: "unauthorized", message: "Approval binding is no longer active." };
+
+    if (decision.decision === "deny") {
+      await store.updateApprovalRequest(request.approvalId, (current) => ({ ...current, status: "denied", resolvedAt: toIsoNow(), resolvedBy: decision.userId, decision: decision.decision }));
+      await appendApprovalAudit(config, { kind: "denied", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary });
+      const result = { ok: false, status: "denied" as const, message: "Approval denied; operation blocked." };
+      pendingApprovalResolvers.get(request.approvalId)?.(result);
+      pendingApprovalResolvers.delete(request.approvalId);
+      return result;
+    }
+
+    const resolved = approvalConfig(config);
+    const statusMessage = decision.decision === "approve-session" ? "Approved for this session." : decision.decision === "approve-persistent" ? "Persistent approval granted." : "Approved once.";
+    if (decision.decision === "approve-session" || decision.decision === "approve-persistent") {
+      const scope = decision.decision === "approve-session" ? "session" : "persistent";
+      if (scope === "persistent" && !resolved.allowRemotePersistentGrants) return { ok: false, status: "unauthorized", message: "Remote persistent grants are disabled." };
+      if (scope === "session" && !resolved.sessionGrants) return { ok: false, status: "unauthorized", message: "Session grants are disabled." };
+      const grant = createApprovalGrant({ scope, record: request, createdBy: decision.userId, ttlMs: scope === "session" ? resolved.sessionGrantTtlMs : resolved.persistentGrantTtlMs });
+      await store.upsertApprovalGrant(grant);
+      await appendApprovalAudit(config, { kind: scope === "session" ? "approved-for-session" : "persistent-grant-created", approvalId: request.approvalId, grantId: grant.grantId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, expiresAt: grant.expiresAt });
+    } else {
+      await appendApprovalAudit(config, { kind: "approved-once", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary });
+    }
+    await store.updateApprovalRequest(request.approvalId, (current) => ({ ...current, status: "approved", resolvedAt: toIsoNow(), resolvedBy: decision.userId, decision: decision.decision }));
+    const result = { ok: true, status: "approved" as const, message: statusMessage };
+    pendingApprovalResolvers.get(request.approvalId)?.(result);
+    pendingApprovalResolvers.delete(request.approvalId);
+    return result;
+  }
+
+  function requesterMatchesDecision(request: ApprovalRequestRecord, decision: ApprovalDecisionRequest): boolean {
+    return request.requester.channel === decision.channel
+      && request.requester.instanceId === (decision.instanceId ?? "default")
+      && request.requester.conversationId === decision.conversationId
+      && request.requester.userId === decision.userId
+      && (request.requester.threadId ?? "") === (decision.threadId ?? "");
+  }
+
+  async function approvalRequesterBindingIsActive(route: SessionRoute, requester: NonNullable<SessionRoute["remoteRequester"]>, store: TunnelStateStore): Promise<boolean> {
+    if (requester.channel === "telegram") {
+      const binding = await store.getActiveBindingForSession(route.sessionKey, { chatId: Number(requester.conversationId), userId: Number(requester.userId) });
+      return Boolean(binding && !binding.paused);
+    }
+    const binding = await store.getActiveChannelBindingForSession(requester.channel, route.sessionKey, { instanceId: requester.instanceId, conversationId: requester.conversationId, userId: requester.userId });
+    return Boolean(binding && !binding.paused);
+  }
+
   function buildRoute(ctx: ExtensionContext, binding?: TelegramBindingMetadata, explicitLabel?: string): SessionRoute {
     const sessionId = ctx.sessionManager.getSessionId();
     const sessionFile = ctx.sessionManager.getSessionFile();
@@ -807,6 +934,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             throw error;
           }
         },
+        resolveApprovalDecision,
         compact: () =>
           new Promise<void>((resolve, reject) => {
             const live = liveContextForRoute(route);
@@ -1161,6 +1289,25 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       "Runtime status details:",
       ...[...relayStatusDiagnostics.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `- ${key}: ${value}`),
     ].join("\n");
+  }
+
+  async function handleApprovalAudit(ctx: ExtensionContext): Promise<void> {
+    const config = await ensureConfig(ctx, true);
+    const store = new TunnelStateStore(config.stateDir);
+    const sessionKey = safeSessionKeyForContext(ctx);
+    const events = await store.listApprovalAudit({ sessionKey, limit: 20 });
+    if (events.length === 0) {
+      ctx.ui.notify("No approval-gate audit events for this session.", "info");
+      return;
+    }
+    ctx.ui.notify(events.map((event) => [
+      `${event.at} ${event.kind}`,
+      event.toolName ? `tool=${event.toolName}` : undefined,
+      event.category ? `category=${event.category}` : undefined,
+      event.requester ? `requester=${event.requester.channel}:${event.requester.userId}` : undefined,
+      event.expiresAt ? `expires=${event.expiresAt}` : undefined,
+      event.summary ? `summary=${redactSecrets(event.summary)}` : undefined,
+    ].filter(Boolean).join(" | ")).join("\n"), "info");
   }
 
   async function handleRelayDoctor(ctx: ExtensionContext): Promise<void> {
@@ -1705,6 +1852,9 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             case "doctor":
               await handleRelayDoctor(ctx);
               return;
+            case "approvals":
+              await handleApprovalAudit(ctx);
+              return;
             case "send-file":
               await handleSendFile(ctx, intent.sendFileTarget, intent.sendFilePath, intent.sendFileCaption);
               return;
@@ -1788,6 +1938,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestContext = ctx;
     closeConnectQrScreen = undefined;
     if (currentRoute) await notifyRelayLifecycle(ctx, "offline", currentRoute);
+    if (currentRoute && configCache) {
+      await new TunnelStateStore(configCache.stateDir).cancelPendingApprovalsForSession(currentRoute.sessionKey, "session shutdown").catch(() => undefined);
+      for (const [approvalId, resolve] of pendingApprovalResolvers) {
+        resolve({ ok: false, status: "cancelled", message: "Approval cancelled because the session shut down." });
+        pendingApprovalResolvers.delete(approvalId);
+      }
+    }
     if (runtime && currentRoute) {
       await runtime.unregisterRoute(currentRoute.sessionKey);
     }
@@ -1864,6 +2021,53 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         recordProgress("tool", "Processed tool result");
         publishRouteStateSoon();
       }
+    }
+  });
+
+  pi.on("tool_call", async (event, ctx) => {
+    latestContext = ctx;
+    if (!currentRoute) return;
+    currentRoute.actions.context = ctx;
+    const config = configCache ?? (await ensureConfig(ctx, false).catch(() => undefined));
+    if (!config) return;
+    const resolved = approvalConfig(config);
+    const operation = classifyApprovalOperation({ toolName: String(event.toolName ?? ""), toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined, input: event.input }, resolved);
+    if (!operation) return;
+    const requester = currentRoute.remoteRequester;
+    if (!requester) {
+      await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, summary: operation.summary, detail: "No active remote requester for approval target." });
+      return { block: true, reason: "Approval required, but no active remote requester is available." };
+    }
+    const active = await approvalRequesterBindingIsActive(currentRoute, requester, new TunnelStateStore(config.stateDir));
+    if (!active) {
+      await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, detail: "Approval requester binding is inactive." });
+      return { block: true, reason: "Approval required, but the remote requester binding is inactive." };
+    }
+    const grant = await findMatchingApprovalGrant(currentRoute, requester, operation, config);
+    if (grant) {
+      const store = new TunnelStateStore(config.stateDir);
+      await store.markApprovalGrantUsed(grant.grantId);
+      await appendApprovalAudit(config, { kind: "grant-used", grantId: grant.grantId, sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, expiresAt: grant.expiresAt });
+      return;
+    }
+    const request = createApprovalRequest({ route: currentRoute, requester, operation, timeoutMs: resolved.timeoutMs });
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertApprovalRequest(request);
+    await appendApprovalAudit(config, { kind: "requested", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, expiresAt: request.expiresAt });
+    try {
+      await sendApprovalRequest(request, config);
+    } catch (error) {
+      await store.updateApprovalRequest(request.approvalId, (current) => ({ ...current, status: "failed", resolvedAt: toIsoNow(), decision: "deny" }));
+      await appendApprovalAudit(config, { kind: "failed", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, detail: error instanceof Error ? error.message : String(error) });
+      return { block: true, reason: "Approval request could not be delivered; operation blocked." };
+    }
+    const decision = await awaitApprovalDecision(request, Math.max(0, Date.parse(request.expiresAt) - Date.now()));
+    if (!decision.ok) {
+      if (decision.status === "expired") {
+        await store.updateApprovalRequest(request.approvalId, (current) => current.status === "pending" ? { ...current, status: "expired", resolvedAt: toIsoNow(), decision: "deny" } : current);
+        await appendApprovalAudit(config, { kind: "expired", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, expiresAt: request.expiresAt });
+      }
+      return { block: true, reason: decision.message };
     }
   });
 

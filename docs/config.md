@@ -86,9 +86,10 @@ Preferred secret style is `tokenEnv` / `signingSecretEnv` in the namespaced conf
 - `PI_RELAY_DISCORD_APPLICATION_ID` (`PI_RELAY_DISCORD_CLIENT_ID` is accepted as an alias)
 - `PI_RELAY_SLACK_BOT_TOKEN`
 - `PI_RELAY_SLACK_SIGNING_SECRET`
+- approval gate overrides: `PI_RELAY_APPROVAL_ENABLED`, `PI_RELAY_APPROVAL_TIMEOUT_MS`, `PI_RELAY_APPROVAL_SESSION_GRANTS`, `PI_RELAY_APPROVAL_REMOTE_PERSISTENT_GRANTS`, and `PI_RELAY_APPROVAL_RULES_JSON`
 - legacy `PI_TELEGRAM_TUNNEL_*` variables during migration
 
-Diagnostics never print token or signing-secret values.
+Diagnostics never print token, signing-secret, or raw approval-rule secret values.
 
 ## Multi-machine shared bot setup
 
@@ -125,6 +126,34 @@ Agent delegation is disabled by default. Enable it per messenger instance with a
 Supported autonomy levels are `off`, `propose-only`, `auto-claim-targeted`, and `auto-claim-safe-capability`. Peer-bot trust is separate from human `allowUserIds`; do not put tokens, hidden prompts, transcripts, or raw tool inputs in delegation task goals.
 
 See `docs/shared-room-parity.md` for the current parity matrix.
+
+## Approval gates
+
+Approval gates are explicit opt-in guardrails for remote turns. When enabled, matching Pi tool calls pause before execution and ask the active authorized requester to approve or deny the operation through Telegram, Discord, or Slack. Timeout, stale actions, revoked/paused bindings, offline sessions, or delivery failures block the operation; approval gates are not a sandbox.
+
+Example:
+
+```json
+{
+  "approvalGates": {
+    "enabled": true,
+    "timeoutMs": 120000,
+    "sessionGrants": true,
+    "sessionGrantTtlMs": 3600000,
+    "allowRemotePersistentGrants": false,
+    "rules": [
+      { "id": "git-push", "tools": ["bash"], "categories": ["git-remote"], "commandPatterns": ["git push"] },
+      { "id": "publish", "tools": ["bash"], "categories": ["publish"], "commandPatterns": ["npm publish", "docker push"] },
+      { "id": "destructive-shell", "tools": ["bash"], "categories": ["destructive"] },
+      { "id": "protected-files", "tools": ["write", "edit"], "pathPatterns": ["package.json", ".github/workflows/"] }
+    ]
+  }
+}
+```
+
+Approval requests show bounded redacted summaries only. Buttons offer Approve once, Deny, and optionally Approve for session. Text fallback is `relay approval approve <id>`, `relay approval approve-session <id>`, or `relay approval deny <id>`. Remote persistent grants are hidden unless `allowRemotePersistentGrants` is explicitly true; keep that disabled unless you have a clear revocation/audit process.
+
+`/relay doctor` reports whether approval gates are enabled, the number of rules, timeout, grant scopes, and risky settings without printing raw secrets or unredacted command data. `/relay approvals` shows recent bounded non-secret approval audit events for the current session.
 
 ## Migration from legacy Telegram tunnel config/state
 

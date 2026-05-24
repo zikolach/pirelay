@@ -30,6 +30,9 @@ export function normalizeRelayStore(value: unknown): RelayStoreData {
     delegationTasks: isObject(value.delegationTasks) ? value.delegationTasks as RelayStoreData["delegationTasks"] : {},
     delegationAudit: Array.isArray(value.delegationAudit) ? value.delegationAudit as RelayStoreData["delegationAudit"] : [],
     delegationHandledEvents: Array.isArray(value.delegationHandledEvents) ? value.delegationHandledEvents.filter((entry): entry is string => typeof entry === "string") : [],
+    approvalRequests: isObject(value.approvalRequests) ? value.approvalRequests as RelayStoreData["approvalRequests"] : {},
+    approvalGrants: isObject(value.approvalGrants) ? value.approvalGrants as RelayStoreData["approvalGrants"] : {},
+    approvalAudit: Array.isArray(value.approvalAudit) ? value.approvalAudit as RelayStoreData["approvalAudit"] : [],
   };
 }
 

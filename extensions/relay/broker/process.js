@@ -18,6 +18,7 @@ const [
   requesterFileDeliveryModule,
   bindingAuthorityModule,
   telegramRouteBindingModule,
+  approvalGatesModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -32,6 +33,7 @@ const [
   jiti.import('../core/requester-file-delivery.ts'),
   jiti.import('../core/binding-authority.ts'),
   jiti.import('./telegram-route-binding.ts'),
+  jiti.import('../core/approval-gates.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -112,6 +114,8 @@ const resolveTelegramBindingAuthority = requiredFunction(bindingAuthorityModule,
 const stateUnavailableBindingAuthority = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'stateUnavailableBindingAuthority');
 const telegramDestinationKey = requiredFunction(bindingAuthorityModule, './binding-authority.ts', 'telegramDestinationKey');
 const routeWithPersistedTelegramBinding = requiredFunction(telegramRouteBindingModule, './telegram-route-binding.ts', 'routeWithPersistedTelegramBinding');
+const parseApprovalActionData = requiredFunction(approvalGatesModule, './approval-gates.ts', 'parseApprovalActionData');
+const parseApprovalTextCommand = requiredFunction(approvalGatesModule, './approval-gates.ts', 'parseApprovalTextCommand');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
@@ -1504,6 +1508,29 @@ async function sendLatestImages(message, route) {
 
 async function handleAuthorizedCommand(message, route, command, args) {
   const binding = route?.binding;
+  const approvalCommand = parseApprovalTextCommand(command, args || '');
+  if (approvalCommand) {
+    if (!route || !binding) {
+      await sendPlainText(message.chat.id, 'Approval request is stale.');
+      return;
+    }
+    try {
+      const result = await requestClient(route, 'resolveApprovalDecision', {
+        decision: {
+          approvalId: approvalCommand.approvalId,
+          decision: approvalCommand.decision,
+          channel: 'telegram',
+          instanceId: 'default',
+          conversationId: String(message.chat.id),
+          userId: String(message.user.id),
+        },
+      });
+      await sendPlainText(message.chat.id, result?.message || 'Approval decision handled.');
+    } catch (error) {
+      await sendPlainText(message.chat.id, `Approval request is stale or unavailable: ${redact(error instanceof Error ? error.message : String(error))}`);
+    }
+    return;
+  }
   if (command === 'help') {
     await sendPlainText(message.chat.id, HELP_TEXT);
     return;
@@ -1884,6 +1911,32 @@ async function handleDashboardAction(callback, route, action) {
 }
 
 async function processCallback(callback) {
+  const approvalAction = parseApprovalActionData(callback.data || '');
+  if (approvalAction) {
+    const live = await getActiveLiveRoutesForChat(callback.chat.id, callback.user.id);
+    const route = live.find((candidate) => candidate.sessionKey === activeSessionByChatId.get(String(callback.chat.id))) || live[0];
+    if (!route || !(await routeIsAuthorized(route, callback.user))) {
+      await answerCallbackQuery(callback.callbackQueryId, route ? 'Unauthorized.' : 'Approval request is stale.');
+      return;
+    }
+    try {
+      const result = await requestClient(route, 'resolveApprovalDecision', {
+        decision: {
+          approvalId: approvalAction.approvalId,
+          decision: approvalAction.decision,
+          channel: 'telegram',
+          instanceId: 'default',
+          conversationId: String(callback.chat.id),
+          userId: String(callback.user.id),
+        },
+      });
+      await answerCallbackQuery(callback.callbackQueryId, result?.message || 'Approval decision handled.');
+    } catch (error) {
+      await answerCallbackQuery(callback.callbackQueryId, `Approval request is stale or unavailable: ${redact(error instanceof Error ? error.message : String(error))}`);
+    }
+    return;
+  }
+
   const initialPipeline = await runTelegramIngressPipeline(callback, { authorized: false, config });
   const action = telegramActionFromPipelineResult(initialPipeline.result) || parseTelegramActionCallbackData(callback.data);
   if (!action) {

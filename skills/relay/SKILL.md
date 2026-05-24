@@ -14,7 +14,8 @@ Use the extension command for all runtime actions:
 - `/relay status` shows local relay state
 - `/relay setup telegram|discord|slack` shows secret-safe channel setup guidance
 - `/relay connect telegram|discord|slack [name]` creates a time-limited pairing instruction for the selected channel
-- `/relay doctor` checks channel readiness, credentials, allow-lists, unsafe modes, and config/state permissions
+- `/relay doctor` checks channel readiness, credentials, allow-lists, approval-gate status, unsafe modes, and config/state permissions
+- `/relay approvals` shows recent non-secret approval-gate audit events for the current session
 
 ## Setup
 
@@ -53,6 +54,8 @@ Plain text messages are delivered as normal Pi prompts when idle and as follow-u
 If multiple Pi sessions are paired to the same Telegram chat, use `/sessions` to list numbered sessions with stable visual markers, aliases/labels, online/offline state, active marker, idle/busy state, model, last activity, and quick-action buttons. Multi-session notifications include the same marker + label so source sessions are easier to distinguish. Use `/use <number|alias|label>` to switch the active one, `/forget <number|label>` to remove an offline paired session from the list, or `/to <session> <prompt>` to send a one-shot prompt without changing the active session. Quote `/to` labels that contain spaces, for example `/to "docs team" run tests`. Pair with `/relay connect telegram docs` or run `/use docs` then `/alias phone` when you want friendlier names; otherwise PiRelay falls back to the Pi session name, project folder name, session file basename, then a short session id.
 
 During long-running turns, PiRelay sends safe, rate-limited progress updates by default. Use `/progress quiet` for completion-only style behavior, `/progress verbose` for more frequent safe updates, and `/recent` to retrieve recent safe progress/lifecycle activity on demand.
+
+Approval gates are opt-in. When `approvalGates.enabled` and explicit rules are configured, sensitive remote tool calls pause and ask the active authorized requester to approve once, approve for session, or deny. Text fallback commands are `relay approval approve <id>`, `relay approval approve-session <id>`, and `relay approval deny <id>`. Timeout, stale actions, revoked/paused bindings, or missing requester context block safely.
 
 PiRelay runs one authoritative broker per machine. Multiple same-machine Pi sessions share that broker. If the same bot/account is configured on multiple machines, configure one ingress owner and broker federation so non-owner machines register routes instead of polling the same bot concurrently.
 
