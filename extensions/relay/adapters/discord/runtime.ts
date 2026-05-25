@@ -21,6 +21,7 @@ import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessi
 import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
+import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
 
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -51,6 +52,7 @@ export interface DiscordRuntimeStatus {
 
 export class DiscordRuntime {
   private readonly store: TunnelStateStore;
+  private readonly diagnostics: CommunicationDiagnosticsLogger;
   private readonly adapter?: DiscordChannelAdapter;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly ownedBindingSessionKeys = new Set<string>();
@@ -69,6 +71,7 @@ export class DiscordRuntime {
     private readonly instanceId = "default",
   ) {
     this.store = new TunnelStateStore(config.stateDir);
+    this.diagnostics = createCommunicationDiagnosticsLogger(config.communicationDiagnostics!);
     const discordConfig = config.discordInstances?.[this.instanceId] ?? config.discord;
     const operations = options.operations ?? (discordConfig?.enabled && discordConfig.botToken ? createDiscordLiveOperations(discordConfig) : undefined);
     if (discordConfig?.enabled && discordConfig.botToken && operations) {
@@ -204,6 +207,7 @@ export class DiscordRuntime {
 
   private async handleEvent(event: ChannelInboundEvent): Promise<void> {
     if (!this.adapter || event.channel !== DISCORD_CHANNEL) return;
+    void this.diagnostics.record({ component: "discord", event: "ingress", outcome: "received", messenger: DISCORD_CHANNEL, instanceId: this.instanceId, conversationId: event.conversation.id, userId: event.sender.userId, action: event.kind === "action" ? event.actionId : undefined, details: { kind: event.kind, textLength: event.kind === "message" ? event.text.length : undefined } });
     try {
       if (event.kind === "action") {
         if (await this.handleApprovalAction(event)) return;
@@ -214,6 +218,7 @@ export class DiscordRuntime {
       await this.handleMessage(event);
     } catch (error) {
       const safeMessage = safeDiscordRuntimeError(error);
+      void this.diagnostics.record({ component: "discord", event: "ingress", outcome: "error", severity: "warning", messenger: DISCORD_CHANNEL, instanceId: this.instanceId, conversationId: event.conversation.id, userId: event.sender.userId, details: { kind: event.kind, error: safeMessage } });
       this.lastError = safeMessage;
       if (event.kind === "action") {
         await this.adapter.answerAction(event.actionId, { text: `Discord relay error: ${safeMessage}`, alert: true }).catch(() => undefined);
@@ -1248,6 +1253,7 @@ export class DiscordRuntime {
   }
 
   private async sendText(message: ChannelInboundMessage, text: string, buttons?: ChannelButtonLayout): Promise<void> {
+    void this.diagnostics.record({ component: "discord", event: "notification.send", outcome: "attempt", messenger: DISCORD_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId, details: { kind: "text", textLength: text.length, hasButtons: Boolean(buttons) } });
     await this.adapter?.sendText({ channel: DISCORD_CHANNEL, conversationId: message.conversation.id, userId: message.sender.userId }, text, { buttons });
   }
 

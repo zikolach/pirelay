@@ -20,6 +20,7 @@ import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./
 import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
+import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -52,6 +53,7 @@ export interface SlackRuntimeStatus {
 
 export class SlackRuntime {
   private readonly store: TunnelStateStore;
+  private readonly diagnostics: CommunicationDiagnosticsLogger;
   private readonly adapter?: SlackChannelAdapter;
   private readonly operations?: SlackApiOperations;
   private readonly operationsInjected: boolean;
@@ -78,6 +80,7 @@ export class SlackRuntime {
     private readonly instanceId = "default",
   ) {
     this.store = new TunnelStateStore(config.stateDir);
+    this.diagnostics = createCommunicationDiagnosticsLogger(config.communicationDiagnostics!);
     const slackConfig = config.slackInstances?.[this.instanceId] ?? config.slack;
     this.operationsInjected = Boolean(options.operations);
     const operations = options.operations ?? (slackConfig?.enabled && slackConfig.botToken ? createSlackLiveOperations(slackConfig) : undefined);
@@ -350,6 +353,7 @@ export class SlackRuntime {
 
   private async handleEvent(event: ChannelInboundEvent): Promise<void> {
     if (!this.adapter || event.channel !== SLACK_CHANNEL) return;
+    void this.diagnostics.record({ component: "slack", event: "ingress", outcome: "received", messenger: SLACK_CHANNEL, instanceId: this.instanceId, conversationId: event.conversation.id, userId: event.sender.userId, action: event.kind === "action" ? event.actionId : undefined, details: { kind: event.kind, textLength: event.kind === "message" ? event.text.length : undefined } });
     try {
       if (event.kind === "action") {
         if (await this.handleApprovalAction(event)) return;
@@ -1230,6 +1234,7 @@ export class SlackRuntime {
   }
 
   private async sendText(message: Pick<ChannelInboundMessage, "conversation" | "sender"> & { metadata?: Record<string, unknown> }, text: string, buttons?: ChannelButtonLayout): Promise<void> {
+    void this.diagnostics.record({ component: "slack", event: "notification.send", outcome: "attempt", messenger: SLACK_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId, details: { kind: "text", textLength: text.length, hasButtons: Boolean(buttons), hasResponseUrl: typeof message.metadata?.responseUrl === "string" } });
     const responseUrl = typeof message.metadata?.responseUrl === "string" ? message.metadata.responseUrl : undefined;
     if (responseUrl && this.operations?.postResponse && !this.wasResponseUrlConsumed(responseUrl)) {
       this.rememberConsumedResponseUrl(responseUrl);

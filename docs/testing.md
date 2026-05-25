@@ -140,6 +140,7 @@ These adapter foundations are DM-first and use channel-specific credentials/conf
 28. In a shared room with delegation enabled, send `/delegate <machine> run a harmless status check`; verify a visible task card appears, non-target machine bots stay silent, `/task claim <id>` injects a bounded delegated-task prompt only into the claimant session, and completion is reported back to the room.
 29. Repeat with an untrusted bot-authored `/delegate` message and verify no task is created, no prompt is injected, and no media/download/callback side effects occur.
 30. Repeat with a trusted peer bot targeting a different machine and verify the local broker stays silent except for local observation state.
+31. For an end-to-end two-agent project workflow, follow the manual smoke checklist in `docs/agent-collaboration-playbooks.md` and verify the same safety boundaries with disposable or non-production credentials.
 
 ## 7. Optional Telegram two-bot shared-room smoke checklist
 
@@ -169,3 +170,7 @@ When a test fails, record:
 - whether the broker had been restarted after code changes
 - whether the failure affects only local Pi input, only Telegram behavior, or both
 - the exact final assistant output if answer parsing behaved incorrectly
+
+## 9. Optional communication diagnostics troubleshooting
+
+When investigating missing final assistant responses or broker delivery issues, enable `communicationDiagnostics.enabled` only for the reproduction, then inspect `logs/communication.jsonl` locally. Prefer sharing only redacted `agent_end.final_extraction` metadata. See `docs/communication-diagnostics.md`.

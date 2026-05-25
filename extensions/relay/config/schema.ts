@@ -1,6 +1,7 @@
 import type { BrokerPeerConfig, MessengerIngressPolicy } from "../broker/protocol.js";
 import type { DelegationAutonomyLevel, TrustedDelegationPeer } from "../core/agent-delegation.js";
 import type { ApprovalGateConfig } from "../core/approval-gates.js";
+import type { CommunicationDiagnosticsConfigInput, ResolvedCommunicationDiagnosticsConfig } from "../diagnostics/communication.js";
 import type { MessengerKind, MessengerRef } from "../core/messenger-ref.js";
 
 export interface RelayDefaultsConfig {
@@ -22,6 +23,7 @@ export interface RelayMachineConfig {
   brokerGroup?: string;
   brokerPeers: BrokerPeerConfig[];
   approvalGates?: ApprovalGateConfig;
+  communicationDiagnostics?: CommunicationDiagnosticsConfigInput;
 }
 
 export interface RelayAgentDelegationConfig {
@@ -96,6 +98,7 @@ export interface RelayConfigFile {
   defaults?: Partial<RelayDefaultsConfig>;
   messengers?: Record<string, Record<string, MessengerInstanceFileConfig>>;
   approvalGates?: ApprovalGateConfig;
+  communicationDiagnostics?: CommunicationDiagnosticsConfigInput;
   // Legacy input accepted only by migration/canonicalization.
   botToken?: string;
   TELEGRAM_BOT_TOKEN?: string;
@@ -169,6 +172,7 @@ export interface ResolvedRelayConfig {
   defaults: RelayDefaultsConfig;
   messengers: ResolvedMessengerInstanceConfig[];
   warnings: string[];
+  communicationDiagnostics?: ResolvedCommunicationDiagnosticsConfig;
 }
 
 export interface RelayConfigLoadOptions {

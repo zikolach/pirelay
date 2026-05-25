@@ -12,6 +12,15 @@ export function collectRelayDiagnostics(config: ResolvedRelayConfig): RelayDiagn
   items.push({ level: "ok", message: `Machine: ${config.relay.machineId}${config.relay.displayName ? ` (${config.relay.displayName})` : ""}` });
   if (config.relay.aliases.length > 0) items.push({ level: "ok", message: `Machine aliases: ${config.relay.aliases.join(", ")}` });
   items.push({ level: "ok", message: `State: ${config.relay.stateDir}` });
+  if (config.communicationDiagnostics) {
+    const diagnostics = config.communicationDiagnostics;
+    items.push({
+      level: diagnostics.includeContentPreview ? "warning" : "ok",
+      message: diagnostics.enabled
+        ? `Communication diagnostics enabled: ${diagnostics.logPath}; retention ${diagnostics.maxFiles} file(s) x ${diagnostics.maxFileBytes} bytes; content previews ${diagnostics.includeContentPreview ? "enabled" : "disabled"}.`
+        : `Communication diagnostics disabled; default log path ${diagnostics.logPath}.`,
+    });
+  }
 
   for (const warning of config.warnings) items.push({ level: "warning", message: warning });
 

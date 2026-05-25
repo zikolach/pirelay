@@ -279,7 +279,9 @@ Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack use
 
 Approval gates are optional remote confirmation guardrails for sensitive Pi tool calls such as `git push`, package publishing, destructive shell commands, or protected file writes. Configure `approvalGates.enabled` plus explicit rules; matching operations pause and ask the active authorized requester to Approve once, Approve for session, or Deny. Timeout, stale/revoked/paused bindings, offline sessions, or delivery failures block by default. See `docs/config.md` for examples.
 
-Agent delegation is disabled by default and only applies in explicitly enabled shared rooms. Delegation task cards are visible room messages; bot-authored ordinary output remains inert, peer-bot trust is configured separately from human allow-lists, and claimed work is injected as a bounded delegated-task prompt with completion/failure reported back to the room.
+Communication diagnostics are disabled by default. When troubleshooting missing final responses, broker routing, or messenger delivery, enable `communicationDiagnostics.enabled` temporarily and inspect the local JSONL log; see `docs/communication-diagnostics.md`. Remote commands do not upload these logs automatically.
+
+Agent delegation is disabled by default and only applies in explicitly enabled shared rooms. Delegation task cards are visible room messages; bot-authored ordinary output remains inert, peer-bot trust is configured separately from human allow-lists, and claimed work is injected as a bounded delegated-task prompt with completion/failure reported back to the room. For a concrete two-agent workflow, see `docs/agent-collaboration-playbooks.md`.
 
 ## Prompt routing behavior
 

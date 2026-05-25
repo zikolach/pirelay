@@ -501,6 +501,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
         TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: this.socketPath,
         TELEGRAM_TUNNEL_BROKER_PID_PATH: this.pidPath,
         PI_RELAY_BROKER_NAMESPACE: this.brokerNamespace ?? "",
+        PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON: JSON.stringify(this.config.communicationDiagnostics ?? { enabled: false }),
       },
     });
     child.unref();
