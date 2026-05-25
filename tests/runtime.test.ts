@@ -1235,7 +1235,28 @@ describe("InProcessTunnelRuntime", () => {
     const resolveApprovalDecision = vi.fn(async () => ({ ok: true, status: "approved" as const, message: "Approved once." }));
     route.actions.resolveApprovalDecision = resolveApprovalDecision;
     await store.upsertBinding(binding);
+    await store.upsertApprovalRequest({
+      approvalId: "approval-1",
+      sessionKey: binding.sessionKey,
+      sessionLabel: binding.sessionLabel,
+      operationId: "tool-1",
+      toolName: "bash",
+      category: "shell",
+      safeSummary: "Run shell command",
+      matcherFingerprint: "shell:bash:test",
+      requester: { channel: "telegram", instanceId: "default", conversationId: String(binding.chatId), userId: String(binding.userId), sessionKey: binding.sessionKey, safeLabel: "owner", createdAt: Date.now() },
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "pending",
+    });
     (runtime as any).routes.set(route.sessionKey, route);
+    const otherBinding: TelegramBindingMetadata = { ...binding, sessionKey: "other-approval-session:/tmp/other.jsonl", sessionId: "other-approval-session", sessionFile: "/tmp/other.jsonl", sessionLabel: "other.jsonl" };
+    const { route: otherRoute } = createRoute(otherBinding, true);
+    const otherResolveApprovalDecision = vi.fn(async () => ({ ok: false, status: "stale" as const, message: "Wrong route." }));
+    otherRoute.actions.resolveApprovalDecision = otherResolveApprovalDecision;
+    await store.upsertBinding(otherBinding);
+    (runtime as any).routes.set(otherRoute.sessionKey, otherRoute);
+    (runtime as any).activeSessionByChatUser.set("10022:220", otherRoute.sessionKey);
     const callbacks: string[] = [];
     (runtime as any).api = {
       sendPlainText: async () => undefined,
@@ -1253,6 +1274,7 @@ describe("InProcessTunnelRuntime", () => {
     });
 
     expect(resolveApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "approval-1", decision: "approve-once", channel: "telegram", conversationId: "10022", userId: "220" }));
+    expect(otherResolveApprovalDecision).not.toHaveBeenCalled();
     expect(callbacks).toEqual(["Approved once."]);
   });
 

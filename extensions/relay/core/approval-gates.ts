@@ -126,6 +126,19 @@ export const MIN_APPROVAL_TIMEOUT_MS = 5_000;
 export const MAX_APPROVAL_TIMEOUT_MS = 30 * 60_000;
 export const MAX_APPROVAL_SUMMARY_CHARS = 700;
 const ACTION_PREFIX = "pirelay:approval";
+const COMPACT_ACTION_PREFIX = "pra";
+const APPROVAL_DECISION_CODES: Record<ApprovalDecisionKind, string> = {
+  "approve-once": "ao",
+  "approve-session": "as",
+  "approve-persistent": "ap",
+  deny: "d",
+};
+const APPROVAL_DECISION_BY_CODE: Record<string, ApprovalDecisionKind> = {
+  ao: "approve-once",
+  as: "approve-session",
+  ap: "approve-persistent",
+  d: "deny",
+};
 
 export function resolveApprovalGateConfig(config: ApprovalGateConfig | undefined): ResolvedApprovalGateConfig {
   const enabled = config?.enabled === true;
@@ -216,7 +229,7 @@ export function approvalMatcherFingerprint(input: { toolName: string; category: 
 }
 
 export function approvalActionData(decision: ApprovalDecisionKind, approvalId: string): string {
-  return `${ACTION_PREFIX}:${decision}:${approvalId}`;
+  return `${COMPACT_ACTION_PREFIX}:${APPROVAL_DECISION_CODES[decision]}:${approvalId}`;
 }
 
 export function parseApprovalTextCommand(command: string, args: string): { decision: ApprovalDecisionKind; approvalId: string } | undefined {
@@ -235,6 +248,11 @@ export function parseApprovalTextCommand(command: string, args: string): { decis
 
 export function parseApprovalActionData(value: string): { decision: ApprovalDecisionKind; approvalId: string } | undefined {
   const parts = value.split(":");
+  if (parts.length === 3 && parts[0] === COMPACT_ACTION_PREFIX) {
+    const decision = APPROVAL_DECISION_BY_CODE[parts[1] ?? ""];
+    const approvalId = parts[2]?.trim();
+    return decision && approvalId ? { decision, approvalId } : undefined;
+  }
   if (parts.length !== 4 || parts[0] !== "pirelay" || parts[1] !== "approval") return undefined;
   const decision = parts[2];
   if (decision !== "approve-once" && decision !== "approve-session" && decision !== "approve-persistent" && decision !== "deny") return undefined;
@@ -341,10 +359,16 @@ function ruleMatches(rule: ApprovalGateRule, input: { toolName: string; category
   const tools = [...(rule.tools ?? []), ...(rule.toolNames ?? [])].map((tool) => tool.toLowerCase());
   if (tools.length > 0 && !tools.includes(input.toolName.toLowerCase())) return false;
   if (rule.categories && rule.categories.length > 0 && !rule.categories.includes(input.category)) return false;
-  if (patternsMatch(rule.commandPatterns, input.commandText)) return true;
-  if (patternsMatch(rule.pathPatterns, input.pathText)) return true;
-  if (patternsMatch(rule.textPatterns, input.searchable)) return true;
+  const hasPatternConstraints = hasConfiguredPatterns(rule.commandPatterns) || hasConfiguredPatterns(rule.pathPatterns) || hasConfiguredPatterns(rule.textPatterns);
+  const patternMatched = patternsMatch(rule.commandPatterns, input.commandText)
+    || patternsMatch(rule.pathPatterns, input.pathText)
+    || patternsMatch(rule.textPatterns, input.searchable);
+  if (hasPatternConstraints) return patternMatched;
   return tools.length > 0 || Boolean(rule.categories && rule.categories.length > 0);
+}
+
+function hasConfiguredPatterns(patterns: string[] | undefined): boolean {
+  return Boolean(patterns?.some((pattern) => pattern.trim().length > 0));
 }
 
 function patternsMatch(patterns: string[] | undefined, text: string): boolean {

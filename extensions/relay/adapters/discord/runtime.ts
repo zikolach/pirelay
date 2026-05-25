@@ -20,7 +20,7 @@ import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, par
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
 import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
-import { parseApprovalActionData, parseApprovalTextCommand } from "../../core/approval-gates.js";
+import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -255,6 +255,7 @@ export class DiscordRuntime {
       }
       return;
     }
+    if (routedCommand && await this.handleApprovalCommand(routedMessage, routedCommand)) return;
     const preferredSessionKey = routedCommand?.name === "to" ? await this.targetSessionKeyForToCommand(routedMessage, routedCommand.args) : await this.sharedRoomPreferredSessionKey(routedMessage);
     const binding = await this.findDiscordBinding(routedMessage, { preferredSessionKey });
     if (!binding || !isDiscordIdentityAllowed(routedMessage.sender, this.config.discord)) {
@@ -395,21 +396,56 @@ export class DiscordRuntime {
   private async handleApprovalAction(action: ChannelInboundAction): Promise<boolean> {
     const parsed = parseApprovalActionData(action.actionData);
     if (!parsed) return false;
-    const binding = await this.findDiscordBinding(action);
-    const route = binding ? this.routes.get(binding.sessionKey) : undefined;
-    if (!binding || !route?.actions.resolveApprovalDecision) {
-      await this.adapter?.answerAction(action.actionId, { text: "Approval request is stale.", alert: true });
+    if (!this.config.discord || !isDiscordIdentityAllowed(action.sender, this.config.discord)) {
+      await this.adapter?.answerAction(action.actionId, { text: "This Discord action is not authorized.", alert: true });
       return true;
     }
-    const result = await route.actions.resolveApprovalDecision({
-      approvalId: parsed.approvalId,
-      decision: parsed.decision,
+    const result = await this.resolveApprovalDecisionFromDiscord(action, parsed.approvalId, parsed.decision);
+    await this.adapter?.answerAction(action.actionId, { text: result.message, alert: !result.ok });
+    return true;
+  }
+
+  private async resolveApprovalDecisionFromDiscord(
+    message: Pick<ChannelInboundMessage, "conversation" | "sender">,
+    approvalId: string,
+    decision: ApprovalDecisionKind,
+  ): Promise<ApprovalDecisionResult> {
+    const request = await this.store.getApprovalRequest(approvalId);
+    if (!request || request.requester.channel !== DISCORD_CHANNEL || (request.requester.instanceId ?? "default") !== this.instanceId) {
+      return { ok: false, status: "stale", message: "Approval request is stale." };
+    }
+    const route = this.routes.get(request.sessionKey);
+    if (!route?.actions.resolveApprovalDecision) {
+      return { ok: false, status: "stale", message: "Approval target is offline or stale." };
+    }
+    const binding = await this.store.getActiveChannelBindingForSession(DISCORD_CHANNEL, request.sessionKey, {
+      instanceId: this.instanceId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      includePaused: true,
+    });
+    if (!binding) {
+      return { ok: false, status: "unauthorized", message: "This Discord action is not authorized." };
+    }
+    return route.actions.resolveApprovalDecision({
+      approvalId,
+      decision,
       channel: DISCORD_CHANNEL,
       instanceId: this.instanceId,
-      conversationId: action.conversation.id,
-      userId: action.sender.userId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
     });
-    await this.adapter?.answerAction(action.actionId, { text: result.message, alert: !result.ok });
+  }
+
+  private async handleApprovalCommand(message: ChannelInboundMessage, command: DiscordCommand): Promise<boolean> {
+    const approvalCommand = parseApprovalTextCommand(command.name, command.args);
+    if (!approvalCommand) return false;
+    if (!this.config.discord || !isDiscordIdentityAllowed(message.sender, this.config.discord)) {
+      await this.sendText(message, "This Discord identity is not authorized to control this PiRelay machine bot.");
+      return true;
+    }
+    const result = await this.resolveApprovalDecisionFromDiscord(message, approvalCommand.approvalId, approvalCommand.decision);
+    await this.sendText(message, result.message);
     return true;
   }
 
@@ -716,16 +752,7 @@ export class DiscordRuntime {
   }
 
   private async handleCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: DiscordCommand): Promise<void> {
-    const approvalCommand = parseApprovalTextCommand(command.name, command.args);
-    if (approvalCommand) {
-      if (!route.actions.resolveApprovalDecision) {
-        await this.sendText(message, "Approval request is stale.");
-        return;
-      }
-      const result = await route.actions.resolveApprovalDecision({ approvalId: approvalCommand.approvalId, decision: approvalCommand.decision, channel: DISCORD_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId });
-      await this.sendText(message, result.message);
-      return;
-    }
+    if (await this.handleApprovalCommand(message, command)) return;
     switch (command.name) {
       case "help":
         await this.sendText(message, DISCORD_HELP_TEXT);

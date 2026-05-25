@@ -1432,7 +1432,34 @@ describe("DiscordRuntime", () => {
     await ops.handler?.({ type: "interaction", payload: { id: "i1", token: "t1", channel_id: "dm1", user: { id: "u1" }, data: { custom_id: "x" } } });
     const resolveApprovalDecision = vi.fn(async () => ({ ok: true, status: "approved" as const, message: "Approved once." }));
     session.actions.resolveApprovalDecision = resolveApprovalDecision;
-    await ops.handler?.({ type: "interaction", payload: { id: "i-approval", token: "t-approval", channel_id: "dm1", user: { id: "u1" }, data: { custom_id: "pirelay:approval:approve-once:approval-1" } } });
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: "other-session",
+      sessionId: "other-session",
+      sessionLabel: "Other",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    await store.setActiveChannelSelection("discord", "dm1", "u1", "other-session");
+    await store.upsertApprovalRequest({
+      approvalId: "approval-1",
+      sessionKey: session.sessionKey,
+      sessionLabel: session.sessionLabel,
+      operationId: "tool-1",
+      toolName: "bash",
+      category: "shell",
+      safeSummary: "Run shell command",
+      matcherFingerprint: "shell:bash:test",
+      requester: { channel: "discord", instanceId: "default", conversationId: "dm1", userId: "u1", sessionKey: session.sessionKey, safeLabel: "Discord u1", createdAt: Date.now() },
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "pending",
+    });
+    await ops.handler?.({ type: "interaction", payload: { id: "i-approval", token: "t-approval", channel_id: "dm1", user: { id: "u1" }, data: { custom_id: "pra:ao:approval-1" } } });
+    await store.revokeChannelBinding("discord", "other-session");
+    await store.setActiveChannelSelection("discord", "dm1", "u1", session.sessionKey);
     await ops.handler?.({ type: "interaction", payload: { id: "i2", token: "t2", channel_id: "dm1", user: { id: "u2" }, data: { custom_id: "x" } } });
     await store.upsertChannelBinding({
       channel: "discord",

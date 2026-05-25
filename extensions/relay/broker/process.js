@@ -383,10 +383,16 @@ async function loadStateSnapshot() {
       activeChannelSelections: parsed.activeChannelSelections || {},
       trustedRelayUsers: parsed.trustedRelayUsers || {},
       lifecycleNotifications: parsed.lifecycleNotifications || {},
+      delegationTasks: parsed.delegationTasks || {},
+      delegationAudit: parsed.delegationAudit || [],
+      delegationHandledEvents: parsed.delegationHandledEvents || [],
+      approvalRequests: parsed.approvalRequests || {},
+      approvalGrants: parsed.approvalGrants || {},
+      approvalAudit: parsed.approvalAudit || [],
     });
   } catch (error) {
     if (error && typeof error === 'object' && error.code === 'ENOENT') {
-      return bindingAuthorityStateFromData({ pendingPairings: {}, bindings: {}, channelBindings: {}, activeChannelSelections: {}, trustedRelayUsers: {}, lifecycleNotifications: {} }, { missing: true });
+      return bindingAuthorityStateFromData({ pendingPairings: {}, bindings: {}, channelBindings: {}, activeChannelSelections: {}, trustedRelayUsers: {}, lifecycleNotifications: {}, delegationTasks: {}, delegationAudit: [], delegationHandledEvents: [], approvalRequests: {}, approvalGrants: {}, approvalAudit: [] }, { missing: true });
     }
     return stateUnavailableBindingAuthority(error);
   }
@@ -394,7 +400,19 @@ async function loadStateSnapshot() {
 
 async function loadState() {
   const snapshot = await loadStateSnapshot();
-  return snapshot.kind === 'loaded' ? snapshot.data : { pendingPairings: {}, bindings: {}, channelBindings: {}, activeChannelSelections: {}, trustedRelayUsers: {}, lifecycleNotifications: {} };
+  return snapshot.kind === 'loaded' ? snapshot.data : { pendingPairings: {}, bindings: {}, channelBindings: {}, activeChannelSelections: {}, trustedRelayUsers: {}, lifecycleNotifications: {}, delegationTasks: {}, delegationAudit: [], delegationHandledEvents: [], approvalRequests: {}, approvalGrants: {}, approvalAudit: [] };
+}
+
+async function loadApprovalRequest(approvalId) {
+  try {
+    await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
+    const raw = await readFile(statePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed.approvalRequests?.[approvalId];
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 async function saveState(state) {
@@ -564,6 +582,19 @@ async function resolveRouteForChat(chatId, userId) {
   }
   if (live.length > 1) return { route: undefined, live, ambiguous: true };
   return { route: undefined, live, ambiguous: false };
+}
+
+async function resolveApprovalRouteForTelegram(approvalId, chatId, userId) {
+  const request = await loadApprovalRequest(approvalId);
+  if (!request || request.requester?.channel !== 'telegram') return undefined;
+  const route = routes.get(request.sessionKey);
+  if (!route) return undefined;
+  const state = await loadState();
+  const persisted = state.bindings?.[request.sessionKey];
+  if (persisted?.status !== 'revoked' && persisted.chatId === chatId && persisted.userId === userId) {
+    route.binding = persisted;
+  }
+  return route;
 }
 
 async function resolveRouteSelectorForChat(chatId, userId, selector) {
@@ -1510,12 +1541,13 @@ async function handleAuthorizedCommand(message, route, command, args) {
   const binding = route?.binding;
   const approvalCommand = parseApprovalTextCommand(command, args || '');
   if (approvalCommand) {
-    if (!route || !binding) {
-      await sendPlainText(message.chat.id, 'Approval request is stale.');
+    const approvalRoute = await resolveApprovalRouteForTelegram(approvalCommand.approvalId, message.chat.id, message.user.id);
+    if (!approvalRoute || !(await routeIsAuthorized(approvalRoute, message.user))) {
+      await sendPlainText(message.chat.id, approvalRoute ? 'Unauthorized.' : 'Approval request is stale.');
       return;
     }
     try {
-      const result = await requestClient(route, 'resolveApprovalDecision', {
+      const result = await requestClient(approvalRoute, 'resolveApprovalDecision', {
         decision: {
           approvalId: approvalCommand.approvalId,
           decision: approvalCommand.decision,
@@ -1816,7 +1848,8 @@ async function processInbound(message) {
     await sendPlainText(message.chat.id, 'Unauthorized Telegram identity for this Pi session.');
     return;
   }
-  if (ambiguous && command?.command !== 'sessions' && command?.command !== 'use' && command?.command !== 'forget' && command?.command !== 'to') {
+  const approvalCommand = command ? parseApprovalTextCommand(command.command, command.args || '') : undefined;
+  if (ambiguous && !approvalCommand && command?.command !== 'sessions' && command?.command !== 'use' && command?.command !== 'forget' && command?.command !== 'to') {
     await sendPlainText(message.chat.id, 'Multiple Pi sessions are paired to this chat. Use /sessions then /use <session> first.');
     return;
   }
@@ -1913,8 +1946,7 @@ async function handleDashboardAction(callback, route, action) {
 async function processCallback(callback) {
   const approvalAction = parseApprovalActionData(callback.data || '');
   if (approvalAction) {
-    const live = await getActiveLiveRoutesForChat(callback.chat.id, callback.user.id);
-    const route = live.find((candidate) => candidate.sessionKey === activeSessionByChatId.get(String(callback.chat.id))) || live[0];
+    const route = await resolveApprovalRouteForTelegram(approvalAction.approvalId, callback.chat.id, callback.user.id);
     if (!route || !(await routeIsAuthorized(route, callback.user))) {
       await answerCallbackQuery(callback.callbackQueryId, route ? 'Unauthorized.' : 'Approval request is stale.');
       return;

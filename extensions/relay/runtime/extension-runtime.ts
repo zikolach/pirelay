@@ -754,8 +754,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return timeout;
   }
 
-  async function resolveApprovalDecision(decision: ApprovalDecisionRequest): Promise<ApprovalDecisionResult> {
-    const route = currentRoute;
+  async function resolveApprovalDecision(route: SessionRoute, decision: ApprovalDecisionRequest): Promise<ApprovalDecisionResult> {
     const config = configCache;
     const store = approvalStore(config);
     if (!route || !config || !store) return { ok: false, status: "stale", message: "Approval target is offline or stale." };
@@ -934,7 +933,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             throw error;
           }
         },
-        resolveApprovalDecision,
+        resolveApprovalDecision: (decision) => resolveApprovalDecision(route, decision),
         compact: () =>
           new Promise<void>((resolve, reject) => {
             const live = liveContextForRoute(route);
