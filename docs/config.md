@@ -127,6 +127,23 @@ Supported autonomy levels are `off`, `propose-only`, `auto-claim-targeted`, and 
 
 See `docs/shared-room-parity.md` for the current parity matrix and `docs/agent-collaboration-playbooks.md` for a concrete two-agent project workflow.
 
+## Communication diagnostics
+
+Communication diagnostics are opt-in local JSONL logs for troubleshooting runtime, broker, adapter, and final assistant extraction behavior. They are disabled by default.
+
+```json
+{
+  "communicationDiagnostics": {
+    "enabled": true,
+    "maxFileBytes": 2097152,
+    "maxFiles": 5,
+    "includeContentPreview": false
+  }
+}
+```
+
+Environment overrides include `PI_RELAY_COMMUNICATION_DIAGNOSTICS`, `PI_RELAY_DIAGNOSTICS_LOG_PATH`, `PI_RELAY_DIAGNOSTICS_MAX_BYTES`, `PI_RELAY_DIAGNOSTICS_MAX_FILES`, `PI_RELAY_DIAGNOSTICS_INCLUDE_CONTENT_PREVIEW`, and `PI_RELAY_DIAGNOSTICS_PREVIEW_CHARS`. Keep content previews disabled unless you explicitly need short redacted snippets. See `docs/communication-diagnostics.md`.
+
 ## Approval gates
 
 Approval gates are explicit opt-in guardrails for remote turns. When enabled, matching Pi tool calls pause before execution and ask the active authorized requester to approve or deny the operation through Telegram, Discord, or Slack. Timeout, stale actions, revoked/paused bindings, offline sessions, or delivery failures block the operation; approval gates are not a sandbox.

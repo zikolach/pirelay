@@ -19,6 +19,7 @@ const [
   bindingAuthorityModule,
   telegramRouteBindingModule,
   approvalGatesModule,
+  communicationDiagnosticsModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -34,6 +35,7 @@ const [
   jiti.import('../core/binding-authority.ts'),
   jiti.import('./telegram-route-binding.ts'),
   jiti.import('../core/approval-gates.ts'),
+  jiti.import('../diagnostics/communication.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -116,10 +118,20 @@ const telegramDestinationKey = requiredFunction(bindingAuthorityModule, './bindi
 const routeWithPersistedTelegramBinding = requiredFunction(telegramRouteBindingModule, './telegram-route-binding.ts', 'routeWithPersistedTelegramBinding');
 const parseApprovalActionData = requiredFunction(approvalGatesModule, './approval-gates.ts', 'parseApprovalActionData');
 const parseApprovalTextCommand = requiredFunction(approvalGatesModule, './approval-gates.ts', 'parseApprovalTextCommand');
+const createCommunicationDiagnosticsLogger = requiredFunction(communicationDiagnosticsModule, './communication-diagnostics.ts', 'createCommunicationDiagnosticsLogger');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
+const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
+const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
+function recordDiagnostic(event) {
+  if (!diagnosticsLogger.config?.enabled) return;
+  void diagnosticsLogger.record(event);
+}
+function routeDiagnosticFields(route) {
+  return route ? { sessionKey: route.sessionKey, sessionId: route.sessionId, sessionLabel: route.sessionLabel } : {};
+}
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
@@ -274,10 +286,17 @@ async function withRetry(operation) {
 
 async function sendPlainText(chatId, text, keyboard) {
   const chunks = chunkText(text);
-  for (let index = 0; index < chunks.length; index += 1) {
-    const chunk = chunks[index];
-    const replyMarkup = keyboard && index === chunks.length - 1 ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
-    await withRetry(() => api.sendMessage(chatId, chunk, replyMarkup));
+  recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
+  try {
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const replyMarkup = keyboard && index === chunks.length - 1 ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
+      await withRetry(() => api.sendMessage(chatId, chunk, replyMarkup));
+    }
+    recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length } });
+  } catch (error) {
+    recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'text', error: error instanceof Error ? error.message : String(error) } });
+    throw error;
   }
 }
 
@@ -1836,6 +1855,7 @@ async function handleAuthorizedText(message, route) {
 }
 
 async function processInbound(message) {
+  recordDiagnostic({ component: 'telegram', event: 'ingress.message', outcome: 'received', messenger: 'telegram', instanceId: 'default', conversationId: String(message.chat.id), userId: String(message.user.id), updateId: message.updateId, details: { chatType: message.chat.type, hasText: Boolean(message.text), imageCount: message.images?.length ?? 0 } });
   const initialPipeline = await runTelegramIngressPipeline(message, { authorized: false, config });
   const command = commandIntentFromPipeline(initialPipeline.result) || parseCommand(message.text);
   if (command?.command === 'start') {
@@ -1845,11 +1865,13 @@ async function processInbound(message) {
 
   const { route, ambiguous } = await resolveRouteForChat(message.chat.id, message.user.id);
   if (route && !(await routeIsAuthorized(route, message.user))) {
+    recordDiagnostic({ component: 'telegram', event: 'ingress.message', outcome: 'unauthorized', messenger: 'telegram', instanceId: 'default', conversationId: String(message.chat.id), userId: String(message.user.id), updateId: message.updateId, ...routeDiagnosticFields(route) });
     await sendPlainText(message.chat.id, 'Unauthorized Telegram identity for this Pi session.');
     return;
   }
   const approvalCommand = command ? parseApprovalTextCommand(command.command, command.args || '') : undefined;
   if (ambiguous && !approvalCommand && command?.command !== 'sessions' && command?.command !== 'use' && command?.command !== 'forget' && command?.command !== 'to') {
+    recordDiagnostic({ component: 'telegram', event: 'ingress.message', outcome: 'ambiguous-route', messenger: 'telegram', instanceId: 'default', conversationId: String(message.chat.id), userId: String(message.user.id), updateId: message.updateId, command: command?.command });
     await sendPlainText(message.chat.id, 'Multiple Pi sessions are paired to this chat. Use /sessions then /use <session> first.');
     return;
   }
@@ -1872,10 +1894,12 @@ async function processInbound(message) {
   const authorizedCommand = (authorizedPipeline && commandIntentFromPipeline(authorizedPipeline.result)) || command;
 
   if (authorizedCommand) {
+    recordDiagnostic({ component: 'telegram', event: 'command', outcome: 'dispatch', messenger: 'telegram', instanceId: 'default', conversationId: String(message.chat.id), userId: String(message.user.id), updateId: message.updateId, command: authorizedCommand.command, ...routeDiagnosticFields(route) });
     await handleAuthorizedCommand(message, route, authorizedCommand.command, authorizedCommand.args);
     return;
   }
 
+  recordDiagnostic({ component: 'telegram', event: 'ingress.message', outcome: route ? 'text-dispatch' : 'no-route', messenger: 'telegram', instanceId: 'default', conversationId: String(message.chat.id), userId: String(message.user.id), updateId: message.updateId, ...routeDiagnosticFields(route) });
   await handleAuthorizedText(message, route);
 }
 
@@ -1944,6 +1968,7 @@ async function handleDashboardAction(callback, route, action) {
 }
 
 async function processCallback(callback) {
+  recordDiagnostic({ component: 'telegram', event: 'ingress.callback', outcome: 'received', messenger: 'telegram', instanceId: 'default', conversationId: String(callback.chat.id), userId: String(callback.user.id), updateId: callback.updateId, details: { hasData: Boolean(callback.data) } });
   const approvalAction = parseApprovalActionData(callback.data || '');
   if (approvalAction) {
     const route = await resolveApprovalRouteForTelegram(approvalAction.approvalId, callback.chat.id, callback.user.id);
@@ -2241,6 +2266,7 @@ function removeClient(socket) {
 }
 
 async function handleClientRequest(socket, message) {
+  recordDiagnostic({ component: 'broker', event: 'client.request', outcome: 'received', action: message.action, details: { requestId: message.requestId, clientId: message.clientId } });
   const respond = (ok, result, error) => write(socket, { type: 'response', requestId: message.requestId, ok, result, error });
   try {
     switch (message.action) {
@@ -2275,6 +2301,7 @@ async function handleClientRequest(socket, message) {
           await upsertBinding(nextRoute.binding);
           if (!activeSessionByChatId.has(String(nextRoute.binding.chatId))) activeSessionByChatId.set(String(nextRoute.binding.chatId), nextRoute.sessionKey);
         }
+        recordDiagnostic({ component: 'broker', event: 'route.register', outcome: 'ok', ...routeDiagnosticFields(nextRoute), details: { bound: Boolean(nextRoute.binding), busy: isEffectivelyBusy(nextRoute), hasAssistantText: Boolean(nextRoute.notification?.lastAssistantText), lastStatus: nextRoute.notification?.lastStatus } });
         respond(true, true);
         return;
       }
@@ -2288,6 +2315,7 @@ async function handleClientRequest(socket, message) {
           clearProgressState(existing);
         }
         routes.delete(message.sessionKey);
+        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: existing ? 'removed' : 'missing', sessionKey: message.sessionKey });
         respond(true, true);
         return;
       }
@@ -2295,6 +2323,7 @@ async function handleClientRequest(socket, message) {
         const route = routes.get(message.sessionKey);
         const binding = await activeBindingForRoute(route, { includePaused: true });
         if (!route || !binding || binding.paused) {
+          recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'suppressed', sessionKey: message.sessionKey, details: { hasRoute: Boolean(route), hasBinding: Boolean(binding), paused: Boolean(binding?.paused) } });
           respond(true, false);
           return;
         }
@@ -2311,6 +2340,7 @@ async function handleClientRequest(socket, message) {
             answerActionKeyboardForRoute(route),
           );
         }
+        recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String(message.text || '').length } });
         respond(true, true);
         return;
       }
@@ -2318,6 +2348,7 @@ async function handleClientRequest(socket, message) {
         respond(false, undefined, `Unknown client action: ${message.action}`);
     }
   } catch (error) {
+    recordDiagnostic({ component: 'broker', event: 'client.request', outcome: 'error', severity: 'warning', action: message.action, details: { error: error instanceof Error ? error.message : String(error) } });
     respond(false, undefined, error instanceof Error ? error.message : String(error));
   }
 }
@@ -2327,6 +2358,7 @@ try { await unlink(socketPath); } catch {}
 if (pidPath) await writeFile(pidPath, `${process.pid}\n`, { mode: 0o600 }).catch(() => undefined);
 
 const server = net.createServer((socket) => {
+  recordDiagnostic({ component: 'broker', event: 'socket.connect', outcome: 'accepted', details: { clients: clients.size + 1 } });
   socket.setEncoding('utf8');
   let buffer = '';
   socket.on('data', (chunk) => {
@@ -2351,8 +2383,8 @@ const server = net.createServer((socket) => {
       newlineIndex = buffer.indexOf('\n');
     }
   });
-  socket.on('close', () => removeClient(socket));
-  socket.on('error', () => removeClient(socket));
+  socket.on('close', () => { recordDiagnostic({ component: 'broker', event: 'socket.close', outcome: 'closed' }); removeClient(socket); });
+  socket.on('error', (error) => { recordDiagnostic({ component: 'broker', event: 'socket.error', outcome: 'error', severity: 'warning', details: { error: error instanceof Error ? error.message : String(error) } }); removeClient(socket); });
 });
 
 server.listen(socketPath, async () => {

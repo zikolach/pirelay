@@ -8,6 +8,8 @@ import type { MessengerKind, MessengerRef } from "../core/messenger-ref.js";
 import type { MessengerIngressPolicy } from "../broker/protocol.js";
 import type { MessengerInstanceFileConfig, RelayAgentDelegationConfig, RelayConfigFile, RelayConfigLoadOptions, RelayDefaultsConfig, RelayMachineConfig, ResolvedMessengerInstanceConfig, ResolvedRelayAgentDelegationConfig, ResolvedRelayConfig } from "./schema.js";
 import { RelayConfigError } from "./schema.js";
+import { resolveCommunicationDiagnosticsConfig } from "../diagnostics/communication.js";
+import { getDefaultRedactionPatterns } from "../core/utils.js";
 
 const defaultSupportedMessengers = ["telegram", "discord", "slack"] as const;
 const delegationAutonomyLevels = new Set(["off", "propose-only", "auto-claim-targeted", "auto-claim-safe-capability"]);
@@ -319,5 +321,12 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
     if (messenger.ingressPolicy.kind === "owner" && !messenger.ingressPolicy.machineId) throw new RelayConfigError(`${messenger.ref.kind}:${messenger.ref.instanceId} owner ingress policy requires a machine id.`);
   }
 
-  return { configPath, relay, defaults, messengers, warnings };
+  const communicationDiagnostics = resolveCommunicationDiagnosticsConfig({
+    stateDir: relay.stateDir,
+    config: fileConfig.relay?.communicationDiagnostics ?? fileConfig.communicationDiagnostics,
+    env,
+    redactionPatterns: getDefaultRedactionPatterns(),
+  });
+
+  return { configPath, relay, defaults, messengers, warnings, communicationDiagnostics };
 }

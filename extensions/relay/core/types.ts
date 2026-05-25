@@ -6,6 +6,7 @@ import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
 import type { RelayLifecycleNotificationRecord } from "../notifications/lifecycle.js";
 import type { DelegationAutonomyLevel, DelegationTaskAuditEvent, DelegationTaskRecord, TrustedDelegationPeer } from "./agent-delegation.js";
 import type { ApprovalAuditEvent, ApprovalDecisionRequest, ApprovalDecisionResult, ApprovalGateConfig, ApprovalGrantRecord, ApprovalRequestRecord } from "./approval-gates.js";
+import type { ResolvedCommunicationDiagnosticsConfig } from "../diagnostics/communication.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
@@ -82,6 +83,7 @@ export interface TelegramTunnelConfig {
   machineCapabilities?: string[];
   delegation?: AgentDelegationRelayConfig;
   approvalGates?: ApprovalGateConfig;
+  communicationDiagnostics?: ResolvedCommunicationDiagnosticsConfig;
   brokerNamespace?: string;
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;

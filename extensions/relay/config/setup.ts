@@ -20,7 +20,7 @@ export interface RelaySetupFacts {
 }
 
 export interface RelayLocalCommandIntent {
-  subcommand?: "setup" | "connect" | "send-file" | "restart" | "disconnect" | "status" | "doctor" | "approvals" | "trusted" | "untrust";
+  subcommand?: "setup" | "connect" | "send-file" | "restart" | "disconnect" | "status" | "doctor" | "diagnostics" | "approvals" | "trusted" | "untrust";
   channel?: RelaySetupChannel;
   messengerRef?: string;
   sendFileTarget?: string;
@@ -50,7 +50,7 @@ export function completeRelayLocalCommand(prefix: string, options: { compatibili
   const parts = prefix.trim().split(/\s+/).filter(Boolean);
   const subcommands = options.compatibilityCommand
     ? ["setup", "connect", "disconnect", "status"]
-    : ["setup", "connect", "send-file", "restart", "doctor", "approvals", "disconnect", "status", "trusted", "untrust"];
+    : ["setup", "connect", "send-file", "restart", "doctor", "diagnostics", "approvals", "disconnect", "status", "trusted", "untrust"];
 
   if (parts.length === 0) return subcommands;
   if (parts.length === 1 && !endsWithSpace) {
@@ -95,7 +95,7 @@ export function parseRelayLocalCommand(args: string, options: { compatibilityCom
       args: rest.slice(1).join(" "),
     };
   }
-  if (subcommand === "doctor" || subcommand === "approvals" || subcommand === "restart" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
+  if (subcommand === "doctor" || subcommand === "diagnostics" || subcommand === "approvals" || subcommand === "restart" || subcommand === "disconnect" || subcommand === "status" || subcommand === "trusted" || subcommand === "untrust") {
     return { subcommand, args: rest.join(" ") };
   }
 
@@ -120,6 +120,7 @@ export function relaySetupDiagnostics(config: TelegramTunnelConfig, facts: Relay
     ...discordDiagnostics(config.discord),
     ...slackDiagnostics(config.slack),
     ...approvalDiagnostics(config),
+    ...communicationDiagnostics(config),
     ...permissionDiagnostics(facts),
   ];
 }
@@ -375,6 +376,15 @@ function approvalDiagnostics(config: TelegramTunnelConfig): RelaySetupFinding[] 
   return findings;
 }
 
+function communicationDiagnostics(config: TelegramTunnelConfig): RelaySetupFinding[] {
+  const diagnostics = config.communicationDiagnostics;
+  if (!diagnostics) return [];
+  const status = diagnostics.enabled
+    ? `communication diagnostics enabled; log: ${diagnostics.logPath}; retention: ${diagnostics.maxFiles} files x ${diagnostics.maxFileBytes} bytes; content previews: ${diagnostics.includeContentPreview ? "enabled" : "disabled"}`
+    : `communication diagnostics disabled; enable temporarily with communicationDiagnostics.enabled or PI_RELAY_COMMUNICATION_DIAGNOSTICS=1; default log: ${diagnostics.logPath}`;
+  return [{ channel: "all", severity: diagnostics.includeContentPreview ? "warning" : "ok", code: "communication-diagnostics", message: status }];
+}
+
 function permissionDiagnostics(facts: RelaySetupFacts): RelaySetupFinding[] {
   const findings: RelaySetupFinding[] = [];
   if (typeof facts.configFileMode === "number" && (facts.configFileMode & 0o077) !== 0) {
@@ -470,7 +480,7 @@ function channelStatus(config: TelegramTunnelConfig, channel: RelaySetupChannel)
 }
 
 function normalizeSubcommand(value: string | undefined): RelayLocalCommandIntent["subcommand"] | undefined {
-  if (value === "setup" || value === "connect" || value === "send-file" || value === "restart" || value === "disconnect" || value === "status" || value === "doctor" || value === "approvals" || value === "trusted" || value === "untrust") return value;
+  if (value === "setup" || value === "connect" || value === "send-file" || value === "restart" || value === "disconnect" || value === "status" || value === "doctor" || value === "diagnostics" || value === "approvals" || value === "trusted" || value === "untrust") return value;
   return undefined;
 }
 

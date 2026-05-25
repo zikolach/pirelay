@@ -20,6 +20,9 @@ beforeEach(() => {
     "PI_RELAY_SLACK_EVENT_MODE",
     "PI_RELAY_SLACK_WORKSPACE_ID",
     "PI_RELAY_SLACK_BOT_USER_ID",
+    "PI_RELAY_COMMUNICATION_DIAGNOSTICS",
+    "PI_RELAY_DIAGNOSTICS_LOG_PATH",
+    "PI_RELAY_DIAGNOSTICS_INCLUDE_CONTENT_PREVIEW",
   ]) vi.stubEnv(name, undefined);
 });
 
@@ -53,6 +56,34 @@ describe("telegram tunnel config", () => {
     const { config } = await loadTelegramTunnelConfig();
 
     expect(config.botToken).toBe("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456");
+  });
+
+  it("resolves opt-in communication diagnostics config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+      stateDir: dir,
+      communicationDiagnostics: {
+        enabled: true,
+        includeContentPreview: true,
+        maxFileBytes: 4096,
+        maxFiles: 2,
+      },
+    }));
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_CONFIG", configPath);
+    vi.stubEnv("PI_RELAY_DIAGNOSTICS_INCLUDE_CONTENT_PREVIEW", "false");
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.communicationDiagnostics).toMatchObject({
+      enabled: true,
+      includeContentPreview: false,
+      maxFileBytes: 4096,
+      maxFiles: 2,
+      logPath: join(dir, "logs", "communication.jsonl"),
+    });
   });
 
   it("prefers canonical Telegram token env over legacy alias", async () => {

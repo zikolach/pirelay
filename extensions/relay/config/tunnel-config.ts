@@ -8,6 +8,7 @@ import type { ApprovalGateConfig } from "../core/approval-gates.js";
 import type { MessengerInstanceFileConfig, RelayConfigFile } from "./schema.js";
 import { DEFAULT_MAX_PROGRESS_MESSAGE_CHARS, DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_MODE, DEFAULT_RECENT_ACTIVITY_LIMIT, DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS, normalizeProgressMode } from "../notifications/progress.js";
 import { getDefaultRedactionPatterns } from "../core/utils.js";
+import { resolveCommunicationDiagnosticsConfig, type CommunicationDiagnosticsConfigInput } from "../diagnostics/communication.js";
 
 interface LegacyMessengerFileShape extends MessengerInstanceFileConfig {
   maxTextChars?: number;
@@ -61,6 +62,7 @@ interface ConfigFileShape extends RelayConfigFile {
   recentActivityLimit?: number;
   maxProgressMessageChars?: number;
   approvalGates?: ApprovalGateConfig;
+  communicationDiagnostics?: CommunicationDiagnosticsConfigInput;
   discord?: DiscordRelayConfig & LegacyMessengerFileShape;
   slack?: SlackRelayConfig & LegacyMessengerFileShape;
 }
@@ -381,6 +383,12 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     process.env.PI_TELEGRAM_TUNNEL_MAX_PROGRESS_CHARS,
     fileConfig?.maxProgressMessageChars ?? DEFAULT_MAX_PROGRESS_MESSAGE_CHARS,
   );
+  const redactionPatterns = fileConfig?.redactionPatterns ?? getDefaultRedactionPatterns();
+  const communicationDiagnostics = resolveCommunicationDiagnosticsConfig({
+    stateDir,
+    config: fileConfig?.relay?.communicationDiagnostics ?? fileConfig?.communicationDiagnostics,
+    redactionPatterns,
+  });
   const discordInstances = resolveDiscordConfigs(fileConfig, allowedImageMimeTypes);
   const slackInstances = resolveSlackConfigs(fileConfig, allowedImageMimeTypes);
   const discord = discordInstances.default ?? Object.values(discordInstances)[0];
@@ -439,7 +447,8 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     sendRetryCount,
     sendRetryBaseMs,
     pollingTimeoutSeconds,
-    redactionPatterns: fileConfig?.redactionPatterns ?? getDefaultRedactionPatterns(),
+    redactionPatterns,
+    communicationDiagnostics,
     maxInboundImageBytes,
     maxOutboundImageBytes,
     maxLatestImages,

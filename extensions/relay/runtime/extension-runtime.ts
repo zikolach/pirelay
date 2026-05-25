@@ -21,7 +21,7 @@ import { collectRelaySetupFacts, completeRelayLocalCommand, discordBotChatUrl, p
 import { buildRelaySetupWizardModel, renderRelaySetupWizardFallback, slackAppManifestText, type RelaySetupWizardActionId } from "../config/setup-wizard.js";
 import { computeRelaySetupConfigPatchFromEnv, envSnippetTextForSetupChannel, writeRelaySetupConfigFromEnv } from "../config/setup-env.js";
 import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfigMigrationPlan } from "../config/migration.js";
-import { createTurnId, deriveSessionLabel, extractFinalAssistantText, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
+import { createTurnId, deriveSessionLabel, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
 import { parseMessengerRef } from "../core/messenger-ref.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult } from "../core/requester-file-delivery.js";
@@ -31,6 +31,7 @@ import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
 import { DEFAULT_SLACK_MAX_FILE_BYTES } from "../adapters/slack/adapter.js";
 import { approvalAuditEvent, approvalButtons, classifyApprovalOperation, createApprovalGrant, createApprovalRequest, grantMatchesOperation, renderApprovalRequest, resolveApprovalGateConfig, type ApprovalDecisionRequest, type ApprovalDecisionResult, type ApprovalGateConfig, type ApprovalGrantRecord, type ApprovalOperation, type ApprovalRequestRecord, type ResolvedApprovalGateConfig } from "../core/approval-gates.js";
+import { analyzeFinalAssistantExtraction, createCommunicationDiagnosticsLogger, type CommunicationDiagnosticEvent, type CommunicationDiagnosticsLogger } from "../diagnostics/communication.js";
 
 const BINDING_ENTRY_TYPE = "relay-binding";
 const LEGACY_BINDING_ENTRY_TYPE = "telegram-tunnel-binding";
@@ -159,6 +160,7 @@ function getCommandHelp(): string {
     "  setup [telegram|discord|slack]  Show channel setup guidance",
     "  connect [telegram|discord|slack] [name]  Create a channel pairing instruction",
     "  doctor      Diagnose configured relay channels",
+    "  diagnostics Show local communication diagnostic log status",
     "  approvals   Show recent approval-gate audit events",
     "  send-file <telegram|discord|slack|messenger:instance|all> <relative-path> [caption]  Send a workspace file",
     "  restart     Restart relay runtimes and kill/restart the broker process",
@@ -185,6 +187,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let latestTurnImages: LatestTurnImage[] = [];
   let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
   let progressSequence = 0;
+  let diagnosticsLogger: CommunicationDiagnosticsLogger | undefined;
   const pendingApprovalResolvers = new Map<string, (result: ApprovalDecisionResult) => void>();
 
   function safeSessionKeyForContext(ctx: ExtensionContext): string | undefined {
@@ -273,6 +276,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (configCache) return configCache;
     const { config, warnings } = await loadTelegramTunnelConfig();
     configCache = config;
+    diagnosticsLogger = createCommunicationDiagnosticsLogger(config.communicationDiagnostics!);
     if (ctx && interactiveNotice) {
       for (const warning of warnings) {
         try {
@@ -287,6 +291,30 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       }
     }
     return config;
+  }
+
+
+  function recordDiagnostic(event: CommunicationDiagnosticEvent): void {
+    if (!diagnosticsLogger?.config.enabled) return;
+    void diagnosticsLogger.record(event);
+  }
+
+  function diagnosticRouteFields(route = currentRoute): Pick<CommunicationDiagnosticEvent, "sessionKey" | "sessionId" | "sessionLabel"> {
+    return route ? { sessionKey: route.sessionKey, sessionId: route.sessionId, sessionLabel: route.sessionLabel } : {};
+  }
+
+  function diagnosticsStatusText(config: TelegramTunnelConfig): string {
+    const logger = diagnosticsLogger ?? createCommunicationDiagnosticsLogger(config.communicationDiagnostics!);
+    const status = logger.status();
+    return [
+      "PiRelay communication diagnostics",
+      `Enabled: ${status.enabled ? "yes" : "no"}`,
+      `Log path: ${status.logPath}`,
+      `Retention: ${status.maxFiles} file(s) x ${status.maxFileBytes} bytes`,
+      `Content previews: ${status.includeContentPreview ? "enabled" : "disabled"}`,
+      status.latestWriteOk === undefined ? undefined : `Latest write: ${status.latestWriteOk ? "ok" : `failed (${status.latestWriteError ?? "unknown error"})`}`,
+      status.enabled ? "Remote messenger commands do not automatically upload this log; share excerpts only after local review/redaction." : "Enable temporarily with communicationDiagnostics.enabled or PI_RELAY_COMMUNICATION_DIAGNOSTICS=1.",
+    ].filter(Boolean).join("\n");
   }
 
   async function ensureRuntime(ctx?: ExtensionContext, interactiveNotice = false): Promise<TunnelRuntime> {
@@ -1851,6 +1879,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             case "doctor":
               await handleRelayDoctor(ctx);
               return;
+            case "diagnostics": {
+              const config = await ensureConfig(ctx, true);
+              ctx.ui.notify(diagnosticsStatusText(config), "info");
+              return;
+            }
             case "approvals":
               await handleApprovalAudit(ctx);
               return;
@@ -1986,6 +2019,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.notification.latestImages = undefined;
     currentRoute.lastActivityAt = Date.now();
     recordProgress("lifecycle", "Pi task started");
+    recordDiagnostic({ component: "runtime", event: "agent_start", outcome: "running", ...diagnosticRouteFields() });
     publishRouteStateSoon();
   });
 
@@ -2027,6 +2061,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestContext = ctx;
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
+    recordDiagnostic({ component: "runtime", event: "tool_call", outcome: "received", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), hasInput: event.input !== undefined } });
     const config = configCache ?? (await ensureConfig(ctx, false).catch(() => undefined));
     if (!config) return;
     const resolved = approvalConfig(config);
@@ -2074,6 +2109,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestContext = ctx;
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
+    recordDiagnostic({ component: "runtime", event: "tool_execution_end", outcome: event.isError ? "error" : "ok", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), isError: Boolean(event.isError) } });
     if (event.isError) {
       currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
       recordProgress("tool", "Tool failed", event.toolName);
@@ -2090,7 +2126,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.actions.context = ctx;
     currentRoute.lastActivityAt = Date.now();
 
-    const finalText = extractFinalAssistantText(event.messages as AgentMessage[]);
+    const extraction = analyzeFinalAssistantExtraction(event.messages as AgentMessage[], configCache?.communicationDiagnostics);
+    const finalText = extraction.finalText;
     const turnId = createTurnId();
     currentRoute.notification.lastTurnId = turnId;
     const config = configCache;
@@ -2146,12 +2183,22 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         : "failed";
 
     currentRoute.notification.lastStatus = status;
+    recordDiagnostic({
+      component: "runtime",
+      event: "agent_end.final_extraction",
+      outcome: extraction.diagnostics.finalTextFound ? "final-text-found" : extraction.diagnostics.missingReason,
+      severity: extraction.diagnostics.finalTextFound || status === "aborted" ? "info" : "warning",
+      turnId,
+      ...diagnosticRouteFields(),
+      details: { ...extraction.diagnostics, selectedStatus: status, abortRequested: Boolean(currentRoute.notification.abortRequested), hadPriorFailure: Boolean(currentRoute.notification.lastFailure) },
+    });
     recordProgress("lifecycle", status === "completed" ? "Pi task completed" : status === "aborted" ? "Pi task aborted" : "Pi task failed");
     if (status === "failed" && !currentRoute.notification.lastFailure) {
       currentRoute.notification.lastFailure = "The agent finished without a final assistant response.";
     }
 
     publishRouteStateSoon();
+    recordDiagnostic({ component: "runtime", event: "notification_fanout", outcome: status, turnId, ...diagnosticRouteFields(), details: { telegram: Boolean(runtime), discordRuntimes: discordRuntimes.size, slackRuntimes: slackRuntimes.size } });
     if (runtime) await sendSessionNotification(runtime, currentRoute, status, configCache);
     for (const discord of await ensureAllDiscordRuntimes()) {
       await discord.notifyTurnCompleted(currentRoute, status);

@@ -170,3 +170,7 @@ When a test fails, record:
 - whether the broker had been restarted after code changes
 - whether the failure affects only local Pi input, only Telegram behavior, or both
 - the exact final assistant output if answer parsing behaved incorrectly
+
+## 9. Optional communication diagnostics troubleshooting
+
+When investigating missing final assistant responses or broker delivery issues, enable `communicationDiagnostics.enabled` only for the reproduction, then inspect `logs/communication.jsonl` locally. Prefer sharing only redacted `agent_end.final_extraction` metadata. See `docs/communication-diagnostics.md`.
