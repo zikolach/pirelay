@@ -125,7 +125,7 @@ Agent delegation is disabled by default. Enable it per messenger instance with a
 
 Supported autonomy levels are `off`, `propose-only`, `auto-claim-targeted`, and `auto-claim-safe-capability`. Peer-bot trust is separate from human `allowUserIds`; do not put tokens, hidden prompts, transcripts, or raw tool inputs in delegation task goals.
 
-See `docs/shared-room-parity.md` for the current parity matrix.
+See `docs/shared-room-parity.md` for the current parity matrix and `docs/agent-collaboration-playbooks.md` for a concrete two-agent project workflow.
 
 ## Approval gates
 

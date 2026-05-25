@@ -2,7 +2,7 @@
 
 PiRelay shared rooms use one dedicated machine bot/app per Pi machine in the same messenger room. Defaults remain conservative: private chats are always the safest pairing surface, and shared-room control must be explicitly enabled per platform.
 
-Agent delegation is an additional opt-in layer for shared rooms. When enabled, authorized humans or trusted peer bots can create visible task cards with `/delegate <machine|#capability> <goal>` and control them with `/task <claim|decline|cancel|status|history> [task-id]`. Bot-authored ordinary output remains inert; only validated delegation commands/actions are machine-actionable.
+Agent delegation is an additional opt-in layer for shared rooms. When enabled, authorized humans or trusted peer bots can create visible task cards with `/delegate <machine|#capability> <goal>` and control them with `/task <claim|decline|cancel|status|history> [task-id]`. Bot-authored ordinary output remains inert; only validated delegation commands/actions are machine-actionable. See `agent-collaboration-playbooks.md` for an end-to-end two-agent project example.
 
 ## Telegram
 
