@@ -19,7 +19,7 @@ import { SlackChannelAdapter, isSlackIdentityAllowed, slackEnvelopeToChannelEven
 import { createSlackLiveOperations, type SlackMessageEventFromHistory } from "./live-client.js";
 import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
-import { parseApprovalActionData, parseApprovalTextCommand } from "../../core/approval-gates.js";
+import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -372,22 +372,59 @@ export class SlackRuntime {
   private async handleApprovalAction(action: ChannelInboundAction): Promise<boolean> {
     const parsed = parseApprovalActionData(action.actionData);
     if (!parsed) return false;
-    const binding = await this.findSlackBinding(action);
-    const route = binding ? this.routes.get(binding.sessionKey) : undefined;
-    if (!binding || !route?.actions.resolveApprovalDecision || !this.adapter) {
-      await this.adapter?.answerAction(action.actionId, { text: "Approval request is stale." });
+    const slackConfig = this.configForInstance();
+    if (!this.adapter || !slackConfig || !isSlackIdentityAllowed(action.sender, slackConfig)) {
+      await this.adapter?.answerAction(action.actionId, { text: "This Slack identity is not authorized to control PiRelay." });
       return true;
     }
-    const result = await route.actions.resolveApprovalDecision({
-      approvalId: parsed.approvalId,
-      decision: parsed.decision,
+    const result = await this.resolveApprovalDecisionFromSlack(action, parsed.approvalId, parsed.decision);
+    await this.adapter.answerAction(action.actionId, { text: result.message });
+    return true;
+  }
+
+  private async resolveApprovalDecisionFromSlack(
+    message: Pick<ChannelInboundMessage, "conversation" | "sender" | "metadata">,
+    approvalId: string,
+    decision: ApprovalDecisionKind,
+  ): Promise<ApprovalDecisionResult> {
+    const request = await this.store.getApprovalRequest(approvalId);
+    if (!request || request.requester.channel !== SLACK_CHANNEL || (request.requester.instanceId ?? "default") !== this.instanceId) {
+      return { ok: false, status: "stale", message: "Approval request is stale." };
+    }
+    const route = this.routes.get(request.sessionKey);
+    if (!route?.actions.resolveApprovalDecision) {
+      return { ok: false, status: "stale", message: "Approval target is offline or stale." };
+    }
+    const binding = await this.store.getActiveChannelBindingForSession(SLACK_CHANNEL, request.sessionKey, {
+      instanceId: this.instanceId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      includePaused: true,
+    });
+    if (!binding) {
+      return { ok: false, status: "unauthorized", message: "This Slack identity is not authorized to control PiRelay." };
+    }
+    return route.actions.resolveApprovalDecision({
+      approvalId,
+      decision,
       channel: SLACK_CHANNEL,
       instanceId: this.instanceId,
-      conversationId: action.conversation.id,
-      userId: action.sender.userId,
-      threadId: typeof action.metadata?.threadTs === "string" ? action.metadata.threadTs : undefined,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      threadId: typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined,
     });
-    await this.adapter.answerAction(action.actionId, { text: result.message });
+  }
+
+  private async handleApprovalCommand(message: ChannelInboundMessage, command: SlackCommand): Promise<boolean> {
+    const approvalCommand = parseApprovalTextCommand(command.name, command.args);
+    if (!approvalCommand) return false;
+    const slackConfig = this.configForInstance();
+    if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) {
+      await this.sendText(message, "This Slack identity is not authorized to control PiRelay.");
+      return true;
+    }
+    const result = await this.resolveApprovalDecisionFromSlack(message, approvalCommand.approvalId, approvalCommand.decision);
+    await this.sendText(message, result.message);
     return true;
   }
 
@@ -472,6 +509,8 @@ export class SlackRuntime {
     }
     if (isPeerBotIdentity(message.sender)) return;
     if (!slackConfig || !isSlackIdentityAllowed(message.sender, slackConfig)) return;
+    const approvalCommand = parseSlackCommand(routedMessage.text);
+    if (approvalCommand && await this.handleApprovalCommand(routedMessage, approvalCommand)) return;
     const binding = await this.findSlackBinding(routedMessage) ?? await this.livePreseededBinding(routedMessage);
     if (!binding) {
       await this.sendText(message, message.conversation.kind === "private"
@@ -745,16 +784,7 @@ export class SlackRuntime {
   }
 
   private async handleSlackCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: SlackCommand): Promise<void> {
-    const approvalCommand = parseApprovalTextCommand(command.name, command.args);
-    if (approvalCommand) {
-      if (!route.actions.resolveApprovalDecision) {
-        await this.sendText(message, "Approval request is stale.");
-        return;
-      }
-      const result = await route.actions.resolveApprovalDecision({ approvalId: approvalCommand.approvalId, decision: approvalCommand.decision, channel: SLACK_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId, threadId: typeof message.metadata?.threadTs === "string" ? message.metadata.threadTs : undefined });
-      await this.sendText(message, result.message);
-      return;
-    }
+    if (await this.handleApprovalCommand(message, command)) return;
     if (binding.paused && !commandAllowsWhilePaused(command.name)) {
       await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `relay resume` first.");
       return;

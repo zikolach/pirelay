@@ -49,10 +49,12 @@ describe("approval gates", () => {
     expect(operation?.matcherFingerprint).toContain("git-remote:bash:git");
   });
 
-  it("matches write/edit path patterns and custom text patterns", () => {
-    const config = resolveApprovalGateConfig({ enabled: true, rules: [{ id: "protected", pathPatterns: ["package.json"] }, { id: "custom", tools: ["deploy"], textPatterns: ["prod"] }] });
+  it("matches write/edit path patterns and custom text patterns only when constraints match", () => {
+    const config = resolveApprovalGateConfig({ enabled: true, rules: [{ id: "protected", tools: ["write", "edit"], pathPatterns: ["package.json"] }, { id: "custom", tools: ["deploy"], textPatterns: ["prod"] }] });
     expect(classifyApprovalOperation({ toolName: "write", input: { path: "package.json", content: "{}" } }, config)?.category).toBe("file-write");
+    expect(classifyApprovalOperation({ toolName: "write", input: { path: "README.md", content: "{}" } }, config)).toBeUndefined();
     expect(classifyApprovalOperation({ toolName: "deploy", input: { target: "prod" } }, config)?.category).toBe("custom");
+    expect(classifyApprovalOperation({ toolName: "deploy", input: { target: "dev" } }, config)).toBeUndefined();
   });
 
   it("redacts and bounds approval summaries", () => {
@@ -69,7 +71,10 @@ describe("approval gates", () => {
     expect(renderApprovalRequest(request, config)).toContain("Approval required");
     expect(renderApprovalRequest(request, config)).not.toContain("npm-token");
     expect(approvalButtons(request, config).flat().map((button) => button.label)).toEqual(["Approve once", "Approve for session", "Approve persistent", "Deny"]);
-    expect(parseApprovalActionData(approvalActionData("approve-once", request.approvalId))).toEqual({ decision: "approve-once", approvalId: request.approvalId });
+    const actionData = approvalActionData("approve-persistent", request.approvalId);
+    expect(actionData.length).toBeLessThanOrEqual(64);
+    expect(parseApprovalActionData(actionData)).toEqual({ decision: "approve-persistent", approvalId: request.approvalId });
+    expect(parseApprovalActionData(`pirelay:approval:approve-once:${request.approvalId}`)).toEqual({ decision: "approve-once", approvalId: request.approvalId });
   });
 
   it("matches session grants only for same requester, session, fingerprint, and expiry", () => {

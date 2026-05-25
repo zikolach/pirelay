@@ -670,7 +670,43 @@ describe("SlackRuntime foundations", () => {
 
     const resolveApprovalDecision = vi.fn(async () => ({ ok: true, status: "approved" as const, message: "Approved once." }));
     testRoute.actions.resolveApprovalDecision = resolveApprovalDecision;
-    await operations.handler!({ type: "block_actions", channel: { id: "D1" }, user: { id: "U_DRIVER", team_id: "T1" }, actions: [{ value: "pirelay:approval:approve-once:approval-1" }], response_url: "https://hooks.slack.test/approval" });
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: "other-session",
+      sessionId: "other-session",
+      sessionLabel: "Other",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    await store.setActiveChannelSelection("slack", "D1", "U_DRIVER", "other-session");
+    await store.trustRelayUser({
+      channel: "slack",
+      instanceId: "default",
+      userId: "U_BLOCKED",
+      trustedBySessionLabel: testRoute.sessionLabel,
+    });
+    await store.upsertApprovalRequest({
+      approvalId: "approval-1",
+      sessionKey: testRoute.sessionKey,
+      sessionLabel: testRoute.sessionLabel,
+      operationId: "tool-1",
+      toolName: "bash",
+      category: "shell",
+      safeSummary: "Run shell command",
+      matcherFingerprint: "shell:bash:test",
+      requester: { channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, safeLabel: "Slack U_DRIVER", createdAt: Date.now() },
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "pending",
+    });
+    await operations.handler!({ type: "block_actions", trigger_id: "blocked-approval-trigger", channel: { id: "D1" }, user: { id: "U_BLOCKED", team_id: "T1" }, actions: [{ value: "pra:ao:approval-1" }], response_url: "https://hooks.slack.test/blocked-approval" });
+    expect(resolveApprovalDecision).not.toHaveBeenCalled();
+    expect(operations.responses.at(-1)?.text).toBe("This Slack identity is not authorized to control PiRelay.");
+    await operations.handler!({ type: "block_actions", trigger_id: "allowed-approval-trigger", channel: { id: "D1" }, user: { id: "U_DRIVER", team_id: "T1" }, actions: [{ value: "pra:ao:approval-1" }], response_url: "https://hooks.slack.test/approval" });
+    await store.setActiveChannelSelection("slack", "D1", "U_DRIVER", testRoute.sessionKey);
     expect(resolveApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "approval-1", decision: "approve-once", channel: "slack", conversationId: "D1", userId: "U_DRIVER" }));
     expect(operations.responses.at(-1)?.text).toBe("Approved once.");
     await send("/disconnect", "54");

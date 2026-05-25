@@ -65,7 +65,7 @@ import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import { delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
-import { parseApprovalActionData, parseApprovalTextCommand } from "../../core/approval-gates.js";
+import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 import {
   appendRecentActivity,
   displayProgressMode,
@@ -722,6 +722,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.handleAuthorizedCommand(undefined, message, command.command, command.args);
       return;
     }
+    const approvalCommand = command ? parseApprovalTextCommand(command.command, command.args) : undefined;
+    if (approvalCommand) {
+      const result = await this.resolveApprovalDecisionFromTelegram(message.chat.id, message.user, approvalCommand.approvalId, approvalCommand.decision);
+      await this.api.sendPlainText(message.chat.id, result.message);
+      return;
+    }
 
     const bindingSnapshot = await this.store.loadBindingAuthoritySnapshot();
     if (bindingSnapshot.kind === "state-unavailable") {
@@ -829,24 +835,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private async processCallback(callback: TelegramInboundCallback): Promise<void> {
     const approvalAction = parseApprovalActionData(callback.data);
     if (approvalAction) {
-      const binding = await this.activeBindingForMessage(callback.chat.id, callback.user.id);
-      const route = binding ? this.routes.get(binding.sessionKey) : undefined;
-      if (!route?.actions.resolveApprovalDecision) {
-        await this.api.answerCallbackQuery(callback.callbackQueryId, "Approval request is stale.");
-        return;
-      }
-      if (!route.binding || !(await this.isAuthorized(route, callback.user))) {
-        await this.api.answerCallbackQuery(callback.callbackQueryId, "Unauthorized.");
-        return;
-      }
-      const result = await route.actions.resolveApprovalDecision({
-        approvalId: approvalAction.approvalId,
-        decision: approvalAction.decision,
-        channel: "telegram",
-        instanceId: "default",
-        conversationId: String(callback.chat.id),
-        userId: String(callback.user.id),
-      });
+      const result = await this.resolveApprovalDecisionFromTelegram(callback.chat.id, callback.user, approvalAction.approvalId, approvalAction.decision);
       await this.api.answerCallbackQuery(callback.callbackQueryId, result.message);
       return;
     }
@@ -1707,13 +1696,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     args: string,
   ): Promise<void> {
     const approvalCommand = parseApprovalTextCommand(command, args);
-    if (approvalCommand && route?.actions.resolveApprovalDecision) {
-      const result = await route.actions.resolveApprovalDecision({ approvalId: approvalCommand.approvalId, decision: approvalCommand.decision, channel: "telegram", instanceId: "default", conversationId: String(message.chat.id), userId: String(message.user.id) });
-      await this.api.sendPlainText(message.chat.id, result.message);
-      return;
-    }
     if (approvalCommand) {
-      await this.api.sendPlainText(message.chat.id, "Approval request is stale.");
+      const result = await this.resolveApprovalDecisionFromTelegram(message.chat.id, message.user, approvalCommand.approvalId, approvalCommand.decision);
+      await this.api.sendPlainText(message.chat.id, result.message);
       return;
     }
     if (command === "help") {
@@ -1934,6 +1919,35 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, `Unknown command: /${command}. Use /help.`);
       }
     }
+  }
+
+  private async resolveApprovalDecisionFromTelegram(
+    chatId: number,
+    user: TelegramUserSummary,
+    approvalId: string,
+    decision: ApprovalDecisionKind,
+  ): Promise<ApprovalDecisionResult> {
+    const request = await this.store.getApprovalRequest(approvalId);
+    if (!request || request.requester.channel !== "telegram") {
+      return { ok: false, status: "stale", message: "Approval request is stale." };
+    }
+    const route = this.routes.get(request.sessionKey);
+    if (!route?.actions.resolveApprovalDecision) {
+      return { ok: false, status: "stale", message: "Approval target is offline or stale." };
+    }
+    const binding = await this.store.getActiveBindingForSession(request.sessionKey, { chatId, userId: user.id, includePaused: true });
+    if (binding) route.binding = binding;
+    if (!route.binding || !(await this.isAuthorized(route, user))) {
+      return { ok: false, status: "unauthorized", message: "Unauthorized." };
+    }
+    return route.actions.resolveApprovalDecision({
+      approvalId,
+      decision,
+      channel: "telegram",
+      instanceId: "default",
+      conversationId: String(chatId),
+      userId: String(user.id),
+    });
   }
 
   private async deliverPlainPrompt(route: SessionRoute, message: TelegramInboundMessage, text: string): Promise<void> {
