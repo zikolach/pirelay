@@ -175,6 +175,7 @@ export interface ChannelCapabilities {
   maxDocumentBytes?: number;
   maxImageBytes?: number;
   supportedImageMimeTypes: string[];
+  convertibleInboundImageMimeTypes?: string[];
   supportsMarkdown?: boolean;
   sharedRooms?: ChannelSharedRoomCapabilities;
 }

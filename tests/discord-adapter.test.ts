@@ -31,6 +31,15 @@ describe("DiscordChannelAdapter", () => {
       sender: { channel: "discord", userId: "u1", username: "dev", displayName: "Dev User" },
     });
     expect(event!.attachments[0]).toMatchObject({ kind: "image", fileName: "screen.png", mimeType: "image/png", supported: true });
+
+    const gifEvent = discordMessageToChannelEvent({
+      id: "m-gif",
+      channel_id: "dm1",
+      author: { id: "u1", username: "dev" },
+      content: "inspect gif",
+      attachments: [{ id: "gif1", filename: "clip.gif", content_type: "image/gif", size: 123, url: "https://cdn.test/clip.gif" }],
+    }, config);
+    expect(gifEvent!.attachments[0]).toMatchObject({ kind: "image", fileName: "clip.gif", mimeType: "image/gif", supported: true });
   });
 
   it("marks guild messages so relay code can reject them by default", () => {
@@ -188,6 +197,6 @@ describe("DiscordChannelAdapter", () => {
   });
 
   it("declares conservative Discord DM capabilities", () => {
-    expect(discordCapabilities(config)).toMatchObject({ inlineButtons: true, privateChats: true, groupChats: false, maxTextChars: 50, maxImageBytes: 1000 });
+    expect(discordCapabilities(config)).toMatchObject({ inlineButtons: true, privateChats: true, groupChats: false, maxTextChars: 50, maxImageBytes: 1000, supportedImageMimeTypes: ["image/png"], convertibleInboundImageMimeTypes: ["image/gif"] });
   });
 });

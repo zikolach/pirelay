@@ -78,6 +78,7 @@ import {
   shouldSendNonTerminalProgress,
 } from "../../notifications/progress.js";
 import {
+  acceptedInboundImageFormatsText,
   buildImagePromptContent,
   createTurnId,
   getTelegramUserLabel,
@@ -1443,7 +1444,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private acceptedImageFormatsText(): string {
-    return this.config.allowedImageMimeTypes.join(", ");
+    return acceptedInboundImageFormatsText(this.config.allowedImageMimeTypes);
   }
 
   private messageImages(message: TelegramInboundMessage): TelegramInboundImageReference[] {
@@ -1546,7 +1547,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!downloadedImages) return;
     const hasImages = downloadedImages.length > 0;
     const content: TelegramPromptContent = hasImages
-      ? buildImagePromptContent(text || "Please inspect the attached image.", downloadedImages.map((image) => image.image))
+      ? buildImagePromptContent(text || this.promptTextForMessage(message), downloadedImages.map((image) => image.image))
       : text;
     const activityStarted = await this.startActivityIndicator(route);
     if (!await this.sendPromptSafely(route, message, content, {

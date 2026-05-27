@@ -47,6 +47,18 @@ describe("SlackChannelAdapter", () => {
       sender: { channel: "slack", userId: "U1", metadata: { teamId: "T1" } },
     });
     expect(event!.attachments[0]).toMatchObject({ kind: "image", fileName: "screen.png", mimeType: "image/png", supported: true });
+
+    const gifEvent = slackEventToChannelEvent({
+      type: "message",
+      channel_type: "im",
+      channel: "D1",
+      user: "U1",
+      text: "inspect gif",
+      ts: "171.11",
+      team: "T1",
+      files: [{ id: "Fgif", name: "clip.gif", mimetype: "image/gif", size: 123, url_private_download: "https://slack.test/clip.gif" }],
+    }, config);
+    expect(gifEvent!.attachments[0]).toMatchObject({ kind: "image", fileName: "clip.gif", mimeType: "image/gif", supported: true });
   });
 
   it("normalizes Slack channel events as channel conversations", () => {
@@ -227,6 +239,6 @@ describe("SlackChannelAdapter", () => {
   });
 
   it("declares conservative Slack DM capabilities", () => {
-    expect(slackCapabilities(config)).toMatchObject({ inlineButtons: true, privateChats: true, groupChats: false, maxTextChars: 40, maxImageBytes: 1000 });
+    expect(slackCapabilities(config)).toMatchObject({ inlineButtons: true, privateChats: true, groupChats: false, maxTextChars: 40, maxImageBytes: 1000, supportedImageMimeTypes: ["image/png"], convertibleInboundImageMimeTypes: ["image/gif"] });
   });
 });

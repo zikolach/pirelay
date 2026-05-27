@@ -183,6 +183,7 @@ export interface MessengerCapabilities {
   maxDocumentBytes?: number;
   maxImageBytes?: number;
   supportedImageMimeTypes: string[];
+  convertibleInboundImageMimeTypes?: string[];
   supportsMarkdown?: boolean;
   sharedRooms?: MessengerSharedRoomCapabilities;
 }

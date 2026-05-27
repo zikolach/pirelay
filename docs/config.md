@@ -57,6 +57,9 @@ Environment variables can still provide secrets and deployment overrides. Legacy
 }
 ```
 
+
+`allowedImageMimeTypes` lists direct/static image formats that PiRelay may pass to Pi or send back as image files. Inbound GIF attachments are handled separately as a built-in convertible format: PiRelay accepts `image/gif` after authorization, decodes only the first frame, converts it to PNG, and applies the inbound byte limit before and after conversion. GIF conversion does not make `/send-image` or generic outbound image delivery accept raw GIF files.
+
 Messenger instances are addressed as `<kind>:<instance>`, for example `telegram:default`, `discord:personal`, or `slack:work`. The `:default` suffix can be omitted in commands.
 
 For Discord, `applicationId` is the Discord Developer Portal → General Information → Application ID (`clientId` is accepted as an alias because Discord OAuth URLs call the same value `client_id`). It is used by `/relay setup discord` for the Discord OAuth2 bot invite URL and by `/relay connect discord` to render a QR code to the bot profile/DM link. Short Discord PIN pairing still requires local Pi approval unless the user is listed in `allowUserIds` or trusted locally from a previous approval. Use `/relay trusted` to inspect locally trusted users and `/relay untrust <messenger> <userId>` to revoke that local trust without editing config.

@@ -24,6 +24,7 @@ import type {
   TelegramTunnelConfig,
   TelegramUserSummary,
 } from "../../core/types.js";
+import { DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES } from "../../media/index.js";
 
 const TELEGRAM_CHANNEL: ChannelAdapterKind = "telegram";
 
@@ -127,6 +128,7 @@ export function telegramCapabilities(config: TelegramTunnelConfig): ChannelCapab
     maxDocumentBytes: undefined,
     maxImageBytes: config.maxOutboundImageBytes,
     supportedImageMimeTypes: config.allowedImageMimeTypes,
+    convertibleInboundImageMimeTypes: [...DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES],
     supportsMarkdown: false,
     sharedRooms: {
       ordinaryText: false,

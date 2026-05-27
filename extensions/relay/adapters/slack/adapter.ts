@@ -17,6 +17,7 @@ import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } 
 import type { SlackRelayConfig } from "../../core/types.js";
 import type { SharedRoomAddressing } from "../../core/shared-room.js";
 import { slackRelayCommandSurface } from "../../commands/surfaces.js";
+import { DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES, acceptedInboundImageFormatsText, isAcceptedInboundImageMimeType } from "../../media/index.js";
 
 export interface SlackApiOperations {
   startSocketMode?(handler: (event: SlackEnvelope) => Promise<void>): Promise<void>;
@@ -136,7 +137,7 @@ export interface SlackButtonElement {
 const SLACK_CHANNEL = "slack" as const;
 const DEFAULT_SLACK_MAX_TEXT_CHARS = 3_000;
 export const DEFAULT_SLACK_MAX_FILE_BYTES = 10 * 1024 * 1024;
-const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 export class SlackChannelAdapter implements ChannelAdapter {
   readonly id = SLACK_CHANNEL;
@@ -260,6 +261,7 @@ export function slackCapabilities(config: Pick<SlackRelayConfig, "allowChannelMe
     maxDocumentBytes: config.maxFileBytes ?? DEFAULT_SLACK_MAX_FILE_BYTES,
     maxImageBytes: config.maxFileBytes ?? DEFAULT_SLACK_MAX_FILE_BYTES,
     supportedImageMimeTypes: config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES,
+    convertibleInboundImageMimeTypes: [...DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES],
     supportsMarkdown: true,
     sharedRooms: {
       ordinaryText: false,
@@ -413,7 +415,7 @@ function slackIdentity(userId: string, username?: string, teamId?: string): Chan
 
 function slackFileToInboundFile(file: SlackFilePayload, config: Pick<SlackRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundFile {
   const image = Boolean(file.mimetype?.startsWith("image/"));
-  const supportedMime = !image || !file.mimetype || (config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES).includes(file.mimetype);
+  const supportedMime = !image || !file.mimetype || isAcceptedInboundImageMimeType(file.mimetype, config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES);
   const supportedSize = typeof file.size !== "number" || file.size <= (config.maxFileBytes ?? DEFAULT_SLACK_MAX_FILE_BYTES);
   return {
     id: file.id,
@@ -422,7 +424,7 @@ function slackFileToInboundFile(file: SlackFilePayload, config: Pick<SlackRelayC
     mimeType: file.mimetype,
     byteSize: file.size,
     supported: supportedMime && supportedSize,
-    unsupportedReason: !supportedMime ? "Unsupported MIME type." : !supportedSize ? "File is too large." : undefined,
+    unsupportedReason: !supportedMime ? `Unsupported image attachment. Accepted image formats: ${acceptedInboundImageFormatsText(config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES)}.` : !supportedSize ? "File is too large." : undefined,
     metadata: { url: file.url_private_download },
   };
 }

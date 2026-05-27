@@ -93,18 +93,19 @@ Check:
 1. Switch Pi to a model that supports image input.
 2. Send a Telegram photo with a normal caption and verify Pi receives a multimodal prompt.
 3. Send a Telegram image document (`png`, `jpg`, or `webp`) with no caption and verify Pi receives the image-inspection fallback prompt.
-4. While Pi is busy, send a photo captioned `/steer inspect this screenshot` and verify it queues as steering.
-5. Send an unsupported document such as a PDF and verify PiRelay rejects it without injecting a prompt.
-6. Switch Pi to a text-only model, send a photo, and verify PiRelay rejects it without injecting the caption as text-only.
-7. Run a tool or test fixture that emits an image result, then use `/images` and the inline image button to download the latest image output.
-8. Generate or save a workspace image file and have Pi mention its relative path (for example `outputs/example.png`); verify `/images` sends it without needing the agent to re-open/read the file.
-9. Use `/send-image outputs/example.png` and verify Telegram receives the validated image document.
-10. Try `/send-image ../secret.png`, an absolute path, a hidden path, an oversized image, and a renamed non-image; verify each is rejected with an actionable message.
-11. Use remote `/send-file README.md Smoke test` and verify Telegram receives the validated workspace document in the same authorized chat; try `/send-file telegram README.md`, `/send-file all README.md`, `../secret.md`, absolute paths, hidden files, symlink escapes, oversized files, and unsupported binaries, and verify each is rejected without uploading.
-12. Verify input images are not echoed back by `/images` unless a tool emitted them separately as output.
-13. From local Pi, run `/relay send-file telegram README.md`, `/relay send-file discord README.md`, `/relay send-file slack README.md`, and `/relay send-file all README.md` against paired chats; verify safe delivery summaries and that paused/missing bindings are skipped without raw ids in normal UX.
-14. Try local `/relay send-file slack ../secret.md`, absolute paths, hidden files, symlink escapes, oversized files, and unsupported binaries; verify no messenger API upload is attempted.
-15. With `approvalGates.enabled` and a rule for `git push` or `npm publish`, trigger a matching remote turn. Verify the messenger shows an approval request, Approve once allows exactly that operation, Approve for session allows a later matching operation only for the same requester/session, Deny/timeout blocks, and stale/revoked/paused bindings cannot approve.
+4. Send a Telegram GIF document and verify Pi receives a PNG first-frame image prompt; repeat with a caption and verify the caption is preserved.
+5. While Pi is busy, send a photo captioned `/steer inspect this screenshot` and verify it queues as steering.
+6. Send an unsupported document such as a PDF and verify PiRelay rejects it without injecting a prompt.
+7. Switch Pi to a text-only model, send a photo, and verify PiRelay rejects it without injecting the caption as text-only.
+8. Run a tool or test fixture that emits an image result, then use `/images` and the inline image button to download the latest image output.
+9. Generate or save a workspace image file and have Pi mention its relative path (for example `outputs/example.png`); verify `/images` sends it without needing the agent to re-open/read the file.
+10. Use `/send-image outputs/example.png` and verify Telegram receives the validated image document.
+11. Try a corrupt GIF, an oversized GIF, `/send-image ../secret.png`, an absolute path, a hidden path, an oversized image, and a renamed non-image; verify each is rejected with an actionable message and no prompt/file upload occurs.
+12. Use remote `/send-file README.md Smoke test` and verify Telegram receives the validated workspace document in the same authorized chat; try `/send-file telegram README.md`, `/send-file all README.md`, `../secret.md`, absolute paths, hidden files, symlink escapes, oversized files, and unsupported binaries, and verify each is rejected without uploading.
+13. Verify input images are not echoed back by `/images` unless a tool emitted them separately as output.
+14. From local Pi, run `/relay send-file telegram README.md`, `/relay send-file discord README.md`, `/relay send-file slack README.md`, and `/relay send-file all README.md` against paired chats; verify safe delivery summaries and that paused/missing bindings are skipped without raw ids in normal UX.
+15. Try local `/relay send-file slack ../secret.md`, absolute paths, hidden files, symlink escapes, oversized files, and unsupported binaries; verify no messenger API upload is attempted.
+16. With `approvalGates.enabled` and a rule for `git push` or `npm publish`, trigger a matching remote turn. Verify the messenger shows an approval request, Approve once allows exactly that operation, Approve for session allows a later matching operation only for the same requester/session, Deny/timeout blocks, and stale/revoked/paused bindings cannot approve.
 
 ## 6. Relay setup wizard, Discord, and Slack smoke checklist
 

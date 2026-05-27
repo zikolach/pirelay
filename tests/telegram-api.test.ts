@@ -6,6 +6,7 @@ import { TelegramApiClient, toTelegramReplyMarkup } from "../extensions/relay/ad
 import type { TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
+const ONE_BY_ONE_GIF = Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==", "base64");
 
 async function createRuntimeConfig(): Promise<TelegramTunnelConfig> {
   const stateDir = await mkdtemp(join(tmpdir(), "pi-telegram-api-"));
@@ -168,6 +169,47 @@ describe("TelegramApiClient button and document payloads", () => {
       text: "compare these screenshots",
       images: [{ fileId: "album-a" }, { fileId: "album-b" }],
     });
+  });
+
+  it("accepts Telegram GIF documents as convertible image references", async () => {
+    const client = new TelegramApiClient(await createRuntimeConfig());
+    (client as any).api = {
+      getUpdates: vi.fn(async () => [{
+        update_id: 1,
+        message: {
+          message_id: 10,
+          caption: "inspect animation",
+          chat: { id: 123, type: "private" },
+          from: { id: 7, username: "owner" },
+          document: { file_id: "gif-image", file_unique_id: "u-gif", file_name: "clip.gif", mime_type: "image/gif", file_size: ONE_BY_ONE_GIF.byteLength },
+        },
+      }]),
+    };
+
+    const updates = await client.getUpdates(undefined);
+
+    expect(updates[0]).toMatchObject({ text: "inspect animation", images: [{ kind: "document", fileId: "gif-image", fileName: "clip.gif", mimeType: "image/gif", supported: true }] });
+  });
+
+  it("downloads authorized Telegram GIFs as first-frame PNG prompt images", async () => {
+    const client = new TelegramApiClient(await createRuntimeConfig());
+    (client as any).api = {
+      getFile: vi.fn(async () => ({ file_path: "documents/clip.gif", file_size: ONE_BY_ONE_GIF.byteLength })),
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(ONE_BY_ONE_GIF, { status: 200 })));
+
+    const downloaded = await client.downloadImage({
+      kind: "document",
+      fileId: "gif-file",
+      fileName: "clip.gif",
+      mimeType: "image/gif",
+      fileSize: ONE_BY_ONE_GIF.byteLength,
+      supported: true,
+    });
+
+    expect(downloaded.image.mimeType).toBe("image/png");
+    expect(downloaded.fileName).toBe("clip.png");
+    expect(Buffer.from(downloaded.image.data, "base64").subarray(1, 4).toString("ascii")).toBe("PNG");
   });
 
   it("downloads authorized Telegram images and sends latest images as documents", async () => {

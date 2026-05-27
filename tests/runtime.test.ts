@@ -545,6 +545,113 @@ describe("InProcessTunnelRuntime", () => {
     ]);
   });
 
+  it("delivers Telegram GIF image prompts with caption, fallback text, and safe conversion failures", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-gif:/tmp/session-gif.jsonl",
+      sessionId: "session-gif",
+      sessionFile: "/tmp/session-gif.jsonl",
+      sessionLabel: "session-gif.jsonl",
+      chatId: 884,
+      userId: 34,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    let failDownload = false;
+    (runtime as any).api = {
+      downloadImage: async (reference: any) => {
+        if (failDownload) throw new Error("Could not decode GIF image: bad data");
+        return {
+          image: { type: "image" as const, data: Buffer.from("png").toString("base64"), mimeType: "image/png" },
+          fileName: `${reference.fileId}.png`,
+          fileSize: 67,
+          source: reference,
+        };
+      },
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+      sendChatAction: async () => undefined,
+    };
+
+    await (runtime as any).processInbound({
+      updateId: 25,
+      messageId: 25,
+      text: "inspect this animation",
+      images: [{ kind: "document", fileId: "gif-caption", fileName: "clip.gif", mimeType: "image/gif", supported: true }],
+      chat: { id: 884, type: "private" },
+      user: { id: 34, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 26,
+      messageId: 26,
+      text: "",
+      images: [{ kind: "document", fileId: "gif-fallback", fileName: "clip.gif", mimeType: "image/gif", supported: true }],
+      chat: { id: 884, type: "private" },
+      user: { id: 34, username: "owner" },
+    });
+    failDownload = true;
+    await (runtime as any).processInbound({
+      updateId: 27,
+      messageId: 27,
+      text: "should not inject",
+      images: [{ kind: "document", fileId: "gif-bad", fileName: "bad.gif", mimeType: "image/gif", supported: true }],
+      chat: { id: 884, type: "private" },
+      user: { id: 34, username: "owner" },
+    });
+
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[0]?.text).toMatchObject([{ type: "text", text: "inspect this animation" }, { type: "image", mimeType: "image/png" }]);
+    expect(deliveries[1]?.text).toMatchObject([{ type: "text", text: "Please inspect the attached image." }, { type: "image", mimeType: "image/png" }]);
+    expect(sent.at(-1)).toContain("Could not fetch the Telegram image");
+    expect(sent.at(-1)).toContain("Could not decode GIF image");
+  });
+
+  it("rejects Telegram GIF prompts when the current model is not image-capable", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-gif-model:/tmp/session-gif-model.jsonl",
+      sessionId: "session-gif-model",
+      sessionFile: "/tmp/session-gif-model.jsonl",
+      sessionLabel: "session-gif-model.jsonl",
+      chatId: 885,
+      userId: 35,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getModel = () => ({ input: ["text"] }) as never;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    const downloadImage = vi.fn(async () => undefined);
+    (runtime as any).api = { downloadImage, sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 28,
+      messageId: 28,
+      text: "caption should not be injected",
+      images: [{ kind: "document", fileId: "gif-model", fileName: "clip.gif", mimeType: "image/gif", supported: true }],
+      chat: { id: 885, type: "private" },
+      user: { id: 35, username: "owner" },
+    });
+
+    expect(downloadImage).not.toHaveBeenCalled();
+    expect(deliveries).toEqual([]);
+    expect(sent[0]).toContain("does not support image input");
+  });
+
   it("does not download unauthorized Telegram images", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
