@@ -10,7 +10,7 @@ import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegatio
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
-import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
+import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
@@ -162,12 +162,9 @@ export class DiscordRuntime {
     if (!binding) return;
     const address = bindingAddress(binding);
     if (status === "completed" && route.notification.lastAssistantText) {
-      const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
-      if (shouldSendFullFinalOutput(mode)) {
-        await this.adapter.sendText(address, `✅ Pi session ${route.sessionLabel} completed. Final output:`);
-        await sendFinalOutputWithFallback(this.adapter, address, route, route.notification.lastAssistantText);
-        return;
-      }
+      await this.adapter.sendText(address, `✅ Pi session ${route.sessionLabel} completed. Final output:`);
+      await sendFinalOutputWithFallback(this.adapter, address, route, route.notification.lastAssistantText);
+      return;
     }
     const text = discordTurnNotificationText(route, status);
     await this.adapter.sendText(address, text);

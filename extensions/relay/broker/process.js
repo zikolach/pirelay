@@ -10,6 +10,7 @@ const [
   telegramFormatModule,
   utilsModule,
   mediaModule,
+  finalOutputModule,
   sessionMultiplexingModule,
   relayTelegramMiddlewareModule,
   relayMiddlewareModule,
@@ -27,6 +28,7 @@ const [
   jiti.import('../adapters/telegram/formatting.ts'),
   jiti.import('../core/utils.ts'),
   jiti.import('../media/index.ts'),
+  jiti.import('../core/final-output.ts'),
   jiti.import('../core/session-selection.ts'),
   jiti.import('../adapters/telegram/middleware.ts'),
   jiti.import('../middleware/pipeline.ts'),
@@ -85,6 +87,8 @@ const parseTelegramActionCallbackData = requiredFunction(telegramActionsModule, 
 const sessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'sessionDashboardRef');
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
+const DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS = requiredNumber(finalOutputModule, './final-output.ts', 'DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS');
+const planFinalOutputDelivery = requiredFunction(finalOutputModule, './final-output.ts', 'planFinalOutputDelivery');
 const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
 const acceptedInboundImageFormatsText = requiredFunction(mediaModule, './media/index.ts', 'acceptedInboundImageFormatsText');
 const buildImagePromptContent = requiredFunction(utilsModule, './utils.ts', 'buildImagePromptContent');
@@ -308,6 +312,38 @@ async function sendPlainText(chatId, text, keyboard) {
 async function sendMarkdownDocument(chatId, filename, text, caption) {
   const redacted = redact(text);
   await withRetry(() => api.sendDocument(chatId, new InputFile(Buffer.from(redacted, 'utf8'), filename), caption ? { caption } : undefined));
+}
+
+function finalOutputDeliveryTarget() {
+  return {
+    displayName: 'Telegram',
+    capabilities: {
+      maxTextChars: config.maxTelegramMessageChars || 3900,
+      documents: true,
+    },
+  };
+}
+
+async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) {
+  const text = route?.notification?.lastAssistantText;
+  if (!text) return false;
+  const durationMs = route.notification?.startedAt ? Date.now() - route.notification.startedAt : undefined;
+  const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : 'unknown time';
+  const plan = planFinalOutputDelivery(finalOutputDeliveryTarget(), route, text, { maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS });
+  if (plan.kind === 'messages') {
+    await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
+    for (const chunk of plan.chunks) await sendPlainText(binding.chatId, chunk);
+    if (imageHint) await sendPlainText(binding.chatId, imageHint.trim(), latestImagesKeyboardForRoute(route));
+    return true;
+  }
+  if (plan.kind === 'document') {
+    await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`, latestImagesKeyboardForRoute(route));
+    const data = typeof plan.file.data === 'string' ? Buffer.from(plan.file.data, 'base64') : Buffer.from(plan.file.data);
+    await withRetry(() => api.sendDocument(binding.chatId, new InputFile(data, plan.file.fileName), { caption: 'Latest assistant output' }));
+    return true;
+  }
+  await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, latestImagesKeyboardForRoute(route));
+  return true;
 }
 
 async function sendImageDocument(chatId, image, caption) {
@@ -2340,6 +2376,14 @@ async function handleClientRequest(socket, message) {
         route.binding = binding;
         syncActivityIndicator(route);
         const sourcePrefix = sourcePrefixForRoute(route);
+        const imageHint = message.terminalStatus === 'completed' && !route.notification?.structuredAnswer && route.notification?.latestImages?.count
+          ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
+          : '';
+        if (message.terminalStatus === 'completed' && await sendCompletedFullOutput(route, binding, sourcePrefix, imageHint)) {
+          recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String(route.notification?.lastAssistantText || '').length, terminalStatus: message.terminalStatus } });
+          respond(true, true);
+          return;
+        }
         await sendPlainText(binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { finalOutputMarkdownFile, sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../extensions/relay/core/final-output.js";
+import { finalOutputMarkdownFile, formatPreservingExcerpt, planFinalOutputDelivery, sendFinalOutputWithFallback } from "../../extensions/relay/core/final-output.js";
 import type { ChannelAdapter, ChannelOutboundFile, ChannelOutboundPayload, ChannelRouteAddress } from "../../extensions/relay/core/channel-adapter.js";
 import type { SessionRoute } from "../../extensions/relay/core/types.js";
 
@@ -45,11 +45,16 @@ function adapter(options: { documents?: boolean; maxTextChars?: number } = {}) {
 }
 
 describe("final output delivery policy", () => {
-  it("sends full output for non-quiet modes", () => {
-    expect(shouldSendFullFinalOutput("quiet")).toBe(false);
-    expect(shouldSendFullFinalOutput("normal")).toBe(true);
-    expect(shouldSendFullFinalOutput("verbose")).toBe(true);
-    expect(shouldSendFullFinalOutput("completionOnly")).toBe(true);
+
+  it("plans full chat delivery independently of progress mode", () => {
+    const { fake } = adapter({ maxTextChars: 100 });
+    const plan = planFinalOutputDelivery(fake, route(), "Done.\n\n- typecheck ✅\n- tests ✅", { maxMessageChunks: 2 });
+    expect(plan).toEqual({ kind: "messages", chunks: ["Done.\n\n- typecheck ✅\n- tests ✅"], differsFromFullOutput: false });
+  });
+
+  it("creates format-preserving excerpts only when shortening is explicitly needed", () => {
+    const excerpt = formatPreservingExcerpt("Intro paragraph.\n\n- first result\n- second result\n\nTrailing details", 42);
+    expect(excerpt).toBe("Intro paragraph.\n\n- first result\n- second…");
   });
 
   it("sends message chunks when output fits bounded chunks", async () => {
