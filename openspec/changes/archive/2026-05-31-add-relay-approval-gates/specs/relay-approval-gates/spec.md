@@ -1,18 +1,18 @@
 ## ADDED Requirements
 
 ### Requirement: Approval policy classification
-PiRelay SHALL support explicit opt-in policies that classify Pi operations as requiring approval before execution.
+PiRelay SHALL support explicit opt-in policies that classify remote-owned Pi operations as requiring approval before execution.
 
 #### Scenario: No approval policy is enabled
 - **WHEN** approval policies are disabled or absent for the current session
 - **THEN** PiRelay preserves existing tool execution, prompt delivery, and messenger behavior without adding approval prompts
 
-#### Scenario: Tool call matches approval policy
-- **WHEN** Pi emits a pre-execution tool call whose tool name, category, path, command, or normalized summary matches an enabled approval policy
+#### Scenario: Remote-owned tool call matches approval policy
+- **WHEN** an accepted remote messenger prompt owns the current turn and Pi emits a pre-execution tool call whose tool name, category, path, command, or normalized summary matches an enabled approval policy
 - **THEN** PiRelay classifies the operation as requiring approval before the tool call is allowed to execute
 
-#### Scenario: Tool call does not match approval policy
-- **WHEN** Pi emits a pre-execution tool call that does not match any enabled approval policy
+#### Scenario: Remote-owned tool call does not match approval policy
+- **WHEN** an accepted remote messenger prompt owns the current turn and Pi emits a pre-execution tool call that does not match any enabled approval policy
 - **THEN** PiRelay allows the tool call to continue without remote approval
 
 #### Scenario: Pattern matching uses safe normalization
@@ -95,9 +95,9 @@ PiRelay SHALL scope approval requests, decisions, and reusable grants to the act
 - **THEN** PiRelay sends the approval request only to that requester's active persisted messenger conversation or thread
 
 #### Scenario: Remote requester context is unavailable
-- **WHEN** a sensitive operation has no safe remote requester or configured approval destination
-- **THEN** PiRelay does not send approval prompts to arbitrary paired messengers
-- **AND** denies, blocks, or falls back to local host semantics according to safe policy behavior
+- **WHEN** a sensitive operation is associated with a remote-owned turn but its requester context is missing, stale, revoked, paused, or otherwise unsafe
+- **THEN** PiRelay blocks the operation with a safe approval-required failure
+- **AND** it does not send approval prompts to arbitrary paired messengers, treat the operation as local, or auto-approve it
 
 #### Scenario: Binding changes before decision
 - **WHEN** the original approval binding is revoked, paused, disconnected, or no longer matches the persisted active conversation/user/session before a decision arrives
