@@ -70,7 +70,7 @@ Check:
 - short completions avoid redundant full-output buttons
 - tapping `Show in chat` sends the latest assistant output as chunks
 - tapping `Download .md` sends a Markdown file containing the latest assistant output
-- Markdown tables in chat are converted to readable aligned code-style blocks
+- supported Markdown in Telegram chat renders without raw markers where it fits safe message limits (bold/code/links/code blocks/tables), with plain-text fallback otherwise; table outputs expose a Markdown download action
 - Markdown tables in the downloaded `.md` remain source-style Markdown, except configured redaction
 - fenced code blocks are preserved and not reformatted as tables
 - malformed or ambiguous structured output falls back to `/full` or a free-text reply rather than a broken guided flow

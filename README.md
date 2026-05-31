@@ -67,7 +67,7 @@ Discord and Slack still document text prefixes first because native slash comman
 - supports Telegram inline buttons for recognized choices
 - supports direct short option replies and explicit `answer` drafts
 - adds one-click **Show in chat** and **Download .md** actions where Telegram supports them
-- reformats Markdown tables into mobile-friendly blocks for Telegram chat
+- renders supported Markdown (bold, code, links, code blocks, and tables) for Telegram chat when it fits safe message limits, with plain-text fallback otherwise; table outputs also expose Markdown download actions
 
 ### Image bridge
 

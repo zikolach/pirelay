@@ -403,6 +403,104 @@ describe("telegram broker process", () => {
     expect(texts.some((text) => text.startsWith("[1/1]"))).toBe(false);
   });
 
+  it("renders broker-owned Telegram Markdown output with HTML parse mode", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-markdown:memory",
+      sessionId: "broker-markdown",
+      sessionLabel: "Broker Markdown",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+          maxTelegramMessageChars: 3900,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        requestId: "register-markdown-output",
+        action: "registerRoute",
+        clientId: "test-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: false,
+          notification: {
+            lastStatus: "completed",
+            lastTurnId: "turn-markdown",
+            lastAssistantText: [
+              "**Summary**",
+              "- Ran `npm test`",
+              "",
+              "| Check | Result |",
+              "| --- | --- |",
+              "| tests | passed |",
+            ].join("\n"),
+          },
+          binding,
+        },
+      });
+      await client.request({
+        type: "request",
+        requestId: "send-markdown-output",
+        action: "sendToBoundChat",
+        sessionKey: binding.sessionKey,
+        text: "compact fallback",
+        terminalStatus: "completed",
+      });
+    } finally {
+      client.close();
+    }
+
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const output = outbox.find((entry): entry is TestOutboxMessage => entry.method === "sendMessage" && entry.text.includes("<b>Summary</b>"));
+    expect(output?.text).toContain("- Ran <code>npm test</code>");
+    expect(output?.text).toContain("<pre><code>Check | Result");
+    expect(output?.options).toMatchObject({
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: [[
+        { text: "📄 Show in chat", callback_data: "full:turn-markdown:chat" },
+        { text: "⬇️ Download .md", callback_data: "full:turn-markdown:md" },
+      ]] },
+    });
+  });
+
   it("redacts broker-owned Markdown document fallback output", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);

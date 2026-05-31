@@ -87,7 +87,9 @@ const isIndexedSessionDashboardRef = requiredFunction(telegramActionsModule, './
 const parseTelegramActionCallbackData = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'parseTelegramActionCallbackData');
 const sessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'sessionDashboardRef');
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
+const containsMarkdownTable = requiredFunction(telegramFormatModule, './telegram-format.ts', 'containsMarkdownTable');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
+const formatTelegramChatMessageText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatMessageText');
 const DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS = requiredNumber(finalOutputModule, './final-output.ts', 'DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS');
 const planFinalOutputDelivery = requiredFunction(finalOutputModule, './final-output.ts', 'planFinalOutputDelivery');
 const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
@@ -314,10 +316,12 @@ async function sendTelegramDocument(chatId, document, options, testDocument) {
 }
 
 async function sendPreparedPlainText(chatId, text, keyboard) {
+  const prepared = prepareTelegramChunkForSend(String(text || ''));
   const replyMarkup = keyboard ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
+  const options = { ...(replyMarkup || {}), ...(prepared.parseMode ? { parse_mode: prepared.parseMode } : {}) };
   recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'prepared-text', chunks: 1, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
   try {
-    await withRetry(() => sendTelegramMessage(chatId, String(text || ''), replyMarkup));
+    await withRetry(() => sendTelegramMessage(chatId, prepared.text, Object.keys(options).length > 0 ? options : undefined));
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'prepared-text', chunks: 1 } });
   } catch (error) {
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'prepared-text', error: error instanceof Error ? error.message : String(error) } });
@@ -331,14 +335,23 @@ async function sendPlainText(chatId, text, keyboard) {
   try {
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
+      const prepared = prepareTelegramChunkForSend(chunk);
       const replyMarkup = keyboard && index === chunks.length - 1 ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
-      await withRetry(() => sendTelegramMessage(chatId, chunk, replyMarkup));
+      const options = { ...(replyMarkup || {}), ...(prepared.parseMode ? { parse_mode: prepared.parseMode } : {}) };
+      await withRetry(() => sendTelegramMessage(chatId, prepared.text, Object.keys(options).length > 0 ? options : undefined));
     }
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length } });
   } catch (error) {
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'text', error: error instanceof Error ? error.message : String(error) } });
     throw error;
   }
+}
+
+function prepareTelegramChunkForSend(text) {
+  const original = String(text || '');
+  const rendered = formatTelegramChatMessageText(original);
+  const maxChars = config.maxTelegramMessageChars || 3900;
+  return rendered.text.length <= maxChars ? { text: rendered.text, parseMode: rendered.parseMode } : { text: original };
 }
 
 async function sendMarkdownDocument(chatId, filename, text, caption) {
@@ -373,7 +386,11 @@ async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) 
   });
   if (plan.kind === 'messages') {
     await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
-    for (const chunk of plan.chunks) await sendPreparedPlainText(binding.chatId, chunk);
+    const outputKeyboard = !route?.notification?.structuredAnswer ? fullOutputKeyboardForRoute(route) : undefined;
+    for (let index = 0; index < plan.chunks.length; index += 1) {
+      const keyboard = index === plan.chunks.length - 1 ? outputKeyboard : undefined;
+      await sendPreparedPlainText(binding.chatId, plan.chunks[index], keyboard);
+    }
     if (imageHint) await sendPlainText(binding.chatId, imageHint.trim(), latestImagesKeyboardForRoute(route));
     return true;
   }
@@ -797,7 +814,8 @@ function completionActionKeyboardForRoute(route) {
 }
 
 function shouldOfferFullOutputActionsForRoute(route) {
-  return shouldOfferFullOutputActions(route?.notification?.lastAssistantText);
+  const text = route?.notification?.lastAssistantText;
+  return shouldOfferFullOutputActions(text) || (text ? containsMarkdownTable(text) : false);
 }
 
 function answerActionKeyboardForRoute(route) {

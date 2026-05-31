@@ -5,6 +5,8 @@ Short Telegram completion notifications can be harder to read than the available
 ## What Changes
 
 - Preserve readable final assistant output for Telegram terminal notifications when the output fits within existing safe message/chunk limits.
+- Render supported Markdown constructs in Telegram chat notifications with Telegram-safe HTML parse mode when rendering fits a message chunk, while retaining plain-text delivery when no Markdown rendering is needed or rendered text would exceed safe limits.
+- Offer Markdown download actions when Telegram chat output contains source Markdown tables so users can open the original table in a document viewer.
 - Make broker-owned Telegram delivery follow the same terminal-output policy as in-process delivery instead of always reducing completed output to a collapsed summary.
 - Decouple progress mode from terminal-output length: `quiet` controls non-terminal progress noise, not whether a short final answer is summarized.
 - Use summaries or excerpts only when platform limits, adapter capabilities, or an explicit future terminal-output preference require shortening.

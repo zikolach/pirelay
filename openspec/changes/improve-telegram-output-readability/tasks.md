@@ -14,6 +14,7 @@
 
 ## 3. Tests and Documentation
 
+- [x] 3.0 Add Telegram Markdown rendering tests for bold/code/link/table output, plain-text fallback, table-triggered Markdown download actions, and broker-owned completion delivery.
 - [x] 3.1 Add Telegram runtime tests proving short multi-paragraph/list output is delivered readably in quiet, normal, verbose, and completion-only modes.
 - [x] 3.2 Add broker parity tests proving broker-owned Telegram delivery matches in-process output policy for short formatted output and large document fallback.
 - [x] 3.3 Add quiet-mode tests proving quiet suppresses non-terminal progress updates but does not shorten final output that fits safe chat delivery.

@@ -104,9 +104,61 @@ describe("TelegramApiClient button and document payloads", () => {
     ].join("\n"));
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.[1]).toContain("```");
+    expect(sent[0]?.[1]).toContain("<pre><code>");
     expect(sent[0]?.[1]).toContain("secret | [redacted]");
+    expect(sent[0]?.[1]).not.toContain("```");
     expect(sent[0]?.[1]).not.toContain("token=abc123");
+    expect(sent[0]?.[2]).toEqual({ parse_mode: "HTML" });
+  });
+
+  it("uses Telegram HTML parse mode for supported Markdown that fits a chunk", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 3900;
+    const client = new TelegramApiClient(config);
+    const sent: any[] = [];
+    (client as any).api = {
+      sendMessage: vi.fn(async (...args: any[]) => sent.push(args)),
+    };
+
+    await client.sendPlainText(123, "**Summary**\n- Ran `npm test`");
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.[1]).toBe("<b>Summary</b>\n- Ran <code>npm test</code>");
+    expect(sent[0]?.[2]).toEqual({ parse_mode: "HTML" });
+  });
+
+  it("redacts prepared chat text before Telegram HTML rendering", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 3900;
+    config.redactionPatterns = ["abc123"];
+    const client = new TelegramApiClient(config);
+    const sent: any[] = [];
+    (client as any).api = {
+      sendMessage: vi.fn(async (...args: any[]) => sent.push(args)),
+    };
+
+    await client.sendPreparedChatText(123, "**Secret**: `token=abc123`");
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.[1]).toBe("<b>Secret</b>: <code>token=[redacted]</code>");
+    expect(sent[0]?.[1]).not.toContain("token=abc123");
+    expect(sent[0]?.[2]).toEqual({ parse_mode: "HTML" });
+  });
+
+  it("falls back to plain text when rendered Telegram HTML would exceed the chunk limit", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 32;
+    const client = new TelegramApiClient(config);
+    const sent: any[] = [];
+    (client as any).api = {
+      sendMessage: vi.fn(async (...args: any[]) => sent.push(args)),
+    };
+
+    await client.sendPreparedChatText(123, "**12345678901234567890123456**");
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.[1]).toBe("**12345678901234567890123456**");
+    expect(sent[0]?.[2]).toBeUndefined();
   });
 
   it("redacts Markdown documents before upload", async () => {

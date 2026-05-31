@@ -13,6 +13,9 @@ The system SHALL apply the same terminal assistant-output delivery policy across
 - **WHEN** a Pi turn completes for a messenger binding whose progress mode is normal
 - **THEN** PiRelay sends the latest assistant output as paragraph-aware message chunks when it fits safe platform limits
 - **AND** it preserves user-visible paragraph breaks, bullets, code-ish lines, and validation-result blocks in the delivered assistant output
+- **AND** for Telegram, it renders supported Markdown constructs with Telegram-safe chat formatting when the rendered message fits the configured safe chunk limit
+- **AND** Telegram falls back to plain text when no Markdown formatting is needed or the rendered markup would exceed safe chunk limits
+- **AND** Telegram offers a Markdown download action when the source output contains Markdown tables that are rendered with chat-safe fallbacks
 - **AND** it uses a document fallback when chunking would be excessive and the adapter supports documents
 
 #### Scenario: Verbose binding receives progress and full final output
