@@ -184,6 +184,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let closeConnectQrScreen: (() => void) | undefined;
   let activeTurnImages: ImageContent[] = [];
   let activeTurnImagePathTexts: string[] = [];
+  let activeTurnCompletedAssistantText: string | undefined;
   let latestTurnImages: LatestTurnImage[] = [];
   let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
   let progressSequence = 0;
@@ -583,6 +584,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   function clearTurnImageCaches(): void {
     activeTurnImages = [];
     activeTurnImagePathTexts = [];
+    activeTurnCompletedAssistantText = undefined;
     latestTurnImages = [];
     latestTurnImageFileCandidates = [];
   }
@@ -2051,6 +2053,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (event.message.role === "assistant") {
       const assistantText = extractTextContent(event.message.content);
       if (assistantText) {
+        activeTurnCompletedAssistantText = assistantText;
         currentRoute.notification.lastAssistantText = assistantText;
         currentRoute.lastActivityAt = Date.now();
         publishRouteStateSoon();
@@ -2141,8 +2144,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.lastActivityAt = Date.now();
 
     const extraction = analyzeFinalAssistantExtraction(event.messages as AgentMessage[], configCache?.communicationDiagnostics);
-    const finalText = extraction.finalText ?? currentRoute.notification.lastAssistantText;
-    const finalTextSource = extraction.finalText ? "agent_end" : finalText ? "message-lifecycle-fallback" : "none";
+    const finalText = extraction.finalText ?? activeTurnCompletedAssistantText;
+    const finalTextSource = extraction.finalText ? "agent_end" : finalText ? "message-end-fallback" : "none";
     const turnId = createTurnId();
     currentRoute.notification.lastTurnId = turnId;
     const config = configCache;
@@ -2193,7 +2196,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     const status = currentRoute.notification.abortRequested
       ? "aborted"
-      : currentRoute.notification.lastAssistantText
+      : finalText
         ? "completed"
         : "failed";
 
@@ -2201,11 +2204,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     recordDiagnostic({
       component: "runtime",
       event: "agent_end.final_extraction",
-      outcome: extraction.diagnostics.finalTextFound ? "final-text-found" : finalText ? "message-lifecycle-fallback" : extraction.diagnostics.missingReason,
+      outcome: extraction.diagnostics.finalTextFound ? "final-text-found" : finalText ? "message-end-fallback" : extraction.diagnostics.missingReason,
       severity: extraction.diagnostics.finalTextFound || finalText || status === "aborted" ? "info" : "warning",
       turnId,
       ...diagnosticRouteFields(),
-      details: { ...extraction.diagnostics, selectedStatus: status, finalTextSource, usedMessageLifecycleFallback: finalTextSource === "message-lifecycle-fallback", abortRequested: Boolean(currentRoute.notification.abortRequested), hadPriorFailure: Boolean(currentRoute.notification.lastFailure) },
+      details: { ...extraction.diagnostics, selectedStatus: status, finalTextSource, usedMessageLifecycleFallback: finalTextSource === "message-end-fallback", abortRequested: Boolean(currentRoute.notification.abortRequested), hadPriorFailure: Boolean(currentRoute.notification.lastFailure) },
     });
     recordProgress("lifecycle", status === "completed" ? "Pi task completed" : status === "aborted" ? "Pi task aborted" : "Pi task failed");
     if (status === "failed" && !currentRoute.notification.lastFailure) {
