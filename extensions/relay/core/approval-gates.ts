@@ -155,7 +155,7 @@ export function resolveApprovalGateConfig(config: ApprovalGateConfig | undefined
 }
 
 export function approvalConfigFindings(config: ResolvedApprovalGateConfig): string[] {
-  if (!config.enabled) return ["Approval gates disabled."];
+  if (!config.enabled) return ["Approval gates disabled (default; remote turns only when enabled)."];
   const findings = [`Approval gates enabled with ${config.rules.length} rule(s).`];
   findings.push(`Timeout: ${Math.round(config.timeoutMs / 1000)}s.`);
   findings.push(`Session grants: ${config.sessionGrants ? `enabled (${Math.round(config.sessionGrantTtlMs / 1000)}s TTL)` : "disabled"}.`);

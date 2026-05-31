@@ -324,6 +324,7 @@ export interface SessionRoute {
   lastActivityAt?: number;
   remoteRequester?: RelayFileDeliveryRequester;
   remoteRequesterPendingTurn?: boolean;
+  remoteRequesterActiveTurn?: boolean;
 }
 
 export interface SessionStatusSnapshot {

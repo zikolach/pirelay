@@ -882,6 +882,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           const requester = route.remoteRequester;
           if (!liveContextForRoute(route)) {
             route.remoteRequesterPendingTurn = false;
+            route.remoteRequesterActiveTurn = false;
             if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
             throw routeUnavailableError();
           }
@@ -889,6 +890,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
             pi.sendUserMessage(text, options);
           } catch (error) {
             route.remoteRequesterPendingTurn = false;
+            route.remoteRequesterActiveTurn = false;
             if (requester && route.remoteRequester === requester) route.remoteRequester = undefined;
             if (isStaleExtensionReferenceError(error)) {
               invalidateLiveContextForRoute(route);
@@ -2007,8 +2009,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) return;
     clearTurnImageCaches();
     currentRoute.actions.context = ctx;
-    if (!currentRoute.remoteRequesterPendingTurn) currentRoute.remoteRequester = undefined;
+    const remoteOwnedTurn = currentRoute.remoteRequesterPendingTurn === true;
+    if (!remoteOwnedTurn) currentRoute.remoteRequester = undefined;
     currentRoute.remoteRequesterPendingTurn = false;
+    currentRoute.remoteRequesterActiveTurn = remoteOwnedTurn;
     currentRoute.notification.startedAt = Date.now();
     currentRoute.notification.lastTurnId = undefined;
     currentRoute.notification.lastAssistantText = undefined;
@@ -2069,9 +2073,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!operation) return;
     const requester = currentRoute.remoteRequester;
     if (!requester) {
-      await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, summary: operation.summary, detail: "No active remote requester for approval target." });
-      return { block: true, reason: "Approval required, but no active remote requester is available." };
+      if (currentRoute.remoteRequesterActiveTurn) {
+        await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, summary: operation.summary, detail: "No active remote requester for approval target." });
+        return { block: true, reason: "Approval required, but no active remote requester is available." };
+      }
+      return;
     }
+    if (!currentRoute.remoteRequesterActiveTurn) return;
     const active = await approvalRequesterBindingIsActive(currentRoute, requester, new TunnelStateStore(config.stateDir));
     if (!active) {
       await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, detail: "Approval requester binding is inactive." });

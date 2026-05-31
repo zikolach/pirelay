@@ -41,6 +41,12 @@ describe("approval gates", () => {
     expect(classifyApprovalOperation({ toolName: "bash", input: { command: "git push" } }, config)).toBeUndefined();
   });
 
+  it("keeps rules inert unless approval gates are explicitly enabled", () => {
+    const config = resolveApprovalGateConfig({ rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] });
+    expect(config.enabled).toBe(false);
+    expect(classifyApprovalOperation({ toolName: "bash", input: { command: "git push origin main" } }, config)).toBeUndefined();
+  });
+
   it("classifies sensitive tool calls by category and rule", () => {
     const config = resolveApprovalGateConfig({ enabled: true, rules: [{ id: "git", categories: ["git-remote"] }] });
     const operation = classifyApprovalOperation({ toolName: "bash", toolCallId: "tc1", input: { command: "git push origin main" } }, config);

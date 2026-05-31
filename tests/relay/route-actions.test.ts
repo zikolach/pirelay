@@ -145,6 +145,7 @@ describe("route action lifetime helpers", () => {
     const nextRequester = { ...previousRequester, conversationId: "new", safeLabel: "new" };
     session.remoteRequester = previousRequester;
     session.remoteRequesterPendingTurn = true;
+    session.remoteRequesterActiveTurn = true;
     const events: string[] = [];
 
     await expect(deliverRoutePrompt(session, {
@@ -156,6 +157,7 @@ describe("route action lifetime helpers", () => {
 
     expect(session.remoteRequester).toBe(previousRequester);
     expect(session.remoteRequesterPendingTurn).toBe(true);
+    expect(session.remoteRequesterActiveTurn).toBe(true);
     expect(events).toEqual(["start", "rollback"]);
   });
 
@@ -176,6 +178,7 @@ describe("route action lifetime helpers", () => {
 
     expect(sendUserMessage).toHaveBeenCalledWith("hello", { deliverAs: "followUp" });
     expect(session.remoteRequester).toBe(requester);
+    expect(session.remoteRequesterActiveTurn).toBe(true);
     expect(events).toEqual(["start", "commit"]);
   });
 

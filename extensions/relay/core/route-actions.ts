@@ -116,12 +116,14 @@ export async function deliverRoutePrompt(route: SessionRoute, options: RouteProm
 
   const previousRequester = route.remoteRequester;
   const previousPendingTurn = route.remoteRequesterPendingTurn;
+  const previousActiveTurn = route.remoteRequesterActiveTurn;
   const deliverAs = probe.idle ? undefined : options.deliverAs;
   const context = { idle: probe.idle, deliverAs };
   const rollback = async (): Promise<void> => {
     if (options.requester) {
       route.remoteRequester = previousRequester;
       route.remoteRequesterPendingTurn = previousPendingTurn;
+      route.remoteRequesterActiveTurn = previousActiveTurn;
     }
     await options.onRollback?.(context);
   };
@@ -133,6 +135,7 @@ export async function deliverRoutePrompt(route: SessionRoute, options: RouteProm
     if (deliverAs) route.actions.sendUserMessage(options.content, { deliverAs });
     else if (options.passUndefinedOptions) route.actions.sendUserMessage(options.content, undefined);
     else route.actions.sendUserMessage(options.content);
+    if (options.requester && !probe.idle) route.remoteRequesterActiveTurn = true;
   } catch (error) {
     await rollback();
     return routeActionOutcomeFromError(error, options.safeFailureMessage ?? "Could not deliver the prompt to Pi.");
