@@ -102,5 +102,5 @@ PiRelay SHALL document how to use communication diagnostics to investigate missi
 
 #### Scenario: Broker communication is investigated
 - **WHEN** a user suspects broker route, Telegram ingress, or notification delivery problems
-- **THEN** documentation explains how to inspect broker/adaptor diagnostic events, correlate them with session/turn identifiers, and share redacted excerpts safely
+- **THEN** documentation explains how to inspect broker/adapter diagnostic events, correlate them with session/turn identifiers, and share redacted excerpts safely
 
