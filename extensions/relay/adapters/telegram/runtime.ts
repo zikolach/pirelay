@@ -2407,6 +2407,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const sourcePrefix = this.sourcePrefixForRoute(route);
 
       if (status === "completed" && notification.lastAssistantText) {
+        notification.lastSummary = summarizeTextDeterministically(notification.lastAssistantText);
         const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
           ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
           : "";

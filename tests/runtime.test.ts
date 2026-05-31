@@ -6,6 +6,7 @@ import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
 import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
 import { InProcessTunnelRuntime, sendSessionNotification } from "../extensions/relay/adapters/telegram/runtime.js";
+import { formatSummaryOutput } from "../extensions/relay/formatting/presenters.js";
 import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
@@ -1103,6 +1104,9 @@ describe("InProcessTunnelRuntime", () => {
       ]);
       expect(sends[1]?.text).toContain("\n\nValidation after rebase:\n-");
       expect(sends[1]?.text).not.toContain("Validation after rebase: -");
+      expect(route.notification.lastSummary).toBeDefined();
+      expect(formatSummaryOutput(route)).toBe(route.notification.lastSummary);
+      expect(formatSummaryOutput(route)).not.toBe(route.notification.lastAssistantText);
     }
   });
 
