@@ -1,7 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
-import { summarizeForTelegram } from "./summary.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveTelegramBindingAuthority, telegramDestinationKey } from "../../core/binding-authority.js";
@@ -58,10 +57,11 @@ import { delegationTaskActionButtons, parseDelegationActionId, parseDelegationCo
 import { redactSecrets } from "../../config/setup.js";
 import { telegramBotCommands } from "../../commands/surfaces.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
-import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, shouldSendFullFinalOutput } from "../../core/final-output.js";
-import { channelTextChunks, type ChannelInboundMessage } from "../../core/channel-adapter.js";
+import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFileName, planFinalOutputDelivery } from "../../core/final-output.js";
+import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
+import { formatTelegramChatText } from "./formatting.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import { delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
@@ -84,6 +84,7 @@ import {
   isAllowedImageMimeType,
   modelSupportsImages,
   parseTelegramCommand,
+  redactSecret,
   summarizeTextDeterministically,
   toIsoNow,
 } from "../../core/utils.js";
@@ -291,7 +292,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return this.statusOf(route, true);
   }
 
-  async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
+  async sendToBoundChat(sessionKey: string, text: string, _options?: { terminalStatus?: "completed" | "failed" | "aborted" }): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
     const binding = await this.activeOutputBindingForRoute(route);
@@ -962,8 +963,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending Markdown file.");
-        const file = finalOutputMarkdownFile(route, text);
-        await this.api.sendMarkdownDocument(callback.chat.id, file.fileName, text, "Latest assistant output");
+        await this.api.sendMarkdownDocument(callback.chat.id, finalOutputMarkdownFileName(route), text, "Latest assistant output");
         return;
       }
       case "latest-images": {
@@ -2369,20 +2369,37 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private async sendCompletedFullOutput(route: SessionRoute, binding: TelegramBindingMetadata, durationLabel: string, sourcePrefix: string, imageHint: string): Promise<void> {
     const text = route.notification.lastAssistantText;
     if (!text) return;
-    const chunks = channelTextChunks({ capabilities: telegramCapabilities(this.config) }, text);
-    if (chunks.length <= DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS) {
+    const target = { displayName: "Telegram", capabilities: telegramCapabilities(this.config) };
+    const plan = planFinalOutputDelivery(target, route, text, {
+      maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS,
+      prepareText: (value) => formatTelegramChatText(redactSecret(value, this.config.redactionPatterns)),
+    });
+    if (plan.kind === "messages") {
       await this.api.sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
-      for (const chunk of chunks) await this.api.sendPlainText(binding.chatId, chunk);
+      const api = this.api as TelegramApiClient & { sendPreparedPlainText?: TelegramApiClient["sendPreparedPlainText"] };
+      for (const chunk of plan.chunks) {
+        if (api.sendPreparedPlainText) await api.sendPreparedPlainText(binding.chatId, chunk);
+        else await this.api.sendPlainText(binding.chatId, chunk);
+      }
       if (imageHint) await this.api.sendPlainTextWithKeyboard(binding.chatId, imageHint.trim(), this.latestImagesKeyboardForRoute(route));
       return;
     }
-    const file = finalOutputMarkdownFile(route, text);
-    await this.api.sendPlainTextWithKeyboard(
-      binding.chatId,
-      `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`,
-      this.latestImagesKeyboardForRoute(route),
-    );
-    await this.api.sendDocumentData(binding.chatId, file.fileName, Buffer.from(file.data), "Latest assistant output");
+    if (plan.kind === "document") {
+      await this.api.sendPlainTextWithKeyboard(
+        binding.chatId,
+        `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`,
+        this.latestImagesKeyboardForRoute(route),
+      );
+      await this.api.sendMarkdownDocument(binding.chatId, plan.fileName, text, "Latest assistant output");
+      return;
+    }
+    await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, this.latestImagesKeyboardForRoute(route));
+  }
+
+  private refreshCompletionSummaryAfterDelivery(route: SessionRoute, text: string): void {
+    void summarizeRouteNotificationText(route, text, this.config.summaryMode).then((summary) => {
+      route.notification.lastSummary = summary;
+    });
   }
 
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
@@ -2400,29 +2417,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const sourcePrefix = this.sourcePrefixForRoute(route);
 
       if (status === "completed" && notification.lastAssistantText) {
-        const mode = progressModeFor(binding, this.config);
+        const finalOutputText = notification.lastAssistantText;
+        notification.lastSummary = summarizeTextDeterministically(finalOutputText);
         const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
           ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
           : "";
-        if (shouldSendFullFinalOutput(mode)) {
-          await this.sendCompletedFullOutput(route, binding, durationLabel, sourcePrefix, imageHint);
-          return;
-        }
-
-        const summary = route.actions.summarizeText
-          ? await route.actions.summarizeText(notification.lastAssistantText, this.config.summaryMode)
-          : await summarizeForTelegram(notification.lastAssistantText, this.config.summaryMode, undefined);
-        notification.lastSummary = summary;
-        const fullOutputKeyboard = route.notification.structuredAnswer ? undefined : this.fullOutputKeyboardForRoute(route);
-        const actionKeyboard = route.notification.structuredAnswer
-          ? undefined
-          : this.combineKeyboards(fullOutputKeyboard, this.latestImagesKeyboardForRoute(route));
-        const fullOutputHint = fullOutputKeyboard ? "\n\nUse /full for the full assistant output." : "";
-        await this.api.sendPlainTextWithKeyboard(
-          binding.chatId,
-          `${sourcePrefix}✅ Pi task completed in ${durationLabel}\n\n${summary}${fullOutputHint}${imageHint}`,
-          actionKeyboard,
-        );
+        await this.sendCompletedFullOutput(route, binding, durationLabel, sourcePrefix, imageHint);
         if (notification.structuredAnswer) {
           await this.api.sendPlainTextWithKeyboard(
             binding.chatId,
@@ -2432,6 +2432,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
             this.answerActionKeyboardForRoute(route),
           );
         }
+        this.refreshCompletionSummaryAfterDelivery(route, finalOutputText);
         return;
       }
 
@@ -2528,11 +2529,22 @@ export function getOrCreateTunnelRuntime(config: TelegramTunnelConfig): TunnelRu
   return runtime;
 }
 
+async function summarizeRouteNotificationText(route: SessionRoute, text: string, mode: TelegramTunnelConfig["summaryMode"]): Promise<string> {
+  const summarizeText = route.actions.summarizeText;
+  if (!summarizeText) return summarizeTextDeterministically(text);
+  try {
+    const summary = (await summarizeText(text, mode)).trim();
+    return summary || summarizeTextDeterministically(text);
+  } catch {
+    return summarizeTextDeterministically(text);
+  }
+}
+
 export async function sendSessionNotification(
   runtime: TunnelRuntime,
   route: SessionRoute,
   status: "completed" | "failed" | "aborted",
-  config: Pick<TelegramTunnelConfig, "progressMode"> = { progressMode: undefined },
+  config: Pick<TelegramTunnelConfig, "progressMode"> & Partial<Pick<TelegramTunnelConfig, "summaryMode">> = { progressMode: undefined },
 ): Promise<void> {
   if (runtime instanceof InProcessTunnelRuntime) {
     await runtime.notifyTurnCompleted(route, status);
@@ -2541,21 +2553,17 @@ export async function sendSessionNotification(
 
   if (!route.binding) return;
   if (status === "completed") {
-    route.notification.lastSummary = summarizeTextDeterministically(
-      route.notification.lastAssistantText ?? "Pi task completed.",
-    );
+    const summarySource = route.notification.lastAssistantText;
+    route.notification.lastSummary = summarySource
+      ? await summarizeRouteNotificationText(route, summarySource, config.summaryMode ?? "deterministic")
+      : "Pi task completed.";
     await runtime.registerRoute(route);
   }
-  const mode = progressModeFor(route.binding, config);
-  const wantsFullFinalOutput = status === "completed" && shouldSendFullFinalOutput(mode);
   const fallback = status === "completed"
-    ? route.notification.lastSummary ?? summarizeTextDeterministically(route.notification.lastAssistantText ?? "Pi task completed.")
+    ? route.notification.lastSummary ?? "Pi task completed."
     : route.notification.lastFailure ?? `Pi task ${status}.`;
-  const fullOutputHint = wantsFullFinalOutput && route.notification.lastAssistantText
-    ? "\n\nUse /full for the full assistant output."
-    : "";
   const imageHint = status === "completed" && !route.notification.structuredAnswer && route.notification.latestImages?.count
     ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
     : "";
-  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${fullOutputHint}${imageHint}`);
+  await runtime.sendToBoundChat(route.sessionKey, `${fallback}${imageHint}`, { terminalStatus: status });
 }

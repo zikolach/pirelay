@@ -131,8 +131,8 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     return statusSnapshotForRoute(route, { online: true });
   }
 
-  async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
-    await this.request("sendToBoundChat", { sessionKey, text });
+  async sendToBoundChat(sessionKey: string, text: string, options: { terminalStatus?: "completed" | "failed" | "aborted" } = {}): Promise<void> {
+    await this.request("sendToBoundChat", { sessionKey, text, ...options });
   }
 
   private serializeRoute(route: SessionRoute): BrokerRouteState {

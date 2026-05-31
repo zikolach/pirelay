@@ -2,6 +2,7 @@ import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
+import { appendTestTelegramOutbox, testTelegramOutboxPathFromEnv } from './test-telegram-outbox.js';
 
 const jiti = createJiti(import.meta.url);
 const [
@@ -10,6 +11,7 @@ const [
   telegramFormatModule,
   utilsModule,
   mediaModule,
+  finalOutputModule,
   sessionMultiplexingModule,
   relayTelegramMiddlewareModule,
   relayMiddlewareModule,
@@ -27,6 +29,7 @@ const [
   jiti.import('../adapters/telegram/formatting.ts'),
   jiti.import('../core/utils.ts'),
   jiti.import('../media/index.ts'),
+  jiti.import('../core/final-output.ts'),
   jiti.import('../core/session-selection.ts'),
   jiti.import('../adapters/telegram/middleware.ts'),
   jiti.import('../middleware/pipeline.ts'),
@@ -85,6 +88,8 @@ const parseTelegramActionCallbackData = requiredFunction(telegramActionsModule, 
 const sessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'sessionDashboardRef');
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
+const DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS = requiredNumber(finalOutputModule, './final-output.ts', 'DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS');
+const planFinalOutputDelivery = requiredFunction(finalOutputModule, './final-output.ts', 'planFinalOutputDelivery');
 const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
 const acceptedInboundImageFormatsText = requiredFunction(mediaModule, './media/index.ts', 'acceptedInboundImageFormatsText');
 const buildImagePromptContent = requiredFunction(utilsModule, './utils.ts', 'buildImagePromptContent');
@@ -129,6 +134,8 @@ const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
+const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
+const testTelegramOutboxPath = testTelegramOutboxPathFromEnv(process.env);
 const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
 function recordDiagnostic(event) {
   if (!diagnosticsLogger.config?.enabled) return;
@@ -137,7 +144,6 @@ function recordDiagnostic(event) {
 function routeDiagnosticFields(route) {
   return route ? { sessionKey: route.sessionKey, sessionId: route.sessionId, sessionLabel: route.sessionLabel } : {};
 }
-const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
 }
@@ -233,7 +239,7 @@ function redact(text) {
 
 function chunkText(text) {
   const maxChars = config.maxTelegramMessageChars || 3900;
-  const safe = formatTelegramChatText(redact(String(text || ''))).replace(/\r\n/g, '\n');
+  const safe = prepareTelegramChatText(text);
   if (safe.length <= maxChars) return [safe];
   const chunks = [];
   let remaining = safe;
@@ -245,7 +251,11 @@ function chunkText(text) {
     remaining = remaining.slice(splitAt).trimStart();
   }
   if (remaining) chunks.push(remaining);
-  return chunks.map((chunk, index) => `[${index + 1}/${chunks.length}]\n${chunk}`);
+  return chunks.map((chunk, index) => chunks.length > 1 ? `[${index + 1}/${chunks.length}]\n${chunk}` : chunk);
+}
+
+function prepareTelegramChatText(text) {
+  return formatTelegramChatText(redact(String(text || ''))).replace(/\r\n/g, '\n');
 }
 
 function isRetriable(error) {
@@ -289,6 +299,32 @@ async function withRetry(operation) {
   throw lastError;
 }
 
+async function appendBrokerTestTelegramOutbox(event) {
+  return appendTestTelegramOutbox(event, { outboxPath: testTelegramOutboxPath, recordDiagnostic });
+}
+
+async function sendTelegramMessage(chatId, text, options) {
+  if (await appendBrokerTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
+  await api.sendMessage(chatId, text, options);
+}
+
+async function sendTelegramDocument(chatId, document, options, testDocument) {
+  if (await appendBrokerTestTelegramOutbox({ method: 'sendDocument', chatId, document: testDocument, options })) return;
+  await api.sendDocument(chatId, document, options);
+}
+
+async function sendPreparedPlainText(chatId, text, keyboard) {
+  const replyMarkup = keyboard ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
+  recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'prepared-text', chunks: 1, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
+  try {
+    await withRetry(() => sendTelegramMessage(chatId, String(text || ''), replyMarkup));
+    recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'prepared-text', chunks: 1 } });
+  } catch (error) {
+    recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'prepared-text', error: error instanceof Error ? error.message : String(error) } });
+    throw error;
+  }
+}
+
 async function sendPlainText(chatId, text, keyboard) {
   const chunks = chunkText(text);
   recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
@@ -296,7 +332,7 @@ async function sendPlainText(chatId, text, keyboard) {
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       const replyMarkup = keyboard && index === chunks.length - 1 ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
-      await withRetry(() => api.sendMessage(chatId, chunk, replyMarkup));
+      await withRetry(() => sendTelegramMessage(chatId, chunk, replyMarkup));
     }
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length } });
   } catch (error) {
@@ -307,15 +343,57 @@ async function sendPlainText(chatId, text, keyboard) {
 
 async function sendMarkdownDocument(chatId, filename, text, caption) {
   const redacted = redact(text);
-  await withRetry(() => api.sendDocument(chatId, new InputFile(Buffer.from(redacted, 'utf8'), filename), caption ? { caption } : undefined));
+  const redactedCaption = caption ? redact(caption) : undefined;
+  await withRetry(() => sendTelegramDocument(
+    chatId,
+    new InputFile(Buffer.from(redacted, 'utf8'), filename),
+    redactedCaption ? { caption: redactedCaption } : undefined,
+    { fileName: filename, text: redacted, caption: redactedCaption },
+  ));
+}
+
+function finalOutputDeliveryTarget() {
+  return {
+    displayName: 'Telegram',
+    capabilities: {
+      maxTextChars: config.maxTelegramMessageChars || 3900,
+      documents: true,
+    },
+  };
+}
+
+async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) {
+  const text = route?.notification?.lastAssistantText;
+  if (!text) return false;
+  const durationMs = route.notification?.startedAt ? Date.now() - route.notification.startedAt : undefined;
+  const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : 'unknown time';
+  const plan = planFinalOutputDelivery(finalOutputDeliveryTarget(), route, text, {
+    maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS,
+    prepareText: prepareTelegramChatText,
+  });
+  if (plan.kind === 'messages') {
+    await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
+    for (const chunk of plan.chunks) await sendPreparedPlainText(binding.chatId, chunk);
+    if (imageHint) await sendPlainText(binding.chatId, imageHint.trim(), latestImagesKeyboardForRoute(route));
+    return true;
+  }
+  if (plan.kind === 'document') {
+    await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`, latestImagesKeyboardForRoute(route));
+    await sendMarkdownDocument(binding.chatId, plan.fileName, text, 'Latest assistant output');
+    return true;
+  }
+  await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, latestImagesKeyboardForRoute(route));
+  return true;
 }
 
 async function sendImageDocument(chatId, image, caption) {
   const bytes = Buffer.from(image.data, 'base64');
-  await withRetry(() => api.sendDocument(
+  const fileName = safeTelegramImageFilename(image.fileName, image.mimeType);
+  await withRetry(() => sendTelegramDocument(
     chatId,
-    new InputFile(bytes, safeTelegramImageFilename(image.fileName, image.mimeType)),
+    new InputFile(bytes, fileName),
     caption ? { caption: redact(caption) } : undefined,
+    { fileName, byteSize: bytes.byteLength, caption: caption ? redact(caption) : undefined },
   ));
 }
 
@@ -2340,7 +2418,13 @@ async function handleClientRequest(socket, message) {
         route.binding = binding;
         syncActivityIndicator(route);
         const sourcePrefix = sourcePrefixForRoute(route);
-        await sendPlainText(binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
+        const imageHint = message.terminalStatus === 'completed' && !route.notification?.structuredAnswer && route.notification?.latestImages?.count
+          ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
+          : '';
+        const sentCompletedFullOutput = message.terminalStatus === 'completed' && await sendCompletedFullOutput(route, binding, sourcePrefix, imageHint);
+        if (!sentCompletedFullOutput) {
+          await sendPlainText(binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
+        }
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(
             binding.chatId,
@@ -2350,7 +2434,7 @@ async function handleClientRequest(socket, message) {
             answerActionKeyboardForRoute(route),
           );
         }
-        recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String(message.text || '').length } });
+        recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String((sentCompletedFullOutput ? route.notification?.lastAssistantText : message.text) || '').length, terminalStatus: message.terminalStatus } });
         respond(true, true);
         return;
       }

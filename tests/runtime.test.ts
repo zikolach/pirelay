@@ -6,6 +6,7 @@ import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided
 import { buildAnswerCustomCallbackData, buildAnswerOptionCallbackData, buildDashboardCallbackData, buildFullChatCallbackData, buildFullMarkdownCallbackData, buildFullOutputKeyboard, buildLatestImagesCallbackData, buildLatestImagesKeyboard, parseTelegramActionCallbackData, sessionDashboardRef } from "../extensions/relay/adapters/telegram/actions.js";
 import { createProgressActivity } from "../extensions/relay/notifications/progress.js";
 import { InProcessTunnelRuntime, sendSessionNotification } from "../extensions/relay/adapters/telegram/runtime.js";
+import { formatSummaryOutput } from "../extensions/relay/formatting/presenters.js";
 import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
@@ -38,6 +39,22 @@ async function createRuntimeConfig(): Promise<TelegramTunnelConfig> {
     maxLatestImages: 4,
     allowedImageMimeTypes: ["image/jpeg", "image/png", "image/webp"],
   };
+}
+
+async function waitForCondition(assertion: () => void, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  if (lastError) throw lastError;
+  assertion();
 }
 
 function createRoute(binding: TelegramBindingMetadata, idle = true, promptLocalConfirmation: SessionRoute["actions"]["promptLocalConfirmation"] = async () => true) {
@@ -1063,8 +1080,166 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent[0]).toContain("could not build a structured answer draft");
   });
 
-  it("only attaches full-output buttons when the completion preview is truncated", async () => {
+  it("delivers short formatted Telegram completions readably across progress modes", async () => {
+    for (const mode of ["quiet", "normal", "verbose", "completionOnly"] as const) {
+      const config = await createRuntimeConfig();
+      const store = new TunnelStateStore(config.stateDir);
+      const runtime = new InProcessTunnelRuntime(config, store);
+      const binding: TelegramBindingMetadata = {
+        sessionKey: `session-readable-${mode}:/tmp/session-readable-${mode}.jsonl`,
+        sessionId: `session-readable-${mode}`,
+        sessionFile: `/tmp/session-readable-${mode}.jsonl`,
+        sessionLabel: `session-readable-${mode}.jsonl`,
+        chatId: 1010,
+        userId: 30,
+        username: "owner",
+        boundAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        progressMode: mode,
+      };
+      const { route } = createRoute(binding, true);
+      route.notification.lastTurnId = `turn-${mode}`;
+      route.notification.lastAssistantText = [
+        "Rebased PR #64 onto latest `main` and force-pushed.",
+        "",
+        "Validation after rebase:",
+        "- `npm run typecheck` ✅",
+        "- `npm test` ✅ 601 passed, 2 skipped",
+      ].join("\n");
+      const sends: Array<{ text: string; keyboard?: unknown }> = [];
+      (runtime as any).api = {
+        sendPlainText: async (_chatId: number, text: string) => sends.push({ text }),
+        sendPlainTextWithKeyboard: async (_chatId: number, text: string, keyboard?: unknown) => sends.push({ text, keyboard }),
+      };
+
+      await runtime.notifyTurnCompleted(route, "completed");
+
+      expect(sends.map((send) => send.text)).toEqual([
+        expect.stringContaining("Final output:"),
+        route.notification.lastAssistantText,
+      ]);
+      expect(sends[1]?.text).toContain("\n\nValidation after rebase:\n-");
+      expect(sends[1]?.text).not.toContain("Validation after rebase: -");
+      expect(route.notification.lastSummary).toBeDefined();
+      expect(formatSummaryOutput(route)).toBe(route.notification.lastSummary);
+      expect(formatSummaryOutput(route)).not.toBe(route.notification.lastAssistantText);
+    }
+  });
+
+  it("falls back to deterministic summaries when the configured summarizer fails", async () => {
     const config = await createRuntimeConfig();
+    config.summaryMode = "llm";
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-summary-failure:/tmp/session-summary-failure.jsonl",
+      sessionId: "session-summary-failure",
+      sessionFile: "/tmp/session-summary-failure.jsonl",
+      sessionLabel: "session-summary-failure.jsonl",
+      chatId: 10104,
+      userId: 304,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Detailed assistant output that should still get a fallback summary when LLM summarization fails.";
+    route.actions.summarizeText = vi.fn(async () => { throw new Error("model unavailable"); });
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push(text),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    expect(route.notification.lastSummary).toBeDefined();
+    expect(route.notification.lastSummary).not.toContain("model unavailable");
+    expect(formatSummaryOutput(route)).toBe(route.notification.lastSummary);
+    expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+  });
+
+  it("uses the route summarizer when storing Telegram completion summaries", async () => {
+    const config = await createRuntimeConfig();
+    config.summaryMode = "llm";
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-llm-summary:/tmp/session-llm-summary.jsonl",
+      sessionId: "session-llm-summary",
+      sessionFile: "/tmp/session-llm-summary.jsonl",
+      sessionLabel: "session-llm-summary.jsonl",
+      chatId: 10105,
+      userId: 305,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Detailed assistant output that should be summarized by the configured summarizer.";
+    route.actions.summarizeText = vi.fn(async (_text, mode) => `summary via ${mode}`);
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push(text),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    await waitForCondition(() => expect(route.notification.lastSummary).toBe("summary via llm"));
+    expect(route.notification.lastSummary).toBe("summary via llm");
+    expect(formatSummaryOutput(route)).toBe("summary via llm");
+    expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+  });
+
+  it("sends Telegram completion output before waiting for LLM summary storage", async () => {
+    const config = await createRuntimeConfig();
+    config.summaryMode = "llm";
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-deferred-summary:/tmp/session-deferred-summary.jsonl",
+      sessionId: "session-deferred-summary",
+      sessionFile: "/tmp/session-deferred-summary.jsonl",
+      sessionLabel: "session-deferred-summary.jsonl",
+      chatId: 10106,
+      userId: 306,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Detailed assistant output that should be delivered without waiting for the LLM summary.";
+    let finishSummary!: (value: string) => void;
+    const summaryPromise = new Promise<string>((resolve) => { finishSummary = resolve; });
+    route.actions.summarizeText = vi.fn(async () => summaryPromise);
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push(text),
+    };
+
+    const notificationPromise = runtime.notifyTurnCompleted(route, "completed");
+    const notificationResult = await Promise.race([
+      notificationPromise.then(() => "resolved"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 25)),
+    ]);
+
+    expect(notificationResult).toBe("resolved");
+    expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+    expect(route.notification.lastSummary).toBeDefined();
+    expect(route.notification.lastSummary).not.toBe("summary via llm");
+
+    finishSummary("summary via llm");
+    await waitForCondition(() => expect(route.notification.lastSummary).toBe("summary via llm"));
+  });
+
+
+  it("keeps structured answer actions after full terminal output delivery", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 120;
     const store = new TunnelStateStore(config.stateDir);
     const runtime = new InProcessTunnelRuntime(config, store);
     const binding: TelegramBindingMetadata = {
@@ -1077,35 +1252,11 @@ describe("InProcessTunnelRuntime", () => {
       username: "owner",
       boundAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
     };
-
     const { route } = createRoute(binding, true);
-    binding.progressMode = "quiet";
-    route.notification.lastTurnId = "turn-short";
-    route.notification.lastAssistantText = "Hey! Morning — ready when you are.";
-    const sends: Array<{ text: string; keyboard?: unknown }> = [];
-    (runtime as any).api = {
-      sendPlainTextWithKeyboard: async (_chatId: number, text: string, keyboard?: unknown) => sends.push({ text, keyboard }),
-    };
-
-    await runtime.notifyTurnCompleted(route, "completed");
-
-    expect(sends[0]?.text).toContain("Hey! Morning — ready when you are.");
-    expect(sends[0]?.text).not.toContain("Use /full");
-    expect(sends[0]?.keyboard).toBeUndefined();
-
-    sends.length = 0;
-    route.notification.lastTurnId = "turn-long";
-    route.notification.lastAssistantText = "Long output ".repeat(220);
-
-    await runtime.notifyTurnCompleted(route, "completed");
-
-    expect(sends[0]?.text).toContain("Use /full");
-    expect(sends[0]?.keyboard).toEqual(buildFullOutputKeyboard("turn-long"));
-
-    sends.length = 0;
     const decisionText = [
-      `${"Long decision output ".repeat(120)}`,
+      `${"Long decision output ".repeat(80)}`,
       "",
       "Choose:",
       "1. Review the current diff.",
@@ -1114,23 +1265,22 @@ describe("InProcessTunnelRuntime", () => {
     route.notification.lastTurnId = "turn-decision";
     route.notification.lastAssistantText = decisionText;
     route.notification.structuredAnswer = extractStructuredAnswerMetadata(decisionText);
-
-    await runtime.notifyTurnCompleted(route, "completed");
-
-    expect(sends).toHaveLength(2);
-    expect(sends[0]?.text).not.toContain("Use /full");
-    expect(sends[0]?.keyboard).toBeUndefined();
-    expect(sends[1]?.text).toContain("Use /full or the full-output buttons");
-    expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildFullOutputKeyboard(route.notification.structuredAnswer!.turnId)));
-
-    sends.length = 0;
     route.notification.latestImages = { turnId: "turn-decision", count: 1, skipped: 0 };
+    const sends: Array<{ text: string; keyboard?: unknown }> = [];
+    const documents: Array<{ filename: string; data: string; caption?: string }> = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push({ text }),
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string, keyboard?: unknown) => sends.push({ text, keyboard }),
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string, caption?: string) => documents.push({ filename, data: text, caption }),
+    };
 
     await runtime.notifyTurnCompleted(route, "completed");
 
-    expect(sends).toHaveLength(2);
-    expect(sends[0]?.keyboard).toBeUndefined();
-    expect(sends[1]?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
+    expect(sends[0]?.text).toContain("Full output is attached as Markdown");
+    expect(sends[0]?.keyboard).toEqual(buildLatestImagesKeyboard("turn-decision", 1));
+    expect(documents[0]).toMatchObject({ filename: "pi-output-session-button-threshold-turn-decision.md", data: decisionText, caption: "Latest assistant output" });
+    expect(sends.at(-1)?.text).toContain("Use /full for the full output.");
+    expect(sends.at(-1)?.keyboard).toEqual(expect.arrayContaining(buildLatestImagesKeyboard("turn-decision", 1)));
   });
 
   it("falls back to a Markdown document for very large Telegram completions", async () => {
@@ -1157,7 +1307,7 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).api = {
       sendPlainTextWithKeyboard: async (_chatId: number, text: string) => texts.push(text),
       sendPlainText: async (_chatId: number, text: string) => texts.push(text),
-      sendDocumentData: async (_chatId: number, filename: string, data: Uint8Array, caption?: string) => documents.push({ filename, data: Buffer.from(data).toString("utf8"), caption }),
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string, caption?: string) => documents.push({ filename, data: text, caption }),
     };
 
     await runtime.notifyTurnCompleted(route, "completed");
@@ -1167,7 +1317,42 @@ describe("InProcessTunnelRuntime", () => {
     expect(documents).toEqual([{ filename: "pi-output-session-large-output-turn-large.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
   });
 
-  it("uses summaries for broker fallback completion notifications", async () => {
+  it("plans Telegram completion fallback after chat redaction expands the outbound text", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 100;
+    config.redactionPatterns = ["x"];
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-redacted-output:/tmp/session-redacted-output.jsonl",
+      sessionId: "session-redacted-output",
+      sessionFile: "/tmp/session-redacted-output.jsonl",
+      sessionLabel: "session-redacted-output.jsonl",
+      chatId: 10122,
+      userId: 322,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastTurnId = "turn-redacted";
+    route.notification.lastAssistantText = Array.from({ length: 90 }, () => "x").join(" ");
+    const texts: string[] = [];
+    const documents: Array<{ filename: string; data: string; caption?: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => texts.push(text),
+      sendPlainText: async (_chatId: number, text: string) => texts.push(text),
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string, caption?: string) => documents.push({ filename, data: text, caption }),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("Full output is attached as Markdown");
+    expect(documents).toEqual([{ filename: "pi-output-session-redacted-output-turn-redacted.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
+  });
+
+  it("registers full output but sends only a compact broker fallback notification", async () => {
     const binding: TelegramBindingMetadata = {
       sessionKey: "session-broker-quiet:/tmp/session-broker-quiet.jsonl",
       sessionId: "session-broker-quiet",
@@ -1178,10 +1363,21 @@ describe("InProcessTunnelRuntime", () => {
       username: "owner",
       boundAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
     };
     const { route } = createRoute(binding, true);
-    route.notification.lastAssistantText = "Full final output that should not be sent through the broker fallback completion path. ".repeat(20);
-    const sent: string[] = [];
+    route.notification.lastAssistantText = [
+      "Broker result is ready.",
+      "",
+      "Validation:",
+      "- typecheck ✅",
+      "- tests ✅",
+      "",
+      "Detailed output:",
+      "A ".repeat(400),
+    ].join("\n");
+    route.actions.summarizeText = vi.fn(async (_text, mode) => `broker summary via ${mode}`);
+    const sent: Array<{ sessionKey: string; text: string; options?: { terminalStatus?: string } }> = [];
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
       start: vi.fn(async () => undefined),
@@ -1190,24 +1386,59 @@ describe("InProcessTunnelRuntime", () => {
       registerRoute: vi.fn(async () => undefined),
       unregisterRoute: vi.fn(async () => undefined),
       getStatus: vi.fn(() => undefined),
-      sendToBoundChat: vi.fn(async (_sessionKey, text) => {
-        sent.push(text);
+      sendToBoundChat: vi.fn(async (sessionKey, text, options) => {
+        sent.push({ sessionKey, text, options });
       }),
     };
 
-    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet" });
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet", summaryMode: "llm" });
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toBe(route.notification.lastSummary);
-    expect(sent[0]!.length).toBeLessThan(route.notification.lastAssistantText!.length);
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    expect(route.notification.lastSummary).toBeDefined();
+    expect(fakeRuntime.registerRoute).toHaveBeenCalledWith(route);
+    expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastSummary, options: { terminalStatus: "completed" } }]);
+    expect(sent[0]!.text.length).toBeLessThan(route.notification.lastAssistantText.length);
+    expect(sent[0]!.text).not.toContain("\n\nValidation:\n-");
+  });
 
-    sent.length = 0;
-    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "normal" });
+  it("falls back to deterministic summaries for broker completion notifications when the route summarizer fails", async () => {
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-broker-summary-error:/tmp/session-broker-summary-error.jsonl",
+      sessionId: "session-broker-summary-error",
+      sessionFile: "/tmp/session-broker-summary-error.jsonl",
+      sessionLabel: "session-broker-summary-error.jsonl",
+      chatId: 10123,
+      userId: 323,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = ["Broker result is ready.", "", "Validation:", "- tests ✅"].join("\n");
+    route.actions.summarizeText = vi.fn(async () => {
+      throw new Error("summarizer unavailable");
+    });
+    const sent: Array<{ sessionKey: string; text: string; options?: { terminalStatus?: string } }> = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async (sessionKey, text, options) => {
+        sent.push({ sessionKey, text, options });
+      }),
+    };
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain(route.notification.lastSummary!);
-    expect(sent[0]).toContain("Use /full for the full assistant output.");
-    expect(sent[0]).not.toContain(route.notification.lastAssistantText!);
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet", summaryMode: "llm" });
+
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    expect(route.notification.lastSummary).toBe("Broker result is ready. Validation: - tests ✅");
+    expect(fakeRuntime.registerRoute).toHaveBeenCalledWith(route);
+    expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastSummary, options: { terminalStatus: "completed" } }]);
   });
 
   it("sends Telegram failure and aborted terminal notifications", async () => {

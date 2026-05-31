@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { finalOutputMarkdownFile, sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../extensions/relay/core/final-output.js";
+import { finalOutputMarkdownFile, finalOutputMarkdownFileName, formatPreservingExcerpt, planFinalOutputDelivery, sendFinalOutputWithFallback } from "../../extensions/relay/core/final-output.js";
 import type { ChannelAdapter, ChannelOutboundFile, ChannelOutboundPayload, ChannelRouteAddress } from "../../extensions/relay/core/channel-adapter.js";
 import type { SessionRoute } from "../../extensions/relay/core/types.js";
 
@@ -16,24 +16,26 @@ function route(): SessionRoute {
   };
 }
 
-function adapter(options: { documents?: boolean; maxTextChars?: number } = {}) {
+function adapter(options: { documents?: boolean; maxTextChars?: number; maxDocumentBytes?: number } = {}) {
   const sentTexts: string[] = [];
   const sentDocuments: ChannelOutboundFile[] = [];
+  const capabilities: ChannelAdapter["capabilities"] = {
+    inlineButtons: true,
+    textMessages: true,
+    documents: options.documents ?? true,
+    images: true,
+    activityIndicators: false,
+    callbacks: true,
+    privateChats: true,
+    groupChats: true,
+    maxTextChars: options.maxTextChars ?? 20,
+    supportedImageMimeTypes: ["image/png"],
+  };
+  if (options.maxDocumentBytes !== undefined) capabilities.maxDocumentBytes = options.maxDocumentBytes;
   const fake: ChannelAdapter = {
     id: "slack",
     displayName: "Slack",
-    capabilities: {
-      inlineButtons: true,
-      textMessages: true,
-      documents: options.documents ?? true,
-      images: true,
-      activityIndicators: false,
-      callbacks: true,
-      privateChats: true,
-      groupChats: true,
-      maxTextChars: options.maxTextChars ?? 20,
-      supportedImageMimeTypes: ["image/png"],
-    },
+    capabilities,
     send: vi.fn(async (_payload: ChannelOutboundPayload) => undefined),
     sendText: vi.fn(async (_address, text) => { sentTexts.push(text); }),
     sendDocument: vi.fn(async (_address, file) => { sentDocuments.push(file); }),
@@ -45,11 +47,46 @@ function adapter(options: { documents?: boolean; maxTextChars?: number } = {}) {
 }
 
 describe("final output delivery policy", () => {
-  it("sends full output for non-quiet modes", () => {
-    expect(shouldSendFullFinalOutput("quiet")).toBe(false);
-    expect(shouldSendFullFinalOutput("normal")).toBe(true);
-    expect(shouldSendFullFinalOutput("verbose")).toBe(true);
-    expect(shouldSendFullFinalOutput("completionOnly")).toBe(true);
+
+  it("plans full chat delivery independently of progress mode", () => {
+    const { fake } = adapter({ maxTextChars: 100 });
+    const plan = planFinalOutputDelivery(fake, route(), "Done.\n\n- typecheck ✅\n- tests ✅", { maxMessageChunks: 2 });
+    expect(plan).toEqual({ kind: "messages", chunks: ["Done.\n\n- typecheck ✅\n- tests ✅"], differsFromFullOutput: false });
+  });
+
+  it("plans against prepared outbound chat text when provided", () => {
+    const { fake } = adapter({ maxTextChars: 6 });
+    const plan = planFinalOutputDelivery(fake, route(), "raw", {
+      maxMessageChunks: 2,
+      prepareText: () => "line1\nline2",
+    });
+
+    expect(plan).toEqual({ kind: "messages", chunks: ["line1\n", "line2"], differsFromFullOutput: false });
+  });
+
+  it("uses prepared outbound chat length for document fallback decisions", () => {
+    const { fake } = adapter({ maxTextChars: 10 });
+    const plan = planFinalOutputDelivery(fake, route(), "raw markdown", {
+      maxMessageChunks: 2,
+      prepareText: () => "1234567890 1234567890 1234567890",
+    });
+
+    expect(plan.kind).toBe("document");
+    if (plan.kind === "document") {
+      expect("file" in plan).toBe(false);
+      expect(plan.fileName).toBe("pi-output-s-turn-1.md");
+      expect(Buffer.from(plan.buildFile().data).toString("utf8")).toBe("raw markdown");
+    }
+  });
+
+  it("creates format-preserving excerpts only when shortening is explicitly needed", () => {
+    const excerpt = formatPreservingExcerpt("Intro paragraph.\n\n- first result\n- second result\n\nTrailing details", 42);
+    expect(excerpt).toBe("Intro paragraph.\n\n- first result\n- second…");
+  });
+
+  it("preserves leading indentation when building excerpts", () => {
+    const excerpt = formatPreservingExcerpt("  const answer = true;\n  console.log(answer);\n", 80);
+    expect(excerpt).toBe("  const answer = true;\n  console.log(answer);");
   });
 
   it("sends message chunks when output fits bounded chunks", async () => {
@@ -82,9 +119,20 @@ describe("final output delivery policy", () => {
     expect(sentTexts[0]).toContain("too large");
   });
 
-  it("creates shared Markdown files for latest assistant output", () => {
-    const file = finalOutputMarkdownFile(route(), "# Answer\n");
+  it("reports a limitation when the Markdown document exceeds adapter size limits", async () => {
+    const { fake, sentTexts, sentDocuments } = adapter({ maxTextChars: 10, maxDocumentBytes: 12 });
+    await expect(sendFinalOutputWithFallback(fake, address, route(), "paragraph one\n\nparagraph two\n\nparagraph three", { maxMessageChunks: 2 })).resolves.toBe("unavailable");
+    expect(sentDocuments).toEqual([]);
+    expect(sentTexts).toHaveLength(1);
+    expect(sentTexts[0]).toContain("generated Markdown document");
+    expect(sentTexts[0]).toContain("exceeds Slack's document size limit");
+  });
+
+  it("creates shared Markdown filenames and files for latest assistant output", () => {
+    expect(finalOutputMarkdownFileName(route())).toBe("pi-output-s-turn-1.md");
+    const file = finalOutputMarkdownFile(route(), "# Answer ✅\n");
     expect(file.fileName).toBe("pi-output-s-turn-1.md");
-    expect(Buffer.from(file.data).toString("utf8")).toBe("# Answer\n");
+    expect(Buffer.from(file.data).toString("utf8")).toBe("# Answer ✅\n");
+    expect(file.byteSize).toBe(Buffer.from(file.data).byteLength);
   });
 });

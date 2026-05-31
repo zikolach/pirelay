@@ -384,5 +384,5 @@ export interface TunnelRuntime {
   registerRoute(route: SessionRoute): Promise<void>;
   unregisterRoute(sessionKey: string): Promise<void>;
   getStatus(sessionKey: string): SessionStatusSnapshot | undefined;
-  sendToBoundChat(sessionKey: string, text: string): Promise<void>;
+  sendToBoundChat(sessionKey: string, text: string, options?: { terminalStatus?: "completed" | "failed" | "aborted" }): Promise<void>;
 }
