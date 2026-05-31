@@ -41,7 +41,7 @@ async function createRuntimeConfig(): Promise<TelegramTunnelConfig> {
   };
 }
 
-async function waitForCondition(assertion: () => void, timeoutMs = 250): Promise<void> {
+async function waitForCondition(assertion: () => void, timeoutMs = 2_000, intervalMs = 25): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   while (Date.now() < deadline) {
@@ -50,7 +50,7 @@ async function waitForCondition(assertion: () => void, timeoutMs = 250): Promise
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   }
   if (lastError) throw lastError;
