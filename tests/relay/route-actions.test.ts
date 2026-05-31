@@ -178,8 +178,26 @@ describe("route action lifetime helpers", () => {
 
     expect(sendUserMessage).toHaveBeenCalledWith("hello", { deliverAs: "followUp" });
     expect(session.remoteRequester).toBe(requester);
+    expect(session.remoteRequesterPendingTurn).toBe(true);
     expect(session.remoteRequesterActiveTurn).toBe(true);
     expect(events).toEqual(["start", "commit"]);
+  });
+
+  it("treats requester-less route prompts as remote-owned without leaking stale requester", async () => {
+    const sendUserMessage = vi.fn();
+    const session = route({ isIdle: () => false, sendUserMessage });
+    const staleRequester = { channel: "telegram" as const, instanceId: "default", conversationId: "old", userId: "1", sessionKey: session.sessionKey, safeLabel: "old", createdAt: 1 };
+    session.remoteRequester = staleRequester;
+
+    await expect(deliverRoutePrompt(session, {
+      content: "delegated work",
+      deliverAs: "followUp",
+    })).resolves.toEqual({ kind: "success", result: { idle: false, deliverAs: "followUp" } });
+
+    expect(sendUserMessage).toHaveBeenCalledWith("delegated work", { deliverAs: "followUp" });
+    expect(session.remoteRequester).toBeUndefined();
+    expect(session.remoteRequesterPendingTurn).toBe(true);
+    expect(session.remoteRequesterActiveTurn).toBe(true);
   });
 
   it("probes route availability coherently", () => {
