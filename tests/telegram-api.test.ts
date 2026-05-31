@@ -59,7 +59,7 @@ describe("TelegramApiClient button and document payloads", () => {
     });
   });
 
-  it("sends prepared chat text without another formatting or redaction pass", async () => {
+  it("sends prepared chat text without an additional formatting or redaction pass", async () => {
     const config = await createRuntimeConfig();
     config.maxTelegramMessageChars = 3900;
     const client = new TelegramApiClient(config);
