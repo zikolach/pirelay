@@ -57,7 +57,7 @@ import { delegationTaskActionButtons, parseDelegationActionId, parseDelegationCo
 import { redactSecrets } from "../../config/setup.js";
 import { telegramBotCommands } from "../../commands/surfaces.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
-import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, planFinalOutputDelivery } from "../../core/final-output.js";
+import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFileName, planFinalOutputDelivery } from "../../core/final-output.js";
 import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
@@ -963,8 +963,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
           return;
         }
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Sending Markdown file.");
-        const file = finalOutputMarkdownFile(route, text);
-        await this.api.sendMarkdownDocument(callback.chat.id, file.fileName, text, "Latest assistant output");
+        await this.api.sendMarkdownDocument(callback.chat.id, finalOutputMarkdownFileName(route), text, "Latest assistant output");
         return;
       }
       case "latest-images": {
@@ -2387,7 +2386,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`,
         this.latestImagesKeyboardForRoute(route),
       );
-      await this.api.sendMarkdownDocument(binding.chatId, plan.file.fileName, text, "Latest assistant output");
+      await this.api.sendMarkdownDocument(binding.chatId, plan.fileName, text, "Latest assistant output");
       return;
     }
     await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, this.latestImagesKeyboardForRoute(route));

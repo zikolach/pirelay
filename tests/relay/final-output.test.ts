@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { finalOutputMarkdownFile, formatPreservingExcerpt, planFinalOutputDelivery, sendFinalOutputWithFallback } from "../../extensions/relay/core/final-output.js";
+import { finalOutputMarkdownFile, finalOutputMarkdownFileName, formatPreservingExcerpt, planFinalOutputDelivery, sendFinalOutputWithFallback } from "../../extensions/relay/core/final-output.js";
 import type { ChannelAdapter, ChannelOutboundFile, ChannelOutboundPayload, ChannelRouteAddress } from "../../extensions/relay/core/channel-adapter.js";
 import type { SessionRoute } from "../../extensions/relay/core/types.js";
 
@@ -71,7 +71,9 @@ describe("final output delivery policy", () => {
 
     expect(plan.kind).toBe("document");
     if (plan.kind === "document") {
-      expect(Buffer.from(plan.file.data).toString("utf8")).toBe("raw markdown");
+      expect("file" in plan).toBe(false);
+      expect(plan.fileName).toBe("pi-output-s-turn-1.md");
+      expect(Buffer.from(plan.buildFile().data).toString("utf8")).toBe("raw markdown");
     }
   });
 
@@ -115,7 +117,8 @@ describe("final output delivery policy", () => {
     expect(sentTexts[0]).toContain("too large");
   });
 
-  it("creates shared Markdown files for latest assistant output", () => {
+  it("creates shared Markdown filenames and files for latest assistant output", () => {
+    expect(finalOutputMarkdownFileName(route())).toBe("pi-output-s-turn-1.md");
     const file = finalOutputMarkdownFile(route(), "# Answer\n");
     expect(file.fileName).toBe("pi-output-s-turn-1.md");
     expect(Buffer.from(file.data).toString("utf8")).toBe("# Answer\n");

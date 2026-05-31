@@ -368,7 +368,7 @@ async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) 
   }
   if (plan.kind === 'document') {
     await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`, latestImagesKeyboardForRoute(route));
-    await sendMarkdownDocument(binding.chatId, plan.file.fileName, text, 'Latest assistant output');
+    await sendMarkdownDocument(binding.chatId, plan.fileName, text, 'Latest assistant output');
     return true;
   }
   await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, latestImagesKeyboardForRoute(route));

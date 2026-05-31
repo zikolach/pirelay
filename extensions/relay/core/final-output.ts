@@ -7,7 +7,7 @@ export const DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS = 5;
 
 export type FinalOutputDeliveryPlan =
   | { kind: "messages"; chunks: string[]; differsFromFullOutput: false }
-  | { kind: "document"; file: ChannelOutboundFile; differsFromFullOutput: true }
+  | { kind: "document"; fileName: string; buildFile: () => ChannelOutboundFile; differsFromFullOutput: true }
   | { kind: "unavailable"; message: string; differsFromFullOutput: true };
 
 export interface FinalOutputDeliveryOptions {
@@ -15,10 +15,14 @@ export interface FinalOutputDeliveryOptions {
   prepareText?: (text: string) => string;
 }
 
-export function finalOutputMarkdownFile(route: Pick<SessionRoute, "sessionId" | "notification">, text: string): ChannelOutboundFile {
+export function finalOutputMarkdownFileName(route: Pick<SessionRoute, "sessionId" | "notification">): string {
   const turnId = route.notification.lastTurnId ?? "latest";
+  return safeTelegramFilename(`pi-output-${route.sessionId}-${turnId}`, "md");
+}
+
+export function finalOutputMarkdownFile(route: Pick<SessionRoute, "sessionId" | "notification">, text: string): ChannelOutboundFile {
   return {
-    fileName: safeTelegramFilename(`pi-output-${route.sessionId}-${turnId}`, "md"),
+    fileName: finalOutputMarkdownFileName(route),
     mimeType: "text/markdown",
     data: Buffer.from(text, "utf8"),
     byteSize: Buffer.byteLength(text, "utf8"),
@@ -38,7 +42,12 @@ export function planFinalOutputDelivery(
     return { kind: "messages", chunks, differsFromFullOutput: false };
   }
   if (adapter.capabilities.documents) {
-    return { kind: "document", file: finalOutputMarkdownFile(route, text), differsFromFullOutput: true };
+    return {
+      kind: "document",
+      fileName: finalOutputMarkdownFileName(route),
+      buildFile: () => finalOutputMarkdownFile(route, text),
+      differsFromFullOutput: true,
+    };
   }
   return {
     kind: "unavailable",
@@ -71,7 +80,7 @@ export async function sendFinalOutputWithFallback(
     return "messages";
   }
   if (plan.kind === "document") {
-    await adapter.sendDocument(address, plan.file, { caption: options.caption ?? "Latest assistant output" });
+    await adapter.sendDocument(address, plan.buildFile(), { caption: options.caption ?? "Latest assistant output" });
     return "document";
   }
   await adapter.sendText(address, plan.message);
