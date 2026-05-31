@@ -21,11 +21,12 @@ export function finalOutputMarkdownFileName(route: Pick<SessionRoute, "sessionId
 }
 
 export function finalOutputMarkdownFile(route: Pick<SessionRoute, "sessionId" | "notification">, text: string): ChannelOutboundFile {
+  const data = Buffer.from(text, "utf8");
   return {
     fileName: finalOutputMarkdownFileName(route),
     mimeType: "text/markdown",
-    data: Buffer.from(text, "utf8"),
-    byteSize: Buffer.byteLength(text, "utf8"),
+    data,
+    byteSize: data.byteLength,
   };
 }
 

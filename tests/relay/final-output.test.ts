@@ -119,8 +119,9 @@ describe("final output delivery policy", () => {
 
   it("creates shared Markdown filenames and files for latest assistant output", () => {
     expect(finalOutputMarkdownFileName(route())).toBe("pi-output-s-turn-1.md");
-    const file = finalOutputMarkdownFile(route(), "# Answer\n");
+    const file = finalOutputMarkdownFile(route(), "# Answer ✅\n");
     expect(file.fileName).toBe("pi-output-s-turn-1.md");
-    expect(Buffer.from(file.data).toString("utf8")).toBe("# Answer\n");
+    expect(Buffer.from(file.data).toString("utf8")).toBe("# Answer ✅\n");
+    expect(file.byteSize).toBe(Buffer.from(file.data).byteLength);
   });
 });
