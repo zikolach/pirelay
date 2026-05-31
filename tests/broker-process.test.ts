@@ -680,9 +680,13 @@ async function openBrokerClient(socketPath: string): Promise<{ request(payload: 
       newlineIndex = buffer.indexOf("\n");
     }
   });
-  socket.on("error", (error) => {
+  const rejectPending = (error: Error) => {
     for (const waiter of pending.values()) waiter.reject(error);
     pending.clear();
+  };
+  socket.on("error", rejectPending);
+  socket.on("close", () => {
+    rejectPending(new Error("Broker client socket closed before pending requests completed."));
   });
 
   return {
