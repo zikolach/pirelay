@@ -249,6 +249,33 @@ describe("relay config loader", () => {
     expect(migrated.messengers.discord.default.botToken).toBe("discord-token");
   });
 
+  it("keeps approval gates disabled unless explicitly enabled", async () => {
+    const configPath = await writeConfig({
+      relay: {
+        machineId: "laptop",
+        approvalGates: { rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+      },
+    });
+
+    const loaded = await loadRelayConfig({ configPath, env: {} });
+
+    expect(loaded.relay.approvalGates).toMatchObject({ rules: [{ id: "git" }] });
+    expect(loaded.relay.approvalGates?.enabled).toBeUndefined();
+  });
+
+  it("allows environment to disable configured approval gates", async () => {
+    const configPath = await writeConfig({
+      relay: {
+        machineId: "laptop",
+        approvalGates: { enabled: true, rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+      },
+    });
+
+    const loaded = await loadRelayConfig({ configPath, env: { PI_RELAY_APPROVAL_ENABLED: "false" } });
+
+    expect(loaded.relay.approvalGates).toMatchObject({ enabled: false, rules: [{ id: "git" }] });
+  });
+
   it("reports unsupported configured messengers without failing supported ones", async () => {
     const configPath = await writeConfig({
       relay: { machineId: "laptop" },

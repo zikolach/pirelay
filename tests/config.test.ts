@@ -20,6 +20,11 @@ beforeEach(() => {
     "PI_RELAY_SLACK_EVENT_MODE",
     "PI_RELAY_SLACK_WORKSPACE_ID",
     "PI_RELAY_SLACK_BOT_USER_ID",
+    "PI_RELAY_APPROVAL_ENABLED",
+    "PI_RELAY_APPROVAL_TIMEOUT_MS",
+    "PI_RELAY_APPROVAL_SESSION_GRANTS",
+    "PI_RELAY_APPROVAL_REMOTE_PERSISTENT_GRANTS",
+    "PI_RELAY_APPROVAL_RULES_JSON",
     "PI_RELAY_COMMUNICATION_DIAGNOSTICS",
     "PI_RELAY_DIAGNOSTICS_LOG_PATH",
     "PI_RELAY_DIAGNOSTICS_INCLUDE_CONTENT_PREVIEW",
@@ -224,6 +229,22 @@ describe("telegram tunnel config", () => {
     expect(config.discord).toMatchObject({ applicationId: "app-123", clientId: "app-123" });
   });
 
+  it("keeps approval gates disabled by default when rules omit explicit enablement", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      approvalGates: { rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+      messengers: { telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" } } },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.approvalGates).toMatchObject({ rules: [{ id: "git" }] });
+    expect(config.approvalGates?.enabled).toBeUndefined();
+  });
+
   it("loads approval gate config from file and environment overrides", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
     tempDirs.push(dir);
@@ -239,6 +260,22 @@ describe("telegram tunnel config", () => {
     const { config } = await loadTelegramTunnelConfig();
 
     expect(config.approvalGates).toMatchObject({ enabled: true, rules: [{ id: "git" }] });
+  });
+
+  it("allows environment to disable configured approval gate rules", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pirelay-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      approvalGates: { enabled: true, rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+      messengers: { telegram: { default: { botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" } } },
+    }));
+    vi.stubEnv("PI_RELAY_CONFIG", configPath);
+    vi.stubEnv("PI_RELAY_APPROVAL_ENABLED", "false");
+
+    const { config } = await loadTelegramTunnelConfig();
+
+    expect(config.approvalGates).toMatchObject({ enabled: false, rules: [{ id: "git" }] });
   });
 
   it("preserves non-default Discord and Slack messenger instances for the live runtime", async () => {

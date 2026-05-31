@@ -336,6 +336,13 @@ function createMockPi() {
         await handler(payload, ctx);
       }
     },
+    async emitResults(event: string, payload: any, ctx: any) {
+      const results: unknown[] = [];
+      for (const handler of handlers.get(event) ?? []) {
+        results.push(await handler(payload, ctx));
+      }
+      return results;
+    },
     async submitLocalPrompt(text: string, ctx: any) {
       localPrompts.push(text);
       await this.emit("agent_start", {}, ctx);
@@ -422,6 +429,193 @@ describe("PiRelay integration behavior", () => {
     expect(statuses).toContainEqual({ key: "relay-sync", value: "telegram sync error: broker unavailable" });
     expect(statuses).toContainEqual({ key: "relay", value: "tg ✖" });
     expect(statuses).not.toContainEqual({ key: "relay", value: "tg ◇" });
+  });
+
+  it("bypasses approval gates for local-only tool calls", async () => {
+    const config = await createRuntimeConfig("pi-approval-local-");
+    await writeFile(config.configPath!, JSON.stringify({
+      botToken: config.botToken,
+      stateDir: config.stateDir,
+      approvalGates: { enabled: true, rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+    }));
+    let registeredRoute: SessionRoute | undefined;
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route) => { registeredRoute = route; }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("approval-local");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    await pi.submitLocalPrompt("local work", context);
+    const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-local", input: { command: "git push origin main" } }, context);
+
+    expect(registeredRoute).toBeDefined();
+    expect(results).toEqual([undefined]);
+    await expect(new TunnelStateStore(config.stateDir).listApprovalAudit()).resolves.toEqual([]);
+  });
+
+  it("clears stale remote requester context before later local tool calls", async () => {
+    const config = await createRuntimeConfig("pi-approval-local-after-remote-");
+    await writeFile(config.configPath!, JSON.stringify({
+      botToken: config.botToken,
+      stateDir: config.stateDir,
+      approvalGates: { enabled: true, rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+    }));
+    let registeredRoute: SessionRoute | undefined;
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route) => { registeredRoute = route; }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("approval-local-after-remote");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    expect(registeredRoute).toBeDefined();
+    registeredRoute!.remoteRequester = {
+      channel: "telegram",
+      instanceId: "default",
+      conversationId: "555",
+      userId: "42",
+      sessionKey: registeredRoute!.sessionKey,
+      safeLabel: "Telegram owner",
+      createdAt: Date.now(),
+    };
+    registeredRoute!.remoteRequesterPendingTurn = false;
+
+    await pi.submitLocalPrompt("local work after remote", context);
+    const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-local-after-remote", input: { command: "git push origin main" } }, context);
+
+    expect(registeredRoute!.remoteRequester).toBeUndefined();
+    expect(results).toEqual([undefined]);
+    await expect(new TunnelStateStore(config.stateDir).listApprovalAudit()).resolves.toEqual([]);
+  });
+
+  it("fails closed for remote-owned tool calls when requester context is missing", async () => {
+    const config = await createRuntimeConfig("pi-approval-remote-missing-");
+    await writeFile(config.configPath!, JSON.stringify({
+      botToken: config.botToken,
+      stateDir: config.stateDir,
+      approvalGates: { enabled: true, rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+    }));
+    let registeredRoute: SessionRoute | undefined;
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route) => { registeredRoute = route; }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("approval-remote-missing");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    expect(registeredRoute).toBeDefined();
+    registeredRoute!.remoteRequester = {
+      channel: "telegram",
+      instanceId: "default",
+      conversationId: "555",
+      userId: "42",
+      sessionKey: registeredRoute!.sessionKey,
+      safeLabel: "Telegram owner",
+      createdAt: Date.now(),
+    };
+    registeredRoute!.remoteRequesterPendingTurn = true;
+    await pi.emit("agent_start", {}, context);
+    registeredRoute!.remoteRequester = undefined;
+
+    const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-remote-missing", input: { command: "git push origin main" } }, context);
+
+    expect(results).toEqual([{ block: true, reason: "Approval required, but no active remote requester is available." }]);
+    await expect(new TunnelStateStore(config.stateDir).listApprovalAudit()).resolves.toEqual([
+      expect.objectContaining({ kind: "failed", detail: "No active remote requester for approval target." }),
+    ]);
+  });
+
+  it("fails closed for remote-owned tool calls when the requester binding is inactive", async () => {
+    const config = await createRuntimeConfig("pi-approval-remote-inactive-");
+    await writeFile(config.configPath!, JSON.stringify({
+      botToken: config.botToken,
+      stateDir: config.stateDir,
+      approvalGates: { enabled: true, rules: [{ id: "git", tools: ["bash"], commandPatterns: ["git push"] }] },
+    }));
+    let registeredRoute: SessionRoute | undefined;
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route) => { registeredRoute = route; }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("approval-remote-inactive");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    expect(registeredRoute).toBeDefined();
+    registeredRoute!.remoteRequester = {
+      channel: "telegram",
+      instanceId: "default",
+      conversationId: "555",
+      userId: "42",
+      sessionKey: registeredRoute!.sessionKey,
+      safeLabel: "Telegram owner",
+      createdAt: Date.now(),
+    };
+    registeredRoute!.remoteRequesterPendingTurn = true;
+    await pi.emit("agent_start", {}, context);
+
+    const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-remote-inactive", input: { command: "git push origin main" } }, context);
+
+    expect(results).toEqual([{ block: true, reason: "Approval required, but the remote requester binding is inactive." }]);
+    await expect(new TunnelStateStore(config.stateDir).listApprovalAudit()).resolves.toEqual([
+      expect.objectContaining({ kind: "failed", detail: "Approval requester binding is inactive." }),
+    ]);
   });
 
   it("sends Telegram lifecycle notifications for offline, restored, and disconnect events", async () => {

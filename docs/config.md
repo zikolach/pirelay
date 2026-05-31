@@ -146,7 +146,7 @@ Environment overrides include `PI_RELAY_COMMUNICATION_DIAGNOSTICS`, `PI_RELAY_DI
 
 ## Approval gates
 
-Approval gates are explicit opt-in guardrails for remote turns. When enabled, matching Pi tool calls pause before execution and ask the active authorized requester to approve or deny the operation through Telegram, Discord, or Slack. Timeout, stale actions, revoked/paused bindings, offline sessions, or delivery failures block the operation; approval gates are not a sandbox.
+Approval gates are disabled by default and are explicit opt-in guardrails for remote messenger-owned turns. When `approvalGates.enabled: true`, matching Pi tool calls from accepted remote turns pause before execution and ask the active authorized requester to approve or deny the operation through Telegram, Discord, or Slack. Local Pi prompts never require messenger approval, even when a rule would match. Timeout, stale actions, revoked/paused bindings, offline sessions, or delivery failures block remote gated operations; approval gates are not a sandbox.
 
 Example:
 
