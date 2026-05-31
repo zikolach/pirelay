@@ -292,7 +292,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return this.statusOf(route, true);
   }
 
-  async sendToBoundChat(sessionKey: string, text: string): Promise<void> {
+  async sendToBoundChat(sessionKey: string, text: string, _options?: { terminalStatus?: "completed" | "failed" | "aborted" }): Promise<void> {
     const route = this.routes.get(sessionKey);
     if (!route?.binding) return;
     const binding = await this.activeOutputBindingForRoute(route);
