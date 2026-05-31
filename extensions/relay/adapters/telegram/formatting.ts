@@ -1,5 +1,12 @@
 const TABLE_ROW_MIN_CELLS = 2;
 
+export type TelegramChatParseMode = "HTML";
+
+export interface TelegramChatMessageText {
+  text: string;
+  parseMode?: TelegramChatParseMode;
+}
+
 function isFenceLine(line: string): boolean {
   return /^\s*```/.test(line);
 }
@@ -99,4 +106,143 @@ export function formatTelegramChatText(text: string): string {
   }
 
   return output.join("\n");
+}
+
+export function containsMarkdownTable(text: string): boolean {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  let inFence = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (isFenceLine(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence && readTableBlock(lines, index)) return true;
+  }
+
+  return false;
+}
+
+export function formatTelegramChatMessageText(text: string): TelegramChatMessageText {
+  const formatted = formatTelegramChatText(text);
+  const rendered = renderTelegramMarkdownAsHtml(formatted);
+  return rendered ?? { text: formatted };
+}
+
+function renderTelegramMarkdownAsHtml(text: string): TelegramChatMessageText | undefined {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const output: string[] = [];
+  let inFence = false;
+  let fenceLines: string[] = [];
+  let usedFormatting = false;
+
+  const flushFence = () => {
+    output.push(`<pre><code>${escapeTelegramHtml(fenceLines.join("\n"))}</code></pre>`);
+    fenceLines = [];
+    usedFormatting = true;
+  };
+
+  for (const line of lines) {
+    if (isFenceLine(line)) {
+      if (inFence) {
+        flushFence();
+        inFence = false;
+      } else {
+        inFence = true;
+        fenceLines = [];
+      }
+      continue;
+    }
+
+    if (inFence) {
+      fenceLines.push(line);
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (heading) {
+      output.push(`<b>${renderTelegramInlineMarkdown(heading[2]!).html}</b>`);
+      usedFormatting = true;
+      continue;
+    }
+
+    const inline = renderTelegramInlineMarkdown(line);
+    if (inline.usedFormatting) usedFormatting = true;
+    output.push(inline.html);
+  }
+
+  if (inFence) flushFence();
+
+  return usedFormatting ? { text: output.join("\n"), parseMode: "HTML" } : undefined;
+}
+
+function renderTelegramInlineMarkdown(text: string): { html: string; usedFormatting: boolean } {
+  let index = 0;
+  let html = "";
+  let usedFormatting = false;
+
+  const appendPlain = (value: string) => {
+    html += escapeTelegramHtml(value);
+  };
+
+  while (index < text.length) {
+    const rest = text.slice(index);
+
+    const code = /^`([^`\n]+)`/.exec(rest);
+    if (code) {
+      html += `<code>${escapeTelegramHtml(code[1]!)}</code>`;
+      index += code[0].length;
+      usedFormatting = true;
+      continue;
+    }
+
+    const link = /^\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/.exec(rest);
+    if (link) {
+      html += `<a href="${escapeTelegramHtmlAttribute(link[2]!)}">${escapeTelegramHtml(link[1]!)}</a>`;
+      index += link[0].length;
+      usedFormatting = true;
+      continue;
+    }
+
+    const strong = /^\*\*([^*\n][\s\S]*?[^*\n])\*\*/.exec(rest) ?? /^__([^_\n][\s\S]*?[^_\n])__/.exec(rest);
+    if (strong) {
+      html += `<b>${renderTelegramInlineMarkdown(strong[1]!).html}</b>`;
+      index += strong[0].length;
+      usedFormatting = true;
+      continue;
+    }
+
+    const strike = /^~~([^~\n][\s\S]*?[^~\n])~~/.exec(rest);
+    if (strike) {
+      html += `<s>${renderTelegramInlineMarkdown(strike[1]!).html}</s>`;
+      index += strike[0].length;
+      usedFormatting = true;
+      continue;
+    }
+
+    const emphasis = /^\*([^*\s][^*\n]*?[^*\s])\*/.exec(rest);
+    if (emphasis) {
+      html += `<i>${renderTelegramInlineMarkdown(emphasis[1]!).html}</i>`;
+      index += emphasis[0].length;
+      usedFormatting = true;
+      continue;
+    }
+
+    appendPlain(text[index]!);
+    index += 1;
+  }
+
+  return { html, usedFormatting };
+}
+
+function escapeTelegramHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeTelegramHtmlAttribute(text: string): string {
+  return escapeTelegramHtml(text).replace(/"/g, "&quot;");
 }

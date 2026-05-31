@@ -11,7 +11,7 @@ import type {
   TelegramOutboundChunk,
   TelegramTunnelConfig,
 } from "../../core/types.js";
-import { formatTelegramChatText } from "./formatting.js";
+import { formatTelegramChatMessageText, formatTelegramChatText, type TelegramChatParseMode } from "./formatting.js";
 import { chunkTelegramText, normalizeImageMimeType, redactSecret, safeTelegramImageFilename, sleep } from "../../core/utils.js";
 import { acceptedInboundImageFormatsText, isAcceptedInboundImageMimeType, prepareInboundImagePromptContent } from "../../media/index.js";
 
@@ -129,7 +129,24 @@ export class TelegramApiClient {
   async sendPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
     const redacted = redactSecret(text, this.config.redactionPatterns);
     const formatted = formatTelegramChatText(redacted);
-    await this.sendPreparedPlainTextWithKeyboard(chatId, formatted, keyboard);
+    await this.sendPreparedChatTextWithKeyboard(chatId, formatted, keyboard);
+  }
+
+  /**
+   * Sends redacted and table-normalized chat text, rendering supported Markdown
+   * with Telegram's HTML parse mode when it fits a single prepared chunk.
+   */
+  async sendPreparedChatText(chatId: number, text: string): Promise<void> {
+    await this.sendPreparedChatTextWithKeyboard(chatId, text);
+  }
+
+  async sendPreparedChatTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
+    const chunks = chunkTelegramText(text.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars);
+    for (const chunk of chunks) {
+      const isLast = chunk.index === chunk.total;
+      const rendered = this.renderPreparedChunk(chunk.text);
+      await this.sendChunk(chatId, { ...chunk, text: rendered.text }, isLast ? keyboard : undefined, rendered.parseMode);
+    }
   }
 
   /**
@@ -282,8 +299,17 @@ export class TelegramApiClient {
     return sorted.find((photo) => typeof photo.file_size !== "number" || photo.file_size <= this.config.maxInboundImageBytes) ?? sorted[0];
   }
 
-  private async sendChunk(chatId: number, chunk: TelegramOutboundChunk, keyboard?: TelegramInlineKeyboard): Promise<void> {
-    await this.withRetry(() => this.api.sendMessage(chatId, chunk.text, keyboard ? { reply_markup: toTelegramReplyMarkup(keyboard) } : undefined));
+  private renderPreparedChunk(text: string): { text: string; parseMode?: TelegramChatParseMode } {
+    const rendered = formatTelegramChatMessageText(text);
+    return rendered.text.length <= this.config.maxTelegramMessageChars ? rendered : { text };
+  }
+
+  private async sendChunk(chatId: number, chunk: TelegramOutboundChunk, keyboard?: TelegramInlineKeyboard, parseMode?: TelegramChatParseMode): Promise<void> {
+    const options = {
+      ...(keyboard ? { reply_markup: toTelegramReplyMarkup(keyboard) } : {}),
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+    };
+    await this.withRetry(() => this.api.sendMessage(chatId, chunk.text, Object.keys(options).length > 0 ? options : undefined));
   }
 
   private async withRetry<T>(operation: () => Promise<T>): Promise<T> {

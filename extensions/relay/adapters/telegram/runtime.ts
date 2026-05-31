@@ -61,7 +61,7 @@ import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFileName, p
 import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
-import { formatTelegramChatText } from "./formatting.js";
+import { containsMarkdownTable, formatTelegramChatText } from "./formatting.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import { delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
@@ -400,7 +400,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private shouldOfferFullOutputActionsForRoute(route: SessionRoute): boolean {
-    return shouldOfferFullOutputActions(route.notification.lastAssistantText);
+    const text = route.notification.lastAssistantText;
+    return shouldOfferFullOutputActions(text) || (text ? containsMarkdownTable(text) : false);
   }
 
   private answerActionKeyboardForRoute(route: SessionRoute) {
@@ -2376,9 +2377,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     });
     if (plan.kind === "messages") {
       await this.api.sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
-      const api = this.api as TelegramApiClient & { sendPreparedPlainText?: TelegramApiClient["sendPreparedPlainText"] };
-      for (const chunk of plan.chunks) {
-        if (api.sendPreparedPlainText) await api.sendPreparedPlainText(binding.chatId, chunk);
+      const api = this.api as TelegramApiClient & {
+        sendPreparedChatText?: TelegramApiClient["sendPreparedChatText"];
+        sendPreparedChatTextWithKeyboard?: TelegramApiClient["sendPreparedChatTextWithKeyboard"];
+        sendPreparedPlainText?: TelegramApiClient["sendPreparedPlainText"];
+        sendPreparedPlainTextWithKeyboard?: TelegramApiClient["sendPreparedPlainTextWithKeyboard"];
+      };
+      const outputKeyboard = !route.notification.structuredAnswer ? this.fullOutputKeyboardForRoute(route) : undefined;
+      for (const [index, chunk] of plan.chunks.entries()) {
+        const keyboard = index === plan.chunks.length - 1 ? outputKeyboard : undefined;
+        if (keyboard && api.sendPreparedChatTextWithKeyboard) await api.sendPreparedChatTextWithKeyboard(binding.chatId, chunk, keyboard);
+        else if (api.sendPreparedChatText) await api.sendPreparedChatText(binding.chatId, chunk);
+        else if (keyboard && api.sendPreparedPlainTextWithKeyboard) await api.sendPreparedPlainTextWithKeyboard(binding.chatId, chunk, keyboard);
+        else if (api.sendPreparedPlainText) await api.sendPreparedPlainText(binding.chatId, chunk);
         else await this.api.sendPlainText(binding.chatId, chunk);
       }
       if (imageHint) await this.api.sendPlainTextWithKeyboard(binding.chatId, imageHint.trim(), this.latestImagesKeyboardForRoute(route));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTelegramChatText } from "../extensions/relay/adapters/telegram/formatting.js";
+import { containsMarkdownTable, formatTelegramChatMessageText, formatTelegramChatText } from "../extensions/relay/adapters/telegram/formatting.js";
 
 describe("Telegram chat formatter", () => {
   it("converts Markdown tables to aligned code-style blocks", () => {
@@ -53,5 +53,51 @@ describe("Telegram chat formatter", () => {
   it("leaves non-table prose unchanged", () => {
     const source = "A | B without separator\nStill just prose.";
     expect(formatTelegramChatText(source)).toBe(source);
+  });
+
+  it("renders supported Markdown as Telegram HTML", () => {
+    expect(formatTelegramChatMessageText([
+      "## Summary",
+      "- **Done**: `typecheck`",
+      "- Link: [OpenSpec](https://example.com/spec)",
+    ].join("\n"))).toEqual({
+      parseMode: "HTML",
+      text: [
+        "<b>Summary</b>",
+        "- <b>Done</b>: <code>typecheck</code>",
+        "- Link: <a href=\"https://example.com/spec\">OpenSpec</a>",
+      ].join("\n"),
+    });
+  });
+
+  it("renders tables as Telegram preformatted blocks without exposing fences", () => {
+    const formatted = formatTelegramChatMessageText([
+      "| Name | Status |",
+      "| --- | --- |",
+      "| API | OK |",
+    ].join("\n"));
+
+    expect(formatted.parseMode).toBe("HTML");
+    expect(formatted.text).toContain("<pre><code>Name | Status");
+    expect(formatted.text).not.toContain("```");
+  });
+
+  it("keeps plain text as plain text", () => {
+    expect(formatTelegramChatMessageText("No markdown here.")).toEqual({ text: "No markdown here." });
+  });
+
+  it("detects source Markdown tables outside fenced code", () => {
+    expect(containsMarkdownTable([
+      "| Name | Status |",
+      "| --- | --- |",
+      "| API | OK |",
+    ].join("\n"))).toBe(true);
+    expect(containsMarkdownTable([
+      "```",
+      "| Name | Status |",
+      "| --- | --- |",
+      "| API | OK |",
+      "```",
+    ].join("\n"))).toBe(false);
   });
 });
