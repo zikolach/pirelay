@@ -502,6 +502,26 @@ describe("telegram broker process", () => {
     expect(document?.document.text).toContain("[redacted]");
     expect(document?.document.text).not.toContain("shhh-secret");
   });
+
+  it("rejects pending broker client requests when the socket closes cleanly", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const socketPath = join(stateDir, "test-broker.sock");
+    const server = net.createServer((socket) => {
+      socket.once("data", () => socket.end());
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const client = await openBrokerClient(socketPath);
+      await expect(client.request({ type: "request", action: "never-responds" })).rejects.toThrow("Broker client socket closed before pending requests completed.");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 interface TestOutboxMessage {
@@ -680,7 +700,7 @@ async function openBrokerClient(socketPath: string): Promise<{ request(payload: 
       newlineIndex = buffer.indexOf("\n");
     }
   });
-  const rejectPending = (error: Error) => {
+  const rejectPending = (error: Error): void => {
     for (const waiter of pending.values()) waiter.reject(error);
     pending.clear();
   };
