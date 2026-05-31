@@ -1,7 +1,8 @@
 # relay-agent-delegation Specification
 
 ## Purpose
-TBD - created by archiving change add-shared-room-agent-delegation. Update Purpose after archive.
+Defines PiRelay's shared-room agent delegation model: trusted peer bots or authorized humans create bounded task cards, eligible target sessions claim and execute work, and lifecycle, trust, autonomy, approval, and loop-prevention rules keep delegated prompts safe.
+
 ## Requirements
 ### Requirement: Visible delegation task cards
 PiRelay SHALL represent agent-directed shared-room work as visible delegation task cards that are human-readable, bounded, and machine-parseable.

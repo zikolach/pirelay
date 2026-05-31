@@ -1,7 +1,8 @@
 # agent-collaboration-playbooks Specification
 
 ## Purpose
-TBD - created by archiving change add-agent-collaboration-playbooks. Update Purpose after archive.
+Defines documentation requirements for safe, end-to-end multi-agent collaboration playbooks that show how paired Pi sessions coordinate through shared-room machine bots, delegation task cards, approval gates, and smoke checks without exposing secrets.
+
 ## Requirements
 ### Requirement: Collaboration playbook documentation
 PiRelay SHALL document at least one end-to-end two-agent collaboration playbook that uses shared-room machine bots and delegation task cards to coordinate work on a common software project.

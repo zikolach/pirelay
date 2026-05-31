@@ -1,7 +1,8 @@
 # relay-approval-gates Specification
 
 ## Purpose
-TBD - created by archiving change add-relay-approval-gates. Update Purpose after archive.
+Defines opt-in remote approval gates for sensitive Pi tool operations, including policy classification, safe request summaries, decision and grant lifecycles, requester binding scoping, audit trails, broker behavior, and task-scoped approvals.
+
 ## Requirements
 ### Requirement: Approval policy classification
 PiRelay SHALL support explicit opt-in policies that classify Pi operations as requiring approval before execution.

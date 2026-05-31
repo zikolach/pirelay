@@ -1,7 +1,8 @@
 # relay-communication-diagnostics Specification
 
 ## Purpose
-TBD - created by archiving change add-relay-communication-diagnostics. Update Purpose after archive.
+Defines disabled-by-default structured diagnostics for troubleshooting PiRelay runtime, broker, adapter, and notification communication while preserving secret-safe metadata, bounded retention, and explicit local control over log sharing.
+
 ## Requirements
 ### Requirement: Opt-in structured communication diagnostics
 PiRelay SHALL provide disabled-by-default structured communication diagnostics that write bounded JSONL records for local troubleshooting when explicitly enabled.

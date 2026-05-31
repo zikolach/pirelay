@@ -1,7 +1,8 @@
 # delegation-task-card-ux Specification
 
 ## Purpose
-TBD - created by archiving change improve-delegation-task-card-ux. Update Purpose after archive.
+Defines the shared presentation and action model for human-readable delegation task cards across messenger adapters, including native buttons, text fallbacks, lifecycle clarity, and multi-bot silence guarantees.
+
 ## Requirements
 ### Requirement: Structured delegation task presentation
 PiRelay SHALL derive delegation task cards from a structured presentation model that separates task lifecycle semantics from messenger-specific rendering.
