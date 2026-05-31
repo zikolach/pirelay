@@ -42,7 +42,7 @@ export function planFinalOutputDelivery(
 }
 
 export function formatPreservingExcerpt(text: string, maxChars: number): string {
-  const normalized = text.replace(/\r\n/g, "\n").trim();
+  const normalized = text.replace(/\r\n/g, "\n").trimEnd();
   if (normalized.length <= maxChars) return normalized;
   const limit = Math.max(1, maxChars - 1);
   const paragraphBoundary = lastBoundaryBefore(normalized, /\n{2,}/g, limit, 0.4);

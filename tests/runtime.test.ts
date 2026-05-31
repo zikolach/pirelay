@@ -1186,7 +1186,7 @@ describe("InProcessTunnelRuntime", () => {
     expect(documents).toEqual([{ filename: "pi-output-session-large-output-turn-large.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
   });
 
-  it("sends readable full output through broker fallback completion notifications", async () => {
+  it("registers full output but sends only a compact broker fallback notification", async () => {
     const binding: TelegramBindingMetadata = {
       sessionKey: "session-broker-quiet:/tmp/session-broker-quiet.jsonl",
       sessionId: "session-broker-quiet",
@@ -1206,6 +1206,9 @@ describe("InProcessTunnelRuntime", () => {
       "Validation:",
       "- typecheck ✅",
       "- tests ✅",
+      "",
+      "Detailed output:",
+      "A ".repeat(400),
     ].join("\n");
     const sent: Array<{ sessionKey: string; text: string; options?: { terminalStatus?: string } }> = [];
     const fakeRuntime: TunnelRuntime = {
@@ -1224,9 +1227,10 @@ describe("InProcessTunnelRuntime", () => {
     await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet" });
 
     expect(route.notification.lastSummary).toBeDefined();
-    expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastAssistantText, options: { terminalStatus: "completed" } }]);
-    expect(sent[0]!.text).toContain("\n\nValidation:\n-");
-    expect(sent[0]!.text).not.toContain("Validation: -");
+    expect(fakeRuntime.registerRoute).toHaveBeenCalledWith(route);
+    expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastSummary, options: { terminalStatus: "completed" } }]);
+    expect(sent[0]!.text.length).toBeLessThan(route.notification.lastAssistantText.length);
+    expect(sent[0]!.text).not.toContain("\n\nValidation:\n-");
   });
 
   it("sends Telegram failure and aborted terminal notifications", async () => {

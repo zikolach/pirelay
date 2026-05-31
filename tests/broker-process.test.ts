@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
 
 const tempDirs: string[] = [];
 const children: ChildProcessWithoutNullStreams[] = [];
@@ -303,7 +304,225 @@ describe("telegram broker process", () => {
     const updated = JSON.parse(await readFile(statePath, "utf8")) as { channelBindings?: Record<string, unknown> };
     expect(updated.channelBindings?.["discord:discord-session:memory"]).toEqual(discordBinding);
   });
+
+  it("delivers broker-owned full-output chunks before structured answer actions", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-structured:memory",
+      sessionId: "broker-structured",
+      sessionLabel: "Broker Structured",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+          maxTelegramMessageChars: 60,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      },
+    });
+    children.push(child);
+
+    const finalOutput = [
+      "Choose:",
+      "1. sync changes",
+      "2. skip changes",
+      "",
+      "Notes:",
+      "  keep indentation",
+    ].join("\n");
+    const structuredAnswer = extractStructuredAnswerMetadata(finalOutput);
+    expect(structuredAnswer).toBeDefined();
+
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        requestId: "register-structured-output",
+        action: "registerRoute",
+        clientId: "test-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: false,
+          notification: {
+            lastStatus: "completed",
+            lastTurnId: "turn-structured",
+            lastAssistantText: finalOutput,
+            structuredAnswer,
+          },
+          binding,
+        },
+      });
+      await client.request({
+        type: "request",
+        requestId: "send-structured-output",
+        action: "sendToBoundChat",
+        sessionKey: binding.sessionKey,
+        text: "compact fallback",
+        terminalStatus: "completed",
+      });
+    } finally {
+      client.close();
+    }
+
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const texts = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage").map((entry) => entry.text);
+    expect(texts.some((text) => text.includes("Final output:"))).toBe(true);
+    expect(texts.join("\n")).toContain("Choose:\n1. sync changes");
+    expect(texts.some((text) => text.includes("Tap an option button"))).toBe(true);
+    expect(texts.some((text) => text.startsWith("[1/1]"))).toBe(false);
+  });
+
+  it("redacts broker-owned Markdown document fallback output", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-document:memory",
+      sessionId: "broker-document",
+      sessionLabel: "Broker Document",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+          maxTelegramMessageChars: 10,
+          redactionPatterns: ["shhh-secret"],
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      },
+    });
+    children.push(child);
+
+    const finalOutput = [
+      "paragraph one shhh-secret",
+      "",
+      "paragraph two",
+      "",
+      "paragraph three",
+      "",
+      "paragraph four",
+      "",
+      "paragraph five",
+      "",
+      "paragraph six",
+    ].join("\n");
+
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        requestId: "register-document-output",
+        action: "registerRoute",
+        clientId: "test-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: false,
+          notification: {
+            lastStatus: "completed",
+            lastTurnId: "turn-document",
+            lastAssistantText: finalOutput,
+          },
+          binding,
+        },
+      });
+      await client.request({
+        type: "request",
+        requestId: "send-document-output",
+        action: "sendToBoundChat",
+        sessionKey: binding.sessionKey,
+        text: "compact fallback",
+        terminalStatus: "completed",
+      });
+    } finally {
+      client.close();
+    }
+
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const document = outbox.find((entry): entry is TestOutboxDocument => entry.method === "sendDocument");
+    expect(document?.document.fileName).toBe("pi-output-broker-document-turn-document.md");
+    expect(document?.document.text).toContain("[redacted]");
+    expect(document?.document.text).not.toContain("shhh-secret");
+  });
 });
+
+interface TestOutboxMessage {
+  method: "sendMessage";
+  chatId: number;
+  text: string;
+  options?: unknown;
+}
+
+interface TestOutboxDocument {
+  method: "sendDocument";
+  chatId: number;
+  document: { fileName: string; text?: string; byteSize?: number; caption?: string };
+  options?: unknown;
+}
+
+type TestOutboxEntry = TestOutboxMessage | TestOutboxDocument;
+
+function parseOutbox(raw: string): TestOutboxEntry[] {
+  return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as TestOutboxEntry);
+}
 
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode) return Promise.resolve();
@@ -430,4 +649,53 @@ function sendBrokerRequest(socketPath: string, payload: Record<string, unknown>)
     });
     socket.once("error", reject);
   });
+}
+
+async function openBrokerClient(socketPath: string): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): void }> {
+  const socket = net.createConnection(socketPath);
+  socket.setEncoding("utf8");
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
+  let buffer = "";
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  socket.on("data", (chunk: string) => {
+    buffer += chunk;
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) {
+        const response = JSON.parse(line) as { requestId?: string; ok?: boolean; result?: unknown; error?: string };
+        const requestId = response.requestId;
+        const waiter = requestId ? pending.get(requestId) : undefined;
+        if (waiter) {
+          pending.delete(requestId!);
+          if (response.ok) waiter.resolve(response.result);
+          else waiter.reject(new Error(response.error ?? "Broker request failed."));
+        }
+      }
+      newlineIndex = buffer.indexOf("\n");
+    }
+  });
+  socket.on("error", (error) => {
+    for (const waiter of pending.values()) waiter.reject(error);
+    pending.clear();
+  });
+
+  return {
+    request(payload: Record<string, unknown>): Promise<unknown> {
+      const requestId = typeof payload.requestId === "string" ? payload.requestId : `${Date.now()}-${Math.random()}`;
+      const request = { ...payload, requestId };
+      return new Promise((resolve, reject) => {
+        pending.set(requestId, { resolve, reject });
+        socket.write(`${JSON.stringify(request)}\n`);
+      });
+    },
+    close() {
+      socket.end();
+    },
+  };
 }

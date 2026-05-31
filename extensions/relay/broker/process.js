@@ -1,4 +1,4 @@
-import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { unlink, readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
 import net from 'node:net';
 import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
@@ -133,6 +133,7 @@ const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
+const testTelegramOutboxPath = process.env.PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH;
 const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
 function recordDiagnostic(event) {
   if (!diagnosticsLogger.config?.enabled) return;
@@ -249,7 +250,7 @@ function chunkText(text) {
     remaining = remaining.slice(splitAt).trimStart();
   }
   if (remaining) chunks.push(remaining);
-  return chunks.map((chunk, index) => `[${index + 1}/${chunks.length}]\n${chunk}`);
+  return chunks.map((chunk, index) => chunks.length > 1 ? `[${index + 1}/${chunks.length}]\n${chunk}` : chunk);
 }
 
 function isRetriable(error) {
@@ -293,6 +294,22 @@ async function withRetry(operation) {
   throw lastError;
 }
 
+async function appendTestTelegramOutbox(event) {
+  if (!testTelegramOutboxPath) return false;
+  await appendFile(testTelegramOutboxPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+  return true;
+}
+
+async function sendTelegramMessage(chatId, text, options) {
+  if (await appendTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
+  await api.sendMessage(chatId, text, options);
+}
+
+async function sendTelegramDocument(chatId, document, options, testDocument) {
+  if (await appendTestTelegramOutbox({ method: 'sendDocument', chatId, document: testDocument, options })) return;
+  await api.sendDocument(chatId, document, options);
+}
+
 async function sendPlainText(chatId, text, keyboard) {
   const chunks = chunkText(text);
   recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
@@ -300,7 +317,7 @@ async function sendPlainText(chatId, text, keyboard) {
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       const replyMarkup = keyboard && index === chunks.length - 1 ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
-      await withRetry(() => api.sendMessage(chatId, chunk, replyMarkup));
+      await withRetry(() => sendTelegramMessage(chatId, chunk, replyMarkup));
     }
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length } });
   } catch (error) {
@@ -311,7 +328,13 @@ async function sendPlainText(chatId, text, keyboard) {
 
 async function sendMarkdownDocument(chatId, filename, text, caption) {
   const redacted = redact(text);
-  await withRetry(() => api.sendDocument(chatId, new InputFile(Buffer.from(redacted, 'utf8'), filename), caption ? { caption } : undefined));
+  const redactedCaption = caption ? redact(caption) : undefined;
+  await withRetry(() => sendTelegramDocument(
+    chatId,
+    new InputFile(Buffer.from(redacted, 'utf8'), filename),
+    redactedCaption ? { caption: redactedCaption } : undefined,
+    { fileName: filename, text: redacted, caption: redactedCaption },
+  ));
 }
 
 function finalOutputDeliveryTarget() {
@@ -338,8 +361,7 @@ async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) 
   }
   if (plan.kind === 'document') {
     await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`, latestImagesKeyboardForRoute(route));
-    const data = typeof plan.file.data === 'string' ? Buffer.from(plan.file.data, 'base64') : Buffer.from(plan.file.data);
-    await withRetry(() => api.sendDocument(binding.chatId, new InputFile(data, plan.file.fileName), { caption: 'Latest assistant output' }));
+    await sendMarkdownDocument(binding.chatId, plan.file.fileName, text, 'Latest assistant output');
     return true;
   }
   await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, latestImagesKeyboardForRoute(route));
@@ -348,10 +370,12 @@ async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) 
 
 async function sendImageDocument(chatId, image, caption) {
   const bytes = Buffer.from(image.data, 'base64');
-  await withRetry(() => api.sendDocument(
+  const fileName = safeTelegramImageFilename(image.fileName, image.mimeType);
+  await withRetry(() => sendTelegramDocument(
     chatId,
-    new InputFile(bytes, safeTelegramImageFilename(image.fileName, image.mimeType)),
+    new InputFile(bytes, fileName),
     caption ? { caption: redact(caption) } : undefined,
+    { fileName, byteSize: bytes.byteLength, caption: caption ? redact(caption) : undefined },
   ));
 }
 
@@ -2379,12 +2403,10 @@ async function handleClientRequest(socket, message) {
         const imageHint = message.terminalStatus === 'completed' && !route.notification?.structuredAnswer && route.notification?.latestImages?.count
           ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
           : '';
-        if (message.terminalStatus === 'completed' && await sendCompletedFullOutput(route, binding, sourcePrefix, imageHint)) {
-          recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String(route.notification?.lastAssistantText || '').length, terminalStatus: message.terminalStatus } });
-          respond(true, true);
-          return;
+        const sentCompletedFullOutput = message.terminalStatus === 'completed' && await sendCompletedFullOutput(route, binding, sourcePrefix, imageHint);
+        if (!sentCompletedFullOutput) {
+          await sendPlainText(binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
         }
-        await sendPlainText(binding.chatId, `${sourcePrefix}${message.text}`, completionActionKeyboardForRoute(route));
         if (route.notification?.lastStatus === 'completed' && route.notification?.structuredAnswer) {
           await sendPlainText(
             binding.chatId,
@@ -2394,7 +2416,7 @@ async function handleClientRequest(socket, message) {
             answerActionKeyboardForRoute(route),
           );
         }
-        recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String(message.text || '').length } });
+        recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String((sentCompletedFullOutput ? route.notification?.lastAssistantText : message.text) || '').length, terminalStatus: message.terminalStatus } });
         respond(true, true);
         return;
       }

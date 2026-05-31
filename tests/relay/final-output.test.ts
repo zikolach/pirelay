@@ -57,6 +57,11 @@ describe("final output delivery policy", () => {
     expect(excerpt).toBe("Intro paragraph.\n\n- first result\n- second…");
   });
 
+  it("preserves leading indentation when building excerpts", () => {
+    const excerpt = formatPreservingExcerpt("  const answer = true;\n  console.log(answer);\n", 80);
+    expect(excerpt).toBe("  const answer = true;\n  console.log(answer);");
+  });
+
   it("sends message chunks when output fits bounded chunks", async () => {
     const { fake, sentTexts, sentDocuments } = adapter({ maxTextChars: 100 });
     await expect(sendFinalOutputWithFallback(fake, address, route(), "short final answer", { maxMessageChunks: 2 })).resolves.toBe("messages");

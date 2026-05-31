@@ -2531,7 +2531,7 @@ export async function sendSessionNotification(
     await runtime.registerRoute(route);
   }
   const fallback = status === "completed"
-    ? route.notification.lastAssistantText ?? route.notification.lastSummary ?? "Pi task completed."
+    ? route.notification.lastSummary ?? "Pi task completed."
     : route.notification.lastFailure ?? `Pi task ${status}.`;
   const imageHint = status === "completed" && !route.notification.structuredAnswer && route.notification.latestImages?.count
     ? `\n\n🖼 ${route.notification.latestImages.count} image output/file(s) available. Use /images to download.`
