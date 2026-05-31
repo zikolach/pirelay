@@ -12,7 +12,8 @@ import type {
   TelegramTunnelConfig,
 } from "../../core/types.js";
 import { formatTelegramChatText } from "./formatting.js";
-import { acceptedInboundImageFormatsText, chunkTelegramText, isAcceptedInboundImageMimeType, normalizeImageMimeType, prepareInboundImagePromptContent, redactSecret, safeTelegramImageFilename, sleep } from "../../core/utils.js";
+import { chunkTelegramText, normalizeImageMimeType, redactSecret, safeTelegramImageFilename, sleep } from "../../core/utils.js";
+import { acceptedInboundImageFormatsText, isAcceptedInboundImageMimeType, prepareInboundImagePromptContent } from "../../media/index.js";
 
 export class TelegramApiClient {
   private readonly api: Api;

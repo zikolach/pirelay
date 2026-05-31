@@ -9,6 +9,7 @@ const [
   telegramActionsModule,
   telegramFormatModule,
   utilsModule,
+  mediaModule,
   sessionMultiplexingModule,
   relayTelegramMiddlewareModule,
   relayMiddlewareModule,
@@ -25,6 +26,7 @@ const [
   jiti.import('../adapters/telegram/actions.ts'),
   jiti.import('../adapters/telegram/formatting.ts'),
   jiti.import('../core/utils.ts'),
+  jiti.import('../media/index.ts'),
   jiti.import('../core/session-selection.ts'),
   jiti.import('../adapters/telegram/middleware.ts'),
   jiti.import('../middleware/pipeline.ts'),
@@ -84,11 +86,11 @@ const sessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
 const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
-const acceptedInboundImageFormatsText = requiredFunction(utilsModule, './utils.ts', 'acceptedInboundImageFormatsText');
+const acceptedInboundImageFormatsText = requiredFunction(mediaModule, './media/index.ts', 'acceptedInboundImageFormatsText');
 const buildImagePromptContent = requiredFunction(utilsModule, './utils.ts', 'buildImagePromptContent');
-const isAcceptedInboundImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAcceptedInboundImageMimeType');
+const isAcceptedInboundImageMimeType = requiredFunction(mediaModule, './media/index.ts', 'isAcceptedInboundImageMimeType');
 const isAllowedImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAllowedImageMimeType');
-const prepareInboundImagePromptContent = requiredFunction(utilsModule, './utils.ts', 'prepareInboundImagePromptContent');
+const prepareInboundImagePromptContent = requiredFunction(mediaModule, './media/index.ts', 'prepareInboundImagePromptContent');
 const normalizeImageMimeType = requiredFunction(utilsModule, './utils.ts', 'normalizeImageMimeType');
 const safeTelegramImageFilename = requiredFunction(utilsModule, './utils.ts', 'safeTelegramImageFilename');
 const formatSessionList = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'formatSessionList');

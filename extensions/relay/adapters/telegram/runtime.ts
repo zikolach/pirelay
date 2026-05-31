@@ -78,7 +78,6 @@ import {
   shouldSendNonTerminalProgress,
 } from "../../notifications/progress.js";
 import {
-  acceptedInboundImageFormatsText,
   buildImagePromptContent,
   createTurnId,
   getTelegramUserLabel,
@@ -88,6 +87,7 @@ import {
   summarizeTextDeterministically,
   toIsoNow,
 } from "../../core/utils.js";
+import { acceptedInboundImageFormatsText } from "../../media/index.js";
 
 const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;

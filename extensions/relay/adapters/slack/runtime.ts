@@ -22,7 +22,8 @@ import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomF
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
-import { buildImagePromptContent, modelSupportsImages, prepareInboundImagePromptContent } from "../../core/utils.js";
+import { buildImagePromptContent, modelSupportsImages } from "../../core/utils.js";
+import { prepareInboundImagePromptContent } from "../../media/index.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({

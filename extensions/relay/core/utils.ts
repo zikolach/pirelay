@@ -4,7 +4,6 @@ import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:pa
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import type { ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate } from "./types.js";
-import { acceptedInboundImageFormatsText as formatAcceptedInboundImageFormats, acceptedInboundImageMimeTypes as listAcceptedInboundImageMimeTypes, isAcceptedInboundImageMimeType as mediaIsAcceptedInboundImageMimeType, prepareInboundImageForPrompt as mediaPrepareInboundImageForPrompt } from "../media/inbound-image.js";
 import type { DeliveryMode, ParsedTelegramCommand, TelegramBindingMetadata, TelegramOutboundChunk, TelegramUserSummary } from "./types.js";
 
 const DEFAULT_REDACTION_PATTERNS = [
@@ -211,33 +210,6 @@ export function isAllowedImageMimeType(mimeType: string | undefined, allowedMime
   const normalized = normalizeImageMimeType(mimeType);
   if (!normalized) return false;
   return allowedMimeTypes.map((value) => normalizeImageMimeType(value)).includes(normalized);
-}
-
-export function isAcceptedInboundImageMimeType(mimeType: string | undefined, allowedDirectMimeTypes: string[]): boolean {
-  return mediaIsAcceptedInboundImageMimeType(mimeType, allowedDirectMimeTypes);
-}
-
-export function acceptedInboundImageMimeTypes(allowedDirectMimeTypes: string[]): string[] {
-  return listAcceptedInboundImageMimeTypes(allowedDirectMimeTypes);
-}
-
-export function acceptedInboundImageFormatsText(allowedDirectMimeTypes: string[]): string {
-  return formatAcceptedInboundImageFormats(allowedDirectMimeTypes);
-}
-
-export function prepareInboundImagePromptContent(bytes: Uint8Array, options: { mimeType: string | undefined; allowedMimeTypes: string[]; maxBytes: number; fileName?: string; fallbackBase?: string }): { image: ImageContent; fileName: string; fileSize: number; mimeType: string; converted: boolean; sourceMimeType: string } {
-  const prepared = mediaPrepareInboundImageForPrompt(bytes, options.mimeType, {
-    allowedDirectMimeTypes: options.allowedMimeTypes,
-    maxBytes: options.maxBytes,
-  });
-  return {
-    image: { type: "image", data: prepared.bytes.toString("base64"), mimeType: prepared.mimeType },
-    fileName: safeTelegramImageFilename(options.fileName, prepared.mimeType, options.fallbackBase ?? "telegram-image"),
-    fileSize: prepared.byteSize,
-    mimeType: prepared.mimeType,
-    converted: prepared.converted,
-    sourceMimeType: prepared.sourceMimeType,
-  };
 }
 
 export function imageMimeTypeToExtension(mimeType: string): string {

@@ -16,7 +16,8 @@ import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteIm
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
-import { buildImagePromptContent, modelSupportsImages, prepareInboundImagePromptContent, summarizeTextDeterministically } from "../../core/utils.js";
+import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
+import { prepareInboundImagePromptContent } from "../../media/index.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
 import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
