@@ -2407,7 +2407,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const sourcePrefix = this.sourcePrefixForRoute(route);
 
       if (status === "completed" && notification.lastAssistantText) {
-        notification.lastSummary = summarizeTextDeterministically(notification.lastAssistantText);
+        notification.lastSummary = await summarizeRouteNotificationText(route, notification.lastAssistantText, this.config.summaryMode);
         const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
           ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
           : "";
@@ -2517,11 +2517,18 @@ export function getOrCreateTunnelRuntime(config: TelegramTunnelConfig): TunnelRu
   return runtime;
 }
 
+async function summarizeRouteNotificationText(route: SessionRoute, text: string, mode: TelegramTunnelConfig["summaryMode"]): Promise<string> {
+  const summarizeText = route.actions.summarizeText;
+  if (!summarizeText) return summarizeTextDeterministically(text);
+  const summary = (await summarizeText(text, mode)).trim();
+  return summary || summarizeTextDeterministically(text);
+}
+
 export async function sendSessionNotification(
   runtime: TunnelRuntime,
   route: SessionRoute,
   status: "completed" | "failed" | "aborted",
-  _config: Pick<TelegramTunnelConfig, "progressMode"> = { progressMode: undefined },
+  config: Pick<TelegramTunnelConfig, "progressMode"> & Partial<Pick<TelegramTunnelConfig, "summaryMode">> = { progressMode: undefined },
 ): Promise<void> {
   if (runtime instanceof InProcessTunnelRuntime) {
     await runtime.notifyTurnCompleted(route, status);
@@ -2530,9 +2537,10 @@ export async function sendSessionNotification(
 
   if (!route.binding) return;
   if (status === "completed") {
-    route.notification.lastSummary = summarizeTextDeterministically(
-      route.notification.lastAssistantText ?? "Pi task completed.",
-    );
+    const summarySource = route.notification.lastAssistantText;
+    route.notification.lastSummary = summarySource
+      ? await summarizeRouteNotificationText(route, summarySource, config.summaryMode ?? "deterministic")
+      : "Pi task completed.";
     await runtime.registerRoute(route);
   }
   const fallback = status === "completed"

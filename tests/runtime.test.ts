@@ -1110,6 +1110,39 @@ describe("InProcessTunnelRuntime", () => {
     }
   });
 
+  it("uses the route summarizer when storing Telegram completion summaries", async () => {
+    const config = await createRuntimeConfig();
+    config.summaryMode = "llm";
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-llm-summary:/tmp/session-llm-summary.jsonl",
+      sessionId: "session-llm-summary",
+      sessionFile: "/tmp/session-llm-summary.jsonl",
+      sessionLabel: "session-llm-summary.jsonl",
+      chatId: 10105,
+      userId: 305,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Detailed assistant output that should be summarized by the configured summarizer.";
+    route.actions.summarizeText = vi.fn(async (_text, mode) => `summary via ${mode}`);
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push(text),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    expect(route.notification.lastSummary).toBe("summary via llm");
+    expect(formatSummaryOutput(route)).toBe("summary via llm");
+    expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+  });
+
   it("keeps structured answer actions after full terminal output delivery", async () => {
     const config = await createRuntimeConfig();
     config.maxTelegramMessageChars = 120;
@@ -1249,6 +1282,7 @@ describe("InProcessTunnelRuntime", () => {
       "Detailed output:",
       "A ".repeat(400),
     ].join("\n");
+    route.actions.summarizeText = vi.fn(async (_text, mode) => `broker summary via ${mode}`);
     const sent: Array<{ sessionKey: string; text: string; options?: { terminalStatus?: string } }> = [];
     const fakeRuntime: TunnelRuntime = {
       setup: undefined,
@@ -1263,8 +1297,9 @@ describe("InProcessTunnelRuntime", () => {
       }),
     };
 
-    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet" });
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet", summaryMode: "llm" });
 
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
     expect(route.notification.lastSummary).toBeDefined();
     expect(fakeRuntime.registerRoute).toHaveBeenCalledWith(route);
     expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastSummary, options: { terminalStatus: "completed" } }]);
