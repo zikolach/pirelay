@@ -323,3 +323,141 @@ The system SHALL enable GIF first-frame conversion through safe defaults while p
 - **WHEN** setup guidance, `/relay doctor`, README, or testing documentation describes accepted image input formats
 - **THEN** it states that JPEG, PNG, and WebP are accepted directly and GIF is accepted by first-frame conversion, subject to the configured media limits
 
+### Requirement: Approval policy configuration
+PiRelay SHALL provide explicit opt-in configuration for approval gates with safe defaults.
+
+#### Scenario: Approval gates are not configured
+- **WHEN** approval gate configuration is absent or disabled
+- **THEN** PiRelay does not classify or block operations for remote approval
+- **AND** existing prompt, tool, file, media, and notification behavior remains unchanged
+
+#### Scenario: Approval policy is configured
+- **WHEN** a user configures approval gates
+- **THEN** PiRelay accepts bounded rules for tool names, operation categories, path/command/text patterns, timeout, grant scopes, grant TTLs, and optional scope constraints
+- **AND** validates invalid rules with actionable diagnostics before relying on them
+
+#### Scenario: Timeout is configured unsafely
+- **WHEN** approval timeout configuration is missing, too low, too high, or invalid
+- **THEN** PiRelay applies a documented bounded default or rejects the invalid value with a safe config diagnostic
+
+### Requirement: Approval grant configuration
+PiRelay SHALL configure reusable approval grants with safe defaults.
+
+#### Scenario: Session grants are enabled
+- **WHEN** approval gates support session-scoped grants
+- **THEN** PiRelay uses a documented bounded TTL and revokes grants on session shutdown, session switch, binding revocation, remote disconnect, local disconnect, or explicit grant revocation
+
+#### Scenario: Remote persistent grants are not enabled
+- **WHEN** configuration does not explicitly enable remote persistent grants
+- **THEN** PiRelay rejects or hides remote persistent approval options while still allowing local config-defined allow rules
+
+#### Scenario: Remote persistent grants are enabled
+- **WHEN** configuration explicitly enables remote persistent grants
+- **THEN** PiRelay requires narrow matcher fingerprints, bounded audit records, and a documented revocation path for those grants
+
+### Requirement: Approval policy diagnostics
+PiRelay SHALL report approval policy status without exposing secrets.
+
+#### Scenario: Doctor inspects approval config
+- **WHEN** the local user runs relay diagnostics with approval gates configured
+- **THEN** PiRelay reports whether approval gates are enabled, how many rules and active grants exist, which grant scopes are enabled, and any invalid or risky configuration findings
+- **AND** it does not print raw secrets, hidden prompts, full command patterns containing redacted values, or bot credentials
+
+#### Scenario: Policy references unsupported capability
+- **WHEN** approval policy requires a messenger or button capability that the configured adapter cannot provide
+- **THEN** PiRelay reports a clear fallback/unsupported-capability diagnostic and does not silently auto-approve matching operations
+
+### Requirement: Approval configuration examples
+PiRelay documentation SHALL include safe approval policy examples.
+
+#### Scenario: User reads approval gate documentation
+- **WHEN** a user reads README or config documentation for approval gates
+- **THEN** the documentation explains opt-in behavior, approve-once versus approve-for-session behavior, persistent grants being disabled by default, fail-closed timeout behavior, examples for `git push`, package publishing, destructive shell commands, and protected file writes, plus warnings that approval gates are not a sandbox
+
+### Requirement: Agent delegation configuration
+The system SHALL provide explicit configuration for shared-room agent delegation without enabling autonomous peer-bot work by default.
+
+#### Scenario: Delegation is disabled by default
+- **WHEN** PiRelay configuration does not enable agent delegation for a messenger instance or shared room
+- **THEN** bot-authored delegation creation, claim, and auto-execution are disabled
+- **AND** existing human-directed shared-room commands remain unchanged
+
+#### Scenario: Trusted peer bot is configured
+- **WHEN** configuration declares a trusted peer bot identity for delegation
+- **THEN** it records only non-secret peer identity metadata, allowed messenger instance/room scope, allowed source/target machines, capabilities, creation/claim permissions, and optional display label
+- **AND** diagnostics do not print tokens, pairing codes, hidden prompts, transcripts, or raw task prompt content
+
+#### Scenario: Local capabilities are configured
+- **WHEN** configuration declares local machine or session capabilities such as `linux-tests`, `browser`, or `long-running-jobs`
+- **THEN** PiRelay uses those non-secret capabilities for delegation eligibility and diagnostics
+- **AND** it does not infer broad capabilities from installed tools unless explicitly configured or safely detected by a future opt-in mechanism
+
+#### Scenario: Autonomy level is configured
+- **WHEN** configuration sets delegation autonomy to `off`, `propose-only`, `auto-claim-targeted`, or `auto-claim-safe-capability`
+- **THEN** PiRelay applies that level as an upper bound on bot-authored task behavior for the configured messenger instance or room only when delegation is also explicitly enabled
+- **AND** unknown autonomy values are rejected by config validation or reported by doctor diagnostics
+- **AND** setting a non-`off` autonomy value without `enabled: true` does not by itself enable delegation
+
+#### Scenario: Delegation bounds are configured
+- **WHEN** configuration enables delegation
+- **THEN** PiRelay applies bounded defaults or configured values for task expiry, running timeout, maximum delegation depth, maximum visible summary length, and maximum recent task history
+
+### Requirement: Delegation diagnostics
+The system SHALL report shared-room delegation readiness and unsafe configuration without exposing secrets.
+
+#### Scenario: Doctor reports delegation readiness
+- **WHEN** the local user invokes `/relay doctor` with delegation enabled
+- **THEN** diagnostics report delegation autonomy level, trusted peer count, local capability labels, room/channel readiness, approval-gate dependency status, and platform limitations
+- **AND** diagnostics do not print bot tokens, task hidden prompts, full transcripts, pairing codes, or raw tool inputs
+
+#### Scenario: Delegation configuration is unsafe
+- **WHEN** delegation is enabled without explicit peer trust, room scope, known local bot identity, human approval path, or required shared-room platform readiness
+- **THEN** diagnostics report a warning or blocking finding and recommend propose-only or disabled mode until the unsafe condition is resolved
+
+### Requirement: Communication diagnostics configuration
+The system SHALL expose explicit configuration and environment controls for communication diagnostics while keeping diagnostic logging disabled by default and secret-safe when enabled.
+
+#### Scenario: Diagnostics config is absent
+- **WHEN** PiRelay configuration omits communication diagnostics settings
+- **THEN** communication diagnostic logging remains disabled
+- **AND** no diagnostic log path, content-preview mode, or retention setting is inferred in a way that starts logging unexpectedly
+
+#### Scenario: Diagnostics config enables metadata logging
+- **WHEN** PiRelay configuration or supported environment overrides enable communication diagnostics
+- **THEN** the system resolves a diagnostic log path under the configured PiRelay state directory unless a safe explicit path is provided
+- **AND** it resolves bounded defaults for maximum file size, retained file count, and content-preview mode
+- **AND** content previews remain disabled unless explicitly enabled
+
+#### Scenario: Doctor reports diagnostics configuration
+- **WHEN** the local user invokes `/relay doctor` with communication diagnostics configured
+- **THEN** diagnostics report enablement, safe log path, retention limits, latest write status, and content-preview status
+- **AND** diagnostics do not print log contents, bot tokens, signing secrets, OAuth credentials, pairing codes, hidden prompts, full transcripts, raw tool inputs, or approval secret material
+
+#### Scenario: Unsafe diagnostic path is configured
+- **WHEN** a configured diagnostic log path is unsafe, cannot be created with restrictive permissions, or points outside allowed local filesystem boundaries according to implementation policy
+- **THEN** PiRelay reports an actionable local configuration warning or disables diagnostic writes safely
+- **AND** it does not weaken relay authorization or messenger delivery behavior
+
+### Requirement: Approval gate enablement is explicit and disableable
+PiRelay configuration SHALL make approval gates opt-in and SHALL provide a clear disable path through config and environment overrides.
+
+#### Scenario: Approval config omits enabled flag
+- **WHEN** approval gate rules, timeouts, grant settings, or audit settings are present but no config or environment value explicitly enables approval gates
+- **THEN** PiRelay reports approval gates as disabled
+- **AND** it does not block local or remote tool calls through approval gates
+
+#### Scenario: Config disables approval gates
+- **WHEN** `approvalGates.enabled` is set to `false`
+- **THEN** PiRelay reports approval gates as disabled
+- **AND** configured rules remain inert until the user explicitly enables approval gates again
+
+#### Scenario: Environment disables approval gates
+- **WHEN** `PI_RELAY_APPROVAL_ENABLED=false` is present in the environment
+- **THEN** PiRelay resolves approval gates as disabled regardless of file-configured rules
+- **AND** local diagnostics identify approval gates as disabled without printing raw rule patterns or secrets
+
+#### Scenario: Documentation explains default and scope
+- **WHEN** users read README, config docs, doctor output, or setup guidance for approval gates
+- **THEN** the docs explain that approval gates are disabled by default, require explicit enablement, and apply only to remote messenger-owned turns
+- **AND** the docs state that local Pi prompts never require messenger approval
+
