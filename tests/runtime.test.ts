@@ -1177,6 +1177,7 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
   });
 
+
   it("keeps structured answer actions after full terminal output delivery", async () => {
     const config = await createRuntimeConfig();
     config.maxTelegramMessageChars = 120;
@@ -1339,6 +1340,46 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastSummary, options: { terminalStatus: "completed" } }]);
     expect(sent[0]!.text.length).toBeLessThan(route.notification.lastAssistantText.length);
     expect(sent[0]!.text).not.toContain("\n\nValidation:\n-");
+  });
+
+  it("falls back to deterministic summaries for broker completion notifications when the route summarizer fails", async () => {
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-broker-summary-error:/tmp/session-broker-summary-error.jsonl",
+      sessionId: "session-broker-summary-error",
+      sessionFile: "/tmp/session-broker-summary-error.jsonl",
+      sessionLabel: "session-broker-summary-error.jsonl",
+      chatId: 10123,
+      userId: 323,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = ["Broker result is ready.", "", "Validation:", "- tests ✅"].join("\n");
+    route.actions.summarizeText = vi.fn(async () => {
+      throw new Error("summarizer unavailable");
+    });
+    const sent: Array<{ sessionKey: string; text: string; options?: { terminalStatus?: string } }> = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async (sessionKey, text, options) => {
+        sent.push({ sessionKey, text, options });
+      }),
+    };
+
+    await sendSessionNotification(fakeRuntime, route, "completed", { progressMode: "quiet", summaryMode: "llm" });
+
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    expect(route.notification.lastSummary).toBe("Broker result is ready. Validation: - tests ✅");
+    expect(fakeRuntime.registerRoute).toHaveBeenCalledWith(route);
+    expect(sent).toEqual([{ sessionKey: route.sessionKey, text: route.notification.lastSummary, options: { terminalStatus: "completed" } }]);
   });
 
   it("sends Telegram failure and aborted terminal notifications", async () => {

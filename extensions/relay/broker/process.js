@@ -1,7 +1,8 @@
-import { unlink, readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
+import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
+import { appendTestTelegramOutbox } from './test-telegram-outbox.js';
 
 const jiti = createJiti(import.meta.url);
 const [
@@ -298,25 +299,17 @@ async function withRetry(operation) {
   throw lastError;
 }
 
-async function appendTestTelegramOutbox(event) {
-  if (!testTelegramOutboxPath) return false;
-  try {
-    await appendFile(testTelegramOutboxPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`PiRelay broker test Telegram outbox unavailable; falling back to Telegram API: ${message}`);
-    return false;
-  }
+async function appendBrokerTestTelegramOutbox(event) {
+  return appendTestTelegramOutbox(event, { outboxPath: testTelegramOutboxPath, recordDiagnostic });
 }
 
 async function sendTelegramMessage(chatId, text, options) {
-  if (await appendTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
+  if (await appendBrokerTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
   await api.sendMessage(chatId, text, options);
 }
 
 async function sendTelegramDocument(chatId, document, options, testDocument) {
-  if (await appendTestTelegramOutbox({ method: 'sendDocument', chatId, document: testDocument, options })) return;
+  if (await appendBrokerTestTelegramOutbox({ method: 'sendDocument', chatId, document: testDocument, options })) return;
   await api.sendDocument(chatId, document, options);
 }
 
