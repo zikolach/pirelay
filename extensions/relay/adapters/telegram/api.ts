@@ -12,7 +12,8 @@ import type {
   TelegramTunnelConfig,
 } from "../../core/types.js";
 import { formatTelegramChatText } from "./formatting.js";
-import { chunkTelegramText, isAllowedImageMimeType, normalizeImageMimeType, redactSecret, safeTelegramImageFilename, sleep } from "../../core/utils.js";
+import { chunkTelegramText, normalizeImageMimeType, redactSecret, safeTelegramImageFilename, sleep } from "../../core/utils.js";
+import { acceptedInboundImageFormatsText, isAcceptedInboundImageMimeType, prepareInboundImagePromptContent } from "../../media/index.js";
 
 export class TelegramApiClient {
   private readonly api: Api;
@@ -177,15 +178,18 @@ export class TelegramApiClient {
       throw new Error(`Image is too large (${buffer.byteLength} bytes). Limit: ${this.config.maxInboundImageBytes} bytes.`);
     }
 
-    const mimeType = normalizeImageMimeType(reference.mimeType) ?? reference.mimeType;
-    if (!isAllowedImageMimeType(mimeType, this.config.allowedImageMimeTypes)) {
-      throw new Error(`Unsupported image type: ${mimeType}.`);
-    }
+    const prepared = prepareInboundImagePromptContent(buffer, {
+      mimeType: reference.mimeType,
+      allowedMimeTypes: this.config.allowedImageMimeTypes,
+      maxBytes: this.config.maxInboundImageBytes,
+      fileName: reference.fileName,
+      fallbackBase: reference.kind === "photo" ? "telegram-photo" : "telegram-image",
+    });
 
     return {
-      image: { type: "image", data: buffer.toString("base64"), mimeType },
-      fileName: safeTelegramImageFilename(reference.fileName, mimeType, reference.kind === "photo" ? "telegram-photo" : "telegram-image"),
-      fileSize: buffer.byteLength,
+      image: prepared.image,
+      fileName: prepared.fileName,
+      fileSize: prepared.fileSize,
       source: reference,
     };
   }
@@ -228,7 +232,7 @@ export class TelegramApiClient {
     const document = message.document;
     if (document?.file_id) {
       const mimeType = normalizeImageMimeType(document.mime_type) ?? "application/octet-stream";
-      const supported = isAllowedImageMimeType(mimeType, this.config.allowedImageMimeTypes);
+      const supported = isAcceptedInboundImageMimeType(mimeType, this.config.allowedImageMimeTypes);
       references.push({
         kind: "document",
         fileId: document.file_id,
@@ -237,7 +241,7 @@ export class TelegramApiClient {
         mimeType,
         fileSize: typeof document.file_size === "number" ? document.file_size : undefined,
         supported,
-        unsupportedReason: supported ? undefined : `Unsupported image document type: ${mimeType}.`,
+        unsupportedReason: supported ? undefined : `Unsupported image document type: ${mimeType}. Accepted image formats: ${acceptedInboundImageFormatsText(this.config.allowedImageMimeTypes)}.`,
       });
     }
 

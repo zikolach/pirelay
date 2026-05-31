@@ -175,6 +175,7 @@ export interface ChannelCapabilities {
   maxDocumentBytes?: number;
   maxImageBytes?: number;
   supportedImageMimeTypes: string[];
+  convertibleInboundImageMimeTypes?: string[];
   supportsMarkdown?: boolean;
   sharedRooms?: ChannelSharedRoomCapabilities;
 }
@@ -255,6 +256,13 @@ export interface RelayCoreBoundaries {
   delivery: RelayCoreDeliveryBoundary;
   output: RelayCoreOutputBoundary;
   answers: RelayCoreAnswerBoundary;
+}
+
+
+export function assertKnownInboundFileSizeWithinLimit(file: Pick<ChannelInboundFile, "byteSize" | "fileName">, maxBytes: number, label = "File"): void {
+  if (typeof file.byteSize !== "number" || file.byteSize <= maxBytes) return;
+  const name = file.fileName ? ` ${file.fileName}` : "";
+  throw new Error(`${label}${name} is too large (${file.byteSize} bytes). Limit: ${maxBytes} bytes.`);
 }
 
 export function supportsButtons(adapter: Pick<ChannelAdapterMetadata, "capabilities">): boolean {

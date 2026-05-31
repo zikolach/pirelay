@@ -1,4 +1,5 @@
-import type { ChannelBinding, ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import type { ImageContent } from "@mariozechner/pi-ai";
+import { assertKnownInboundFileSizeWithinLimit, type ChannelBinding, type ChannelButtonLayout, type ChannelInboundAction, type ChannelInboundEvent, type ChannelInboundMessage, type ChannelOutboundFile, type ChannelRouteAddress } from "../../core/channel-adapter.js";
 import { completeDiscordPairing } from "../channel-pairing.js";
 import { DiscordChannelAdapter, discordMentionsSharedRoomAddressing, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
@@ -16,6 +17,7 @@ import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
+import { prepareInboundImagePromptContent } from "../../media/index.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
 import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress, isPeerBotIdentity } from "../../core/agent-delegation-runtime.js";
@@ -747,13 +749,44 @@ export class DiscordRuntime {
       }
     }
 
-    const promptText = message.text.trim() || (imageAttachments.length > 0 ? IMAGE_PROMPT_FALLBACK : "");
+    const images = imageAttachments.length > 0 ? await this.downloadAuthorizedImages(message, imageAttachments) : [];
+    if (!images) return;
+
+    const promptText = message.text.trim() || (imageAttachments.length > 1 ? "Please inspect the attached images." : imageAttachments.length > 0 ? IMAGE_PROMPT_FALLBACK : "");
     if (!promptText) {
       await this.sendText(message, "Send text or a supported image with a caption to prompt Pi.");
       return;
     }
 
-    await this.deliverDiscordPrompt(message, binding, route, promptText);
+    await this.deliverDiscordPrompt(message, binding, route, promptText, { images });
+  }
+
+  private async downloadAuthorizedImages(message: ChannelInboundMessage, imageAttachments: ChannelInboundMessage["attachments"]): Promise<ImageContent[] | undefined> {
+    if (!this.adapter) {
+      await this.sendText(message, "Discord image download is not configured for this instance.");
+      return undefined;
+    }
+    const maxBytes = Math.min(this.config.maxInboundImageBytes, this.adapter.capabilities.maxImageBytes ?? this.config.maxInboundImageBytes);
+    const images: ImageContent[] = [];
+    try {
+      for (const attachment of imageAttachments) {
+        assertKnownInboundFileSizeWithinLimit(attachment, maxBytes, "Image");
+        const bytes = await this.adapter.downloadAttachment(attachment);
+        const prepared = prepareInboundImagePromptContent(bytes, {
+          mimeType: attachment.mimeType,
+          allowedMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+          maxBytes,
+          fileName: attachment.fileName,
+          fallbackBase: "discord-image",
+        });
+        images.push(prepared.image);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.sendText(message, `Could not fetch the Discord image: ${detail}`);
+      return undefined;
+    }
+    return images;
   }
 
   private async handleCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: DiscordCommand): Promise<void> {
@@ -936,9 +969,9 @@ export class DiscordRuntime {
     binding: ChannelPersistedBindingRecord,
     route: SessionRoute,
     promptText: string,
-    options: { deliverAs?: "followUp" | "steer"; idleAck?: string; busyAck?: string; auditAction?: string } = {},
+    options: { deliverAs?: "followUp" | "steer"; idleAck?: string; busyAck?: string; auditAction?: string; images?: ImageContent[] } = {},
   ): Promise<void> {
-    const content = buildImagePromptContent(promptText, []);
+    const content = buildImagePromptContent(promptText, options.images ?? []);
     const outcome = await deliverRoutePrompt(route, {
       content,
       deliverAs: options.deliverAs ?? this.config.busyDeliveryMode,

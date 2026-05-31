@@ -47,7 +47,7 @@ Discord and Slack still document text prefixes first because native slash comman
 
 - plain authorized text becomes a Pi prompt when the session is idle
 - while Pi is busy, prompts are queued as follow-ups by default or steered explicitly when configured
-- Telegram photos and supported image documents become Pi image prompts when the selected model supports image input
+- Messenger image attachments become Pi image prompts when the selected model supports image input; GIF input is converted to its first frame
 - Discord and Slack expose the same command semantics with platform-specific text prefixes
 - Slack channel/thread prompts are gated by `slack.allowChannelMessages` and an explicit channel pairing
 
@@ -71,11 +71,11 @@ Discord and Slack still document text prefixes first because native slash comman
 
 ### Image bridge
 
-- accepts Telegram photos and image documents (`image/jpeg`, `image/png`, `image/webp` by default) after authorization
+- accepts Telegram photos plus messenger image documents/attachments after authorization: JPEG/PNG/WebP directly, and GIF by first-frame conversion
 - uses the Telegram caption as prompt text, or a safe image-inspection fallback for image-only messages
 - rejects image prompts when the selected Pi model does not support image input
 - exposes latest tool-result image outputs and safe latest-turn workspace image references with `/images`
-- supports `/send-image <relative-path>` for explicit delivery of validated workspace PNG/JPEG/WebP files
+- supports `/send-image <relative-path>` for explicit delivery of validated workspace PNG/JPEG/WebP files; GIF conversion is inbound-only
 - does not browse arbitrary workspace files or automatically echo local/remote input images
 
 ### Safety and resilience
@@ -496,7 +496,7 @@ Manual smoke-test steps and release notes live in:
 - no end-to-end encryption beyond each messenger platform's bot/app transport
 - answer workflow depends on conservative structured-output detection
 - image prompts require a Pi model that supports image input
-- image transfer is bounded by configured size and MIME-type limits
+- image transfer is bounded by configured size and MIME-type limits; GIF source and converted first-frame PNG output are both checked
 - `/images` only considers captured image outputs and obvious image file paths mentioned in the latest Pi turn
 
 ## Related files

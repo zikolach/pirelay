@@ -1,5 +1,6 @@
+import type { ImageContent } from "@mariozechner/pi-ai";
 import { appendFileSync } from "node:fs";
-import type { ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import { assertKnownInboundFileSizeWithinLimit, type ChannelButtonLayout, type ChannelInboundAction, type ChannelInboundEvent, type ChannelInboundMessage, type ChannelOutboundFile, type ChannelRouteAddress } from "../../core/channel-adapter.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
@@ -11,7 +12,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback, shouldSendFullFinalOutput } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
@@ -21,6 +22,8 @@ import { delegationCommandFromAction, delegationIngressEventKey, delegationRoomF
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
+import { buildImagePromptContent, modelSupportsImages } from "../../core/utils.js";
+import { prepareInboundImagePromptContent } from "../../media/index.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -753,9 +756,36 @@ export class SlackRuntime {
       await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `relay resume` to re-enable prompts.");
       return;
     }
+    const unsupported = message.attachments.find((attachment) => attachment.supported === false);
+    if (unsupported) {
+      await this.sendText(message, unsupported.unsupportedReason ?? "Attachment is not supported by the Slack relay.");
+      return;
+    }
+
+    const imageAttachments = message.attachments.filter((attachment) => attachment.kind === "image");
+    if (imageAttachments.length > 0) {
+      const modelState = routeModelState(route);
+      if (!modelState.available) {
+        await this.sendText(message, unavailableRouteMessage());
+        return;
+      }
+      if (!modelSupportsImages(modelState.model)) {
+        await this.sendText(message, "The current Pi model does not support image input. Switch to an image-capable model and retry.");
+        return;
+      }
+    }
+
+    const images = imageAttachments.length > 0 ? await this.downloadAuthorizedImages(message, imageAttachments) : [];
+    if (!images) return;
+    const promptText = message.text.trim() || (imageAttachments.length > 1 ? "Please inspect the attached images." : imageAttachments.length > 0 ? "Please inspect the attached image." : "");
+    if (!promptText) {
+      await this.sendText(message, "Send text or a supported image with a caption to prompt Pi.");
+      return;
+    }
+
     const mode = this.config.busyDeliveryMode === "steer" ? "steer" : "followUp";
     const outcome = await deliverRoutePrompt(route, {
-      content: message.text,
+      content: buildImagePromptContent(promptText, images),
       deliverAs: mode,
       requester: this.slackRequester(route, message),
       onStart: async ({ idle }) => {
@@ -785,6 +815,34 @@ export class SlackRuntime {
       return;
     }
     await this.sendText(message, `Sent to ${route.sessionLabel}.`);
+  }
+
+  private async downloadAuthorizedImages(message: ChannelInboundMessage, imageAttachments: ChannelInboundMessage["attachments"]): Promise<ImageContent[] | undefined> {
+    if (!this.adapter) {
+      await this.sendText(message, "Slack image download is not configured for this instance. Add files:write, reinstall the app, and ensure Slack runtime operations are available.");
+      return undefined;
+    }
+    const maxBytes = Math.min(this.config.maxInboundImageBytes, this.adapter.capabilities.maxImageBytes ?? this.config.maxInboundImageBytes);
+    const images: ImageContent[] = [];
+    try {
+      for (const attachment of imageAttachments) {
+        assertKnownInboundFileSizeWithinLimit(attachment, maxBytes, "Image");
+        const bytes = await this.adapter.downloadFile(attachment);
+        const prepared = prepareInboundImagePromptContent(bytes, {
+          mimeType: attachment.mimeType,
+          allowedMimeTypes: this.adapter.capabilities.supportedImageMimeTypes,
+          maxBytes,
+          fileName: attachment.fileName,
+          fallbackBase: "slack-image",
+        });
+        images.push(prepared.image);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.sendText(message, `Could not fetch the Slack image: ${detail}`);
+      return undefined;
+    }
+    return images;
   }
 
   private async handleSlackCommand(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute, command: SlackCommand): Promise<void> {

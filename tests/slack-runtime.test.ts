@@ -10,6 +10,7 @@ import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/cor
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 
 const tempDirs: string[] = [];
+const ONE_BY_ONE_GIF = Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==", "base64");
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -74,6 +75,8 @@ class FakeSlackOperations implements SlackApiOperations {
 
   readonly uploads: SlackUploadFilePayload[] = [];
   uploadError?: Error;
+  downloadBytes: Uint8Array = new Uint8Array([1, 2, 3]);
+  readonly downloadUrls: string[] = [];
 
   async uploadFile(payload: SlackUploadFilePayload): Promise<void> {
     if (this.uploadError) throw this.uploadError;
@@ -87,6 +90,11 @@ class FakeSlackOperations implements SlackApiOperations {
   async postResponse(url: string, payload: { text: string }): Promise<void> {
     if (this.responseError) throw this.responseError;
     this.responses.push({ url, text: payload.text });
+  }
+
+  async downloadFile(url: string): Promise<Uint8Array> {
+    this.downloadUrls.push(url);
+    return this.downloadBytes;
   }
 }
 
@@ -426,6 +434,49 @@ describe("SlackRuntime foundations", () => {
     expect(operations.ephemeral).toHaveLength(0);
     await runtime.notifyTurnCompleted(testRoute, "completed");
     expect(removeReaction).toHaveBeenCalledWith({ channel: "D1", timestamp: "31", name: "thinking_face" });
+  });
+
+  it("routes Slack image prompts with downloaded attachments", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    const testRoute = route();
+    testRoute.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    const sendUserMessage = vi.mocked(testRoute.actions.sendUserMessage);
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "image-env", eventId: "image-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "inspect this", ts: "31-img", team: "T1", files: [{ id: "Fpng", name: "screen.png", mimetype: "image/png", size: 3, url_private_download: "https://slack.test/screen.png" }] } });
+    operations.downloadBytes = ONE_BY_ONE_GIF;
+    await operations.handler!({ type: "event_callback", envelopeId: "gif-env", eventId: "gif-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "", ts: "31-gif", team: "T1", files: [{ id: "Fgif", name: "clip.gif", mimetype: "image/gif", size: ONE_BY_ONE_GIF.byteLength, url_private_download: "https://slack.test/clip.gif" }] } });
+
+    expect(sendUserMessage).toHaveBeenCalledTimes(2);
+    expect(sendUserMessage.mock.calls[0]?.[0]).toMatchObject([{ type: "text", text: "inspect this" }, { type: "image", mimeType: "image/png" }]);
+    expect(sendUserMessage.mock.calls[1]?.[0]).toMatchObject([{ type: "text", text: "Please inspect the attached image." }, { type: "image", mimeType: "image/png" }]);
+  });
+
+
+  it("rejects known oversized Slack image files before download", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.maxInboundImageBytes = 5;
+    runtimeConfig.slack = { ...runtimeConfig.slack!, maxFileBytes: 10 * 1024 };
+    const testRoute = route();
+    testRoute.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    const sendUserMessage = vi.mocked(testRoute.actions.sendUserMessage);
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.registerRoute(testRoute);
+    await runtime.start();
+
+    await operations.handler!({ type: "event_callback", envelopeId: "oversized-image-env", eventId: "oversized-image-event", event: { type: "message", channel: "D1", channel_type: "im", user: "U_DRIVER", text: "oversized", ts: "31-big", team: "T1", files: [{ id: "Fbig", name: "big.gif", mimetype: "image/gif", size: 6, url_private_download: "https://slack.test/big.gif" }] } });
+
+    expect(operations.downloadUrls).toEqual([]);
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(operations.posts.at(-1)?.text).toContain("Image big.gif is too large");
   });
 
   it("cleans Slack thinking reactions on stop and route unregister", async () => {

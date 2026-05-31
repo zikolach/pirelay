@@ -16,6 +16,7 @@ import { assertCanSendOutboundFile, channelTextChunks, decodeOutboundFileData } 
 import type { DiscordRelayConfig } from "../../core/types.js";
 import type { SharedRoomAddressing } from "../../core/shared-room.js";
 import { parseDelegationInvocation } from "../../commands/delegation.js";
+import { DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES, acceptedInboundImageFormatsText, isAcceptedInboundImageMimeType } from "../../media/index.js";
 
 export interface DiscordApiOperations {
   connect?(handler: (event: DiscordGatewayEvent) => Promise<void>): Promise<void>;
@@ -92,7 +93,7 @@ export interface DiscordButtonComponent {
 const DISCORD_CHANNEL = "discord" as const;
 const DEFAULT_DISCORD_MAX_TEXT_CHARS = 2_000;
 export const DEFAULT_DISCORD_MAX_FILE_BYTES = 8 * 1024 * 1024;
-const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const DEFAULT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 export class DiscordChannelAdapter implements ChannelAdapter {
   readonly id = DISCORD_CHANNEL;
@@ -199,6 +200,7 @@ export function discordCapabilities(config: Pick<DiscordRelayConfig, "allowGuild
     maxDocumentBytes: config.maxFileBytes ?? DEFAULT_DISCORD_MAX_FILE_BYTES,
     maxImageBytes: config.maxFileBytes ?? DEFAULT_DISCORD_MAX_FILE_BYTES,
     supportedImageMimeTypes: config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES,
+    convertibleInboundImageMimeTypes: [...DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES],
     supportsMarkdown: true,
     sharedRooms: {
       ordinaryText: Boolean(config.allowGuildChannels),
@@ -341,7 +343,7 @@ function discordIdentity(user: { id: string; username?: string; global_name?: st
 function discordAttachmentToInboundFile(attachment: DiscordAttachmentPayload, config: Pick<DiscordRelayConfig, "allowedImageMimeTypes" | "maxFileBytes">): ChannelInboundFile {
   const mimeType = attachment.content_type;
   const image = Boolean(mimeType?.startsWith("image/"));
-  const supportedMime = !image || !mimeType || (config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES).includes(mimeType);
+  const supportedMime = !image || !mimeType || isAcceptedInboundImageMimeType(mimeType, config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES);
   const supportedSize = typeof attachment.size !== "number" || attachment.size <= (config.maxFileBytes ?? DEFAULT_DISCORD_MAX_FILE_BYTES);
   return {
     id: attachment.id,
@@ -352,7 +354,7 @@ function discordAttachmentToInboundFile(attachment: DiscordAttachmentPayload, co
     width: attachment.width,
     height: attachment.height,
     supported: supportedMime && supportedSize,
-    unsupportedReason: !supportedMime ? "Unsupported MIME type." : !supportedSize ? "File is too large." : undefined,
+    unsupportedReason: !supportedMime ? `Unsupported image attachment. Accepted image formats: ${acceptedInboundImageFormatsText(config.allowedImageMimeTypes ?? DEFAULT_IMAGE_MIME_TYPES)}.` : !supportedSize ? "File is too large." : undefined,
     metadata: { url: attachment.url },
   };
 }

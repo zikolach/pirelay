@@ -9,6 +9,7 @@ const [
   telegramActionsModule,
   telegramFormatModule,
   utilsModule,
+  mediaModule,
   sessionMultiplexingModule,
   relayTelegramMiddlewareModule,
   relayMiddlewareModule,
@@ -25,6 +26,7 @@ const [
   jiti.import('../adapters/telegram/actions.ts'),
   jiti.import('../adapters/telegram/formatting.ts'),
   jiti.import('../core/utils.ts'),
+  jiti.import('../media/index.ts'),
   jiti.import('../core/session-selection.ts'),
   jiti.import('../adapters/telegram/middleware.ts'),
   jiti.import('../middleware/pipeline.ts'),
@@ -84,8 +86,11 @@ const sessionDashboardRef = requiredFunction(telegramActionsModule, './telegram-
 const shouldOfferFullOutputActions = requiredFunction(telegramActionsModule, './telegram-actions.ts', 'shouldOfferFullOutputActions');
 const formatTelegramChatText = requiredFunction(telegramFormatModule, './telegram-format.ts', 'formatTelegramChatText');
 const base64ByteLength = requiredFunction(utilsModule, './utils.ts', 'base64ByteLength');
+const acceptedInboundImageFormatsText = requiredFunction(mediaModule, './media/index.ts', 'acceptedInboundImageFormatsText');
 const buildImagePromptContent = requiredFunction(utilsModule, './utils.ts', 'buildImagePromptContent');
+const isAcceptedInboundImageMimeType = requiredFunction(mediaModule, './media/index.ts', 'isAcceptedInboundImageMimeType');
 const isAllowedImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAllowedImageMimeType');
+const prepareInboundImagePromptContent = requiredFunction(mediaModule, './media/index.ts', 'prepareInboundImagePromptContent');
 const normalizeImageMimeType = requiredFunction(utilsModule, './utils.ts', 'normalizeImageMimeType');
 const safeTelegramImageFilename = requiredFunction(utilsModule, './utils.ts', 'safeTelegramImageFilename');
 const formatSessionList = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'formatSessionList');
@@ -339,7 +344,7 @@ function extractImageReferences(message) {
   const document = message.document;
   if (document?.file_id) {
     const mimeType = normalizeImageMimeType(document.mime_type) || 'application/octet-stream';
-    const supported = isAllowedImageMimeType(mimeType, allowedImageMimeTypes());
+    const supported = isAcceptedInboundImageMimeType(mimeType, allowedImageMimeTypes());
     references.push({
       kind: 'document',
       fileId: document.file_id,
@@ -348,7 +353,7 @@ function extractImageReferences(message) {
       mimeType,
       fileSize: typeof document.file_size === 'number' ? document.file_size : undefined,
       supported,
-      unsupportedReason: supported ? undefined : `Unsupported image document type: ${mimeType}.`,
+      unsupportedReason: supported ? undefined : `Unsupported image document type: ${mimeType}. Accepted image formats: ${acceptedInboundImageFormatsText(allowedImageMimeTypes())}.`,
     });
   }
   return references;
@@ -371,12 +376,17 @@ async function downloadImage(reference) {
   if (buffer.byteLength > maxInboundImageBytes()) {
     throw new Error(`Image is too large (${buffer.byteLength} bytes). Limit: ${maxInboundImageBytes()} bytes.`);
   }
-  const mimeType = normalizeImageMimeType(reference.mimeType) || reference.mimeType;
-  if (!isAllowedImageMimeType(mimeType, allowedImageMimeTypes())) throw new Error(`Unsupported image type: ${mimeType}.`);
+  const prepared = prepareInboundImagePromptContent(buffer, {
+    mimeType: reference.mimeType,
+    allowedMimeTypes: allowedImageMimeTypes(),
+    maxBytes: maxInboundImageBytes(),
+    fileName: reference.fileName,
+    fallbackBase: reference.kind === 'photo' ? 'telegram-photo' : 'telegram-image',
+  });
   return {
-    image: { type: 'image', data: buffer.toString('base64'), mimeType },
-    fileName: safeTelegramImageFilename(reference.fileName, mimeType, reference.kind === 'photo' ? 'telegram-photo' : 'telegram-image'),
-    fileSize: buffer.byteLength,
+    image: prepared.image,
+    fileName: prepared.fileName,
+    fileSize: prepared.fileSize,
     source: reference,
   };
 }
@@ -1375,7 +1385,7 @@ async function downloadAuthorizedImages(message, route) {
   if (references.length === 0) return [];
   const unsupported = references.filter((reference) => !reference.supported);
   if (unsupported.length > 0) {
-    await sendPlainText(message.chat.id, `Unsupported image attachment. Accepted image formats: ${allowedImageMimeTypes().join(', ')}.`);
+    await sendPlainText(message.chat.id, `Unsupported image attachment. Accepted image formats: ${acceptedInboundImageFormatsText(allowedImageMimeTypes())}.`);
     return undefined;
   }
   if (!route?.imageInputSupported) {
@@ -1396,7 +1406,7 @@ async function deliverAuthorizedPrompt(message, route, text, { deliverAs, auditM
   const downloadedImages = await downloadAuthorizedImages(message, route);
   if (!downloadedImages) return;
   const content = downloadedImages.length > 0
-    ? buildImagePromptContent(text || 'Please inspect the attached image.', downloadedImages.map((image) => image.image))
+    ? buildImagePromptContent(text || promptTextForMessage(message), downloadedImages.map((image) => image.image))
     : text;
   const activityStarted = await startActivityIndicator(route);
   const payload = Array.isArray(content) ? { content } : { text: content };

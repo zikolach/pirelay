@@ -22,6 +22,7 @@ const DEFAULT_TELEGRAM_CAPABILITIES = {
   groupChats: false,
   maxTextChars: 3900,
   supportedImageMimeTypes: ["image/jpeg", "image/png", "image/webp"],
+  convertibleInboundImageMimeTypes: ["image/gif"],
 };
 
 export interface TelegramRelayEventOptions {
