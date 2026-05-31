@@ -2,7 +2,7 @@ import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
-import { appendTestTelegramOutbox } from './test-telegram-outbox.js';
+import { appendTestTelegramOutbox, testTelegramOutboxPathFromEnv } from './test-telegram-outbox.js';
 
 const jiti = createJiti(import.meta.url);
 const [
@@ -134,7 +134,8 @@ const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
-const testTelegramOutboxPath = process.env.PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH;
+const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
+const testTelegramOutboxPath = testTelegramOutboxPathFromEnv(process.env);
 const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
 function recordDiagnostic(event) {
   if (!diagnosticsLogger.config?.enabled) return;
@@ -143,7 +144,6 @@ function recordDiagnostic(event) {
 function routeDiagnosticFields(route) {
   return route ? { sessionKey: route.sessionKey, sessionId: route.sessionId, sessionLabel: route.sessionLabel } : {};
 }
-const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 if (!socketPath || !config?.botToken || !config?.stateDir) {
   throw new Error('Missing TELEGRAM_TUNNEL_BROKER_SOCKET_PATH or TELEGRAM_TUNNEL_BROKER_CONFIG_JSON');
 }

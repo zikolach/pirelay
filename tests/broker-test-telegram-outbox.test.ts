@@ -1,5 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { appendTestTelegramOutbox } from "../extensions/relay/broker/test-telegram-outbox.js";
+import { appendTestTelegramOutbox, testTelegramOutboxPathFromEnv } from "../extensions/relay/broker/test-telegram-outbox.js";
+
+describe("testTelegramOutboxPathFromEnv", () => {
+  it("enables the outbox only when broker polling is explicitly skipped", () => {
+    expect(testTelegramOutboxPathFromEnv({
+      PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: "/tmp/outbox.jsonl",
+      TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+    })).toBe("/tmp/outbox.jsonl");
+
+    expect(testTelegramOutboxPathFromEnv({
+      PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: "/tmp/outbox.jsonl",
+    })).toBeUndefined();
+  });
+});
 
 describe("appendTestTelegramOutbox", () => {
   it("appends test Telegram events when an outbox path is configured", async () => {

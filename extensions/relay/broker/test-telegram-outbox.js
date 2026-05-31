@@ -1,5 +1,11 @@
 import { appendFile as appendFileDefault } from 'node:fs/promises';
 
+export function testTelegramOutboxPathFromEnv(env = process.env) {
+  const outboxPath = env.PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH;
+  if (!outboxPath) return undefined;
+  return env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1' ? outboxPath : undefined;
+}
+
 export async function appendTestTelegramOutbox(event, options = {}) {
   const { outboxPath, appendFile = appendFileDefault, recordDiagnostic = () => undefined } = options;
   if (!outboxPath) return false;

@@ -132,10 +132,25 @@ export class TelegramApiClient {
     await this.sendPreparedPlainTextWithKeyboard(chatId, formatted, keyboard);
   }
 
+  /**
+   * Sends text that has already been prepared for Telegram chat delivery.
+   *
+   * Safety contract: callers must pass text that has already had configured
+   * redaction patterns applied and Telegram chat formatting performed. This
+   * method intentionally skips redactSecret() and formatTelegramChatText() so
+   * planned chunks can be sent without double-formatting.
+   */
   async sendPreparedPlainText(chatId: number, text: string): Promise<void> {
     await this.sendPreparedPlainTextWithKeyboard(chatId, text);
   }
 
+  /**
+   * Sends text and an optional keyboard after chunking, without applying
+   * redaction or Telegram chat formatting.
+   *
+   * Safety contract: callers must pass text that is already safe to deliver to
+   * Telegram, including configured secret redaction and chat formatting.
+   */
   async sendPreparedPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
     const chunks = chunkTelegramText(text.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars);
     for (const chunk of chunks) {
