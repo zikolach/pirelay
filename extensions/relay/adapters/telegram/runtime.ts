@@ -61,6 +61,7 @@ import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFile, planF
 import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
+import { formatTelegramChatText } from "./formatting.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import { delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
@@ -83,6 +84,7 @@ import {
   isAllowedImageMimeType,
   modelSupportsImages,
   parseTelegramCommand,
+  redactSecret,
   summarizeTextDeterministically,
   toIsoNow,
 } from "../../core/utils.js";
@@ -2369,7 +2371,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const text = route.notification.lastAssistantText;
     if (!text) return;
     const target = { displayName: "Telegram", capabilities: telegramCapabilities(this.config) };
-    const plan = planFinalOutputDelivery(target, route, text, { maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS });
+    const plan = planFinalOutputDelivery(target, route, text, {
+      maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS,
+      prepareText: (value) => formatTelegramChatText(redactSecret(value, this.config.redactionPatterns)),
+    });
     if (plan.kind === "messages") {
       await this.api.sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
       for (const chunk of plan.chunks) await this.api.sendPlainText(binding.chatId, chunk);
@@ -2382,7 +2387,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Full output is attached as Markdown.${imageHint}`,
         this.latestImagesKeyboardForRoute(route),
       );
-      await this.api.sendDocumentData(binding.chatId, plan.file.fileName, Buffer.from(plan.file.data), "Latest assistant output");
+      await this.api.sendMarkdownDocument(binding.chatId, plan.file.fileName, text, "Latest assistant output");
       return;
     }
     await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, this.latestImagesKeyboardForRoute(route));

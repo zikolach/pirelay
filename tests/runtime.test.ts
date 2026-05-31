@@ -1140,7 +1140,7 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).api = {
       sendPlainText: async (_chatId: number, text: string) => sends.push({ text }),
       sendPlainTextWithKeyboard: async (_chatId: number, text: string, keyboard?: unknown) => sends.push({ text, keyboard }),
-      sendDocumentData: async (_chatId: number, filename: string, data: Uint8Array, caption?: string) => documents.push({ filename, data: Buffer.from(data).toString("utf8"), caption }),
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string, caption?: string) => documents.push({ filename, data: text, caption }),
     };
 
     await runtime.notifyTurnCompleted(route, "completed");
@@ -1176,7 +1176,7 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).api = {
       sendPlainTextWithKeyboard: async (_chatId: number, text: string) => texts.push(text),
       sendPlainText: async (_chatId: number, text: string) => texts.push(text),
-      sendDocumentData: async (_chatId: number, filename: string, data: Uint8Array, caption?: string) => documents.push({ filename, data: Buffer.from(data).toString("utf8"), caption }),
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string, caption?: string) => documents.push({ filename, data: text, caption }),
     };
 
     await runtime.notifyTurnCompleted(route, "completed");
@@ -1184,6 +1184,41 @@ describe("InProcessTunnelRuntime", () => {
     expect(texts).toHaveLength(1);
     expect(texts[0]).toContain("Full output is attached as Markdown");
     expect(documents).toEqual([{ filename: "pi-output-session-large-output-turn-large.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
+  });
+
+  it("plans Telegram completion fallback after chat redaction expands the outbound text", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 100;
+    config.redactionPatterns = ["x"];
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-redacted-output:/tmp/session-redacted-output.jsonl",
+      sessionId: "session-redacted-output",
+      sessionFile: "/tmp/session-redacted-output.jsonl",
+      sessionLabel: "session-redacted-output.jsonl",
+      chatId: 10122,
+      userId: 322,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastTurnId = "turn-redacted";
+    route.notification.lastAssistantText = Array.from({ length: 90 }, () => "x").join(" ");
+    const texts: string[] = [];
+    const documents: Array<{ filename: string; data: string; caption?: string }> = [];
+    (runtime as any).api = {
+      sendPlainTextWithKeyboard: async (_chatId: number, text: string) => texts.push(text),
+      sendPlainText: async (_chatId: number, text: string) => texts.push(text),
+      sendMarkdownDocument: async (_chatId: number, filename: string, text: string, caption?: string) => documents.push({ filename, data: text, caption }),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("Full output is attached as Markdown");
+    expect(documents).toEqual([{ filename: "pi-output-session-redacted-output-turn-redacted.md", data: route.notification.lastAssistantText, caption: "Latest assistant output" }]);
   });
 
   it("registers full output but sends only a compact broker fallback notification", async () => {

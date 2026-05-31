@@ -52,6 +52,29 @@ describe("final output delivery policy", () => {
     expect(plan).toEqual({ kind: "messages", chunks: ["Done.\n\n- typecheck ✅\n- tests ✅"], differsFromFullOutput: false });
   });
 
+  it("plans against prepared outbound chat text when provided", () => {
+    const { fake } = adapter({ maxTextChars: 6 });
+    const plan = planFinalOutputDelivery(fake, route(), "raw", {
+      maxMessageChunks: 2,
+      prepareText: () => "line1\nline2",
+    });
+
+    expect(plan).toEqual({ kind: "messages", chunks: ["line1\n", "line2"], differsFromFullOutput: false });
+  });
+
+  it("uses prepared outbound chat length for document fallback decisions", () => {
+    const { fake } = adapter({ maxTextChars: 10 });
+    const plan = planFinalOutputDelivery(fake, route(), "raw markdown", {
+      maxMessageChunks: 2,
+      prepareText: () => "1234567890 1234567890 1234567890",
+    });
+
+    expect(plan.kind).toBe("document");
+    if (plan.kind === "document") {
+      expect(Buffer.from(plan.file.data).toString("utf8")).toBe("raw markdown");
+    }
+  });
+
   it("creates format-preserving excerpts only when shortening is explicitly needed", () => {
     const excerpt = formatPreservingExcerpt("Intro paragraph.\n\n- first result\n- second result\n\nTrailing details", 42);
     expect(excerpt).toBe("Intro paragraph.\n\n- first result\n- second…");

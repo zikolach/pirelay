@@ -10,6 +10,11 @@ export type FinalOutputDeliveryPlan =
   | { kind: "document"; file: ChannelOutboundFile; differsFromFullOutput: true }
   | { kind: "unavailable"; message: string; differsFromFullOutput: true };
 
+export interface FinalOutputDeliveryOptions {
+  maxMessageChunks?: number;
+  prepareText?: (text: string) => string;
+}
+
 export function finalOutputMarkdownFile(route: Pick<SessionRoute, "sessionId" | "notification">, text: string): ChannelOutboundFile {
   const turnId = route.notification.lastTurnId ?? "latest";
   return {
@@ -24,10 +29,11 @@ export function planFinalOutputDelivery(
   adapter: Pick<ChannelAdapterMetadata, "capabilities" | "displayName">,
   route: Pick<SessionRoute, "sessionId" | "notification">,
   text: string,
-  options: { maxMessageChunks?: number } = {},
+  options: FinalOutputDeliveryOptions = {},
 ): FinalOutputDeliveryPlan {
   const maxMessageChunks = options.maxMessageChunks ?? DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS;
-  const chunks = channelTextChunks(adapter, text);
+  const messageText = options.prepareText ? options.prepareText(text) : text;
+  const chunks = channelTextChunks(adapter, messageText);
   if (chunks.length <= maxMessageChunks) {
     return { kind: "messages", chunks, differsFromFullOutput: false };
   }
@@ -57,7 +63,7 @@ export async function sendFinalOutputWithFallback(
   address: ChannelRouteAddress,
   route: SessionRoute,
   text: string,
-  options: { maxMessageChunks?: number; caption?: string } = {},
+  options: FinalOutputDeliveryOptions & { caption?: string } = {},
 ): Promise<"messages" | "document" | "unavailable"> {
   const plan = planFinalOutputDelivery(adapter, route, text, options);
   if (plan.kind === "messages") {

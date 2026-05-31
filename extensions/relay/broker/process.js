@@ -238,7 +238,7 @@ function redact(text) {
 
 function chunkText(text) {
   const maxChars = config.maxTelegramMessageChars || 3900;
-  const safe = formatTelegramChatText(redact(String(text || ''))).replace(/\r\n/g, '\n');
+  const safe = prepareTelegramChatText(text);
   if (safe.length <= maxChars) return [safe];
   const chunks = [];
   let remaining = safe;
@@ -251,6 +251,10 @@ function chunkText(text) {
   }
   if (remaining) chunks.push(remaining);
   return chunks.map((chunk, index) => chunks.length > 1 ? `[${index + 1}/${chunks.length}]\n${chunk}` : chunk);
+}
+
+function prepareTelegramChatText(text) {
+  return formatTelegramChatText(redact(String(text || ''))).replace(/\r\n/g, '\n');
 }
 
 function isRetriable(error) {
@@ -352,7 +356,10 @@ async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) 
   if (!text) return false;
   const durationMs = route.notification?.startedAt ? Date.now() - route.notification.startedAt : undefined;
   const durationLabel = durationMs ? `${Math.round(durationMs / 1000)}s` : 'unknown time';
-  const plan = planFinalOutputDelivery(finalOutputDeliveryTarget(), route, text, { maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS });
+  const plan = planFinalOutputDelivery(finalOutputDeliveryTarget(), route, text, {
+    maxMessageChunks: DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS,
+    prepareText: prepareTelegramChatText,
+  });
   if (plan.kind === 'messages') {
     await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
     for (const chunk of plan.chunks) await sendPlainText(binding.chatId, chunk);
