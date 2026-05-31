@@ -685,3 +685,124 @@ The system SHALL accept authorized inbound GIF image attachments for Pi image pr
 - **WHEN** an authorized paired messenger user sends a supported direct image and a valid GIF attachment in the same message and the selected Pi model supports image input
 - **THEN** PiRelay preserves the direct image content and includes the converted GIF first-frame image in the same prompt delivery subject to existing message and size limits
 
+### Requirement: Messenger-neutral approval UX
+PiRelay SHALL expose approval requests and decisions through every first-class live messenger adapter with equivalent authorization and stale-state behavior.
+
+#### Scenario: Approval request is sent to Telegram
+- **WHEN** a Telegram-originated remote turn requires approval for a sensitive operation
+- **THEN** PiRelay sends the authorized Telegram chat a bounded approval request with Approve once and Deny actions when Telegram buttons are available
+- **AND** includes Approve for session when session-scoped grants are enabled
+
+#### Scenario: Approval request is sent to Discord
+- **WHEN** a Discord-originated remote turn requires approval for a sensitive operation
+- **THEN** PiRelay sends the authorized Discord conversation a bounded approval request with component actions or a documented text/action fallback
+
+#### Scenario: Approval request is sent to Slack
+- **WHEN** a Slack-originated remote turn requires approval for a sensitive operation
+- **THEN** PiRelay sends the authorized Slack conversation or thread a bounded approval request with Block Kit actions or a documented text/action fallback
+
+#### Scenario: Messenger lacks button capability
+- **WHEN** the active messenger adapter cannot render interactive approval buttons
+- **THEN** PiRelay provides a safe fallback or reports that approvals cannot be completed through that adapter
+- **AND** it does not auto-approve the operation
+
+### Requirement: Approval authorization parity
+PiRelay SHALL require the same active persisted binding authorization for approval decisions as for prompts, callbacks, file requests, and control actions.
+
+#### Scenario: Authorized requester approves
+- **WHEN** the same authorized user in the same active conversation/thread approves an unexpired pending operation for the same session
+- **THEN** PiRelay accepts the decision and resolves the pending approval as approved
+
+#### Scenario: Different user attempts approval
+- **WHEN** a different platform user, unpaired user, disallowed user, or untrusted identity invokes an approval action
+- **THEN** PiRelay rejects the action and does not resolve the pending approval
+
+#### Scenario: Conversation-scoped disconnect happens while approval is pending
+- **WHEN** the approval conversation sends `/disconnect`, `relay disconnect`, `pirelay disconnect`, or the binding is otherwise revoked before a decision
+- **THEN** PiRelay cancels or expires pending approvals for that binding
+- **AND** future approval actions from that conversation are rejected until re-paired
+
+### Requirement: Approval responses are safe and bounded
+PiRelay SHALL acknowledge approval decisions without exposing sensitive operation data.
+
+#### Scenario: Approval decision is acknowledged
+- **WHEN** an approval is approved once, approved for session, persistently granted, denied, expired, cancelled, stale, unauthorized, or a grant is used/revoked
+- **THEN** PiRelay sends a concise safe response that identifies the outcome, grant scope, expiry when applicable, and session label when appropriate
+- **AND** does not include raw tool input, hidden prompts, full transcripts, file bytes, bot tokens, or unredacted secrets
+
+#### Scenario: Persistent approval option is hidden by default
+- **WHEN** local configuration has not enabled remote persistent grants
+- **THEN** no messenger approval request offers an approve-forever or persistent grant action
+
+### Requirement: Delegated prompt delivery
+Messenger relay sessions SHALL support prompt delivery that originates from a claimed shared-room delegation task while preserving existing authorization, route safety, and output scoping rules.
+
+#### Scenario: Delegated task prompt is handed to target session
+- **WHEN** a delegation task is claimed for an online local session and policy allows execution
+- **THEN** PiRelay injects a bounded task prompt into that session using the same route-action safety rules as ordinary remote prompts
+- **AND** the prompt identifies the task id, source machine/session, goal, constraints, and report destination
+
+#### Scenario: Delegated task prompt cannot be delivered
+- **WHEN** the selected target session is offline, stale, paused, revoked, unavailable, or ambiguous before prompt handoff
+- **THEN** PiRelay does not acknowledge successful task start
+- **AND** it marks or reports the task as blocked, failed, or needing human intervention according to policy
+
+#### Scenario: Delegated output is sent to task room
+- **WHEN** a delegated task completes, fails, is aborted, or is blocked for approval
+- **THEN** PiRelay sends a bounded task update to the originating shared room or thread through the target machine bot identity
+- **AND** it does not also send delegated completion, progress, media, or guided-action output to unrelated paired private chats or active selections for the same route
+- **AND** non-target machine bots do not send completion, progress, media, or guided-action output for that task
+
+### Requirement: Delegation task controls
+Messenger relay sessions SHALL expose task controls through platform-appropriate commands, buttons, or text fallbacks without weakening normal remote command authorization.
+
+#### Scenario: Authorized human cancels task
+- **WHEN** an authorized human sends a task cancel command or uses a task cancel action for a pending, claimed, running, or blocked task
+- **THEN** PiRelay cancels the task if the human is authorized for the task room and machine scope
+- **AND** it rejects future claim/update actions for that task id
+
+#### Scenario: Unauthorized user invokes task action
+- **WHEN** an unauthorized user invokes claim, approve, decline, cancel, or status for a delegation task
+- **THEN** PiRelay rejects the action before prompt injection, media download, route mutation, approval resolution, or task-state mutation
+
+#### Scenario: Delegation command arrives outside paired room boundary
+- **WHEN** a user or peer bot sends a delegation command in a group/channel that is not enabled, paired, or selected as a shared-room control surface for that messenger instance
+- **THEN** PiRelay rejects or ignores the command before task creation, task mutation, prompt injection, callback handling, or media download
+
+#### Scenario: Telegram human delegation requires private pairing
+- **WHEN** a non-bot Telegram user addresses the bot with a delegation command in a group where that user has not completed the private pairing/session setup required for other group controls
+- **THEN** PiRelay rejects or guides setup before task creation, task mutation, or prompt injection
+- **AND** this human pairing boundary does not prevent explicitly configured trusted Telegram peer bots from being evaluated through peer-trust policy
+
+#### Scenario: Task status is requested
+- **WHEN** an authorized user requests status for a delegation task visible in the current room or thread
+- **THEN** PiRelay returns bounded task state including id, source, target, status, claimant when non-secret, expiry, and latest safe update
+
+#### Scenario: Text fallbacks use executable commands
+- **WHEN** PiRelay renders delegation task action text fallbacks for Slack, Discord, or Telegram
+- **THEN** the fallback commands match that platform's currently parsed command surface
+- **AND** unsupported slash-command syntax is not advertised as the only way to perform a task action
+
+### Requirement: Remote turn ownership drives approval requester context
+PiRelay SHALL associate approval requester context only with accepted remote messenger prompts and SHALL clear or ignore that context for local-only turns.
+
+#### Scenario: Accepted remote prompt establishes approval requester
+- **WHEN** an authorized Telegram, Discord, Slack, or future messenger prompt is accepted by an online Pi session
+- **THEN** PiRelay records the active requester context for the resulting turn so enabled approval gates can ask the correct messenger user for decisions
+- **AND** approval decisions remain scoped to that requester, conversation or thread, session, and active binding
+
+#### Scenario: Local prompt has no approval requester
+- **WHEN** the local Pi user starts a prompt directly in the Pi session
+- **THEN** PiRelay treats the turn as local for approval-gate purposes
+- **AND** it does not infer an approval requester from the latest binding, latest remote requester, active selection, or previous remote turn
+
+#### Scenario: Remote requester context is cleared after turn ownership ends
+- **WHEN** a remote-owned turn completes, fails, aborts, is compacted, is disconnected, or otherwise ends
+- **THEN** PiRelay clears or invalidates requester context for later local turns
+- **AND** later local tool calls do not send approval requests to the previous requester
+
+#### Scenario: Remote turn loses requester before approval
+- **WHEN** a remote-owned turn reaches a matching approval-gated operation after its requester context or binding becomes stale, revoked, paused, missing, or state-unavailable
+- **THEN** PiRelay fails closed for that remote operation
+- **AND** it does not downgrade the operation to local approval bypass
+
