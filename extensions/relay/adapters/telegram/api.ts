@@ -133,15 +133,17 @@ export class TelegramApiClient {
   }
 
   /**
-   * Sends redacted and table-normalized chat text, rendering supported Markdown
-   * with Telegram's HTML parse mode when it fits a single prepared chunk.
+   * Sends chat text that is safe to render as Telegram HTML where supported.
+   * The method applies configured secret redaction before chunking so callers
+   * can pass either raw or already-prepared text.
    */
   async sendPreparedChatText(chatId: number, text: string): Promise<void> {
     await this.sendPreparedChatTextWithKeyboard(chatId, text);
   }
 
   async sendPreparedChatTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
-    const chunks = chunkTelegramText(text.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars);
+    const redacted = redactSecret(text, this.config.redactionPatterns);
+    const chunks = chunkTelegramText(redacted.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars);
     for (const chunk of chunks) {
       const isLast = chunk.index === chunk.total;
       const rendered = this.renderPreparedChunk(chunk.text);

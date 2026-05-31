@@ -205,7 +205,7 @@ function renderTelegramInlineMarkdown(text: string): { html: string; usedFormatt
       continue;
     }
 
-    const strong = /^\*\*([^*\n][\s\S]*?[^*\n])\*\*/.exec(rest) ?? /^__([^_\n][\s\S]*?[^_\n])__/.exec(rest);
+    const strong = /^\*\*([^*\s](?:[^*\n]*?[^*\s])?)\*\*/.exec(rest) ?? /^__([^_\s](?:[^_\n]*?[^_\s])?)__/.exec(rest);
     if (strong) {
       html += `<b>${renderTelegramInlineMarkdown(strong[1]!).html}</b>`;
       index += strong[0].length;
@@ -213,7 +213,7 @@ function renderTelegramInlineMarkdown(text: string): { html: string; usedFormatt
       continue;
     }
 
-    const strike = /^~~([^~\n][\s\S]*?[^~\n])~~/.exec(rest);
+    const strike = /^~~([^~\s](?:[^~\n]*?[^~\s])?)~~/.exec(rest);
     if (strike) {
       html += `<s>${renderTelegramInlineMarkdown(strike[1]!).html}</s>`;
       index += strike[0].length;
@@ -221,7 +221,7 @@ function renderTelegramInlineMarkdown(text: string): { html: string; usedFormatt
       continue;
     }
 
-    const emphasis = /^\*([^*\s][^*\n]*?[^*\s])\*/.exec(rest);
+    const emphasis = /^\*([^*\s](?:[^*\n]*?[^*\s])?)\*/.exec(rest);
     if (emphasis) {
       html += `<i>${renderTelegramInlineMarkdown(emphasis[1]!).html}</i>`;
       index += emphasis[0].length;

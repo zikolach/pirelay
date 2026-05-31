@@ -70,6 +70,13 @@ describe("Telegram chat formatter", () => {
     });
   });
 
+  it("renders single-character inline emphasis markers", () => {
+    expect(formatTelegramChatMessageText("**A** *B* ~~C~~")).toEqual({
+      parseMode: "HTML",
+      text: "<b>A</b> <i>B</i> <s>C</s>",
+    });
+  });
+
   it("renders tables as Telegram preformatted blocks without exposing fences", () => {
     const formatted = formatTelegramChatMessageText([
       "| Name | Status |",
