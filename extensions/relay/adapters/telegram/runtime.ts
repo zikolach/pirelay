@@ -2396,6 +2396,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     await this.api.sendPlainTextWithKeyboard(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. ${plan.message}${imageHint}`, this.latestImagesKeyboardForRoute(route));
   }
 
+  private refreshCompletionSummaryAfterDelivery(route: SessionRoute, text: string): void {
+    void summarizeRouteNotificationText(route, text, this.config.summaryMode).then((summary) => {
+      route.notification.lastSummary = summary;
+    });
+  }
+
   async notifyTurnCompleted(route: SessionRoute, status: "completed" | "failed" | "aborted"): Promise<void> {
     this.clearActivityIndicator(route);
     this.clearProgressState(route);
@@ -2411,7 +2417,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const sourcePrefix = this.sourcePrefixForRoute(route);
 
       if (status === "completed" && notification.lastAssistantText) {
-        notification.lastSummary = await summarizeRouteNotificationText(route, notification.lastAssistantText, this.config.summaryMode);
+        const finalOutputText = notification.lastAssistantText;
+        notification.lastSummary = summarizeTextDeterministically(finalOutputText);
         const imageHint = !route.notification.structuredAnswer && notification.latestImages?.count
           ? `\n\n🖼 ${notification.latestImages.count} image output/file(s) available. Use /images to download.`
           : "";
@@ -2425,6 +2432,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
             this.answerActionKeyboardForRoute(route),
           );
         }
+        this.refreshCompletionSummaryAfterDelivery(route, finalOutputText);
         return;
       }
 

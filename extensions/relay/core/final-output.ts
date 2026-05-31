@@ -81,11 +81,39 @@ export async function sendFinalOutputWithFallback(
     return "messages";
   }
   if (plan.kind === "document") {
-    await adapter.sendDocument(address, plan.buildFile(), { caption: options.caption ?? "Latest assistant output" });
+    const file = plan.buildFile();
+    const maxDocumentBytes = adapter.capabilities.maxDocumentBytes;
+    const byteSize = outboundFileByteSize(file);
+    if (maxDocumentBytes !== undefined && byteSize > maxDocumentBytes) {
+      await adapter.sendText(address, documentTooLargeMessage(adapter, byteSize, maxDocumentBytes));
+      return "unavailable";
+    }
+    await adapter.sendDocument(address, file, { caption: options.caption ?? "Latest assistant output" });
     return "document";
   }
   await adapter.sendText(address, plan.message);
   return "unavailable";
+}
+
+function outboundFileByteSize(file: ChannelOutboundFile): number {
+  if (file.byteSize !== undefined) return file.byteSize;
+  if (typeof file.data === "string") return Buffer.byteLength(file.data, "utf8");
+  return file.data.byteLength;
+}
+
+function documentTooLargeMessage(adapter: Pick<ChannelAdapterMetadata, "displayName">, byteSize: number, maxDocumentBytes: number): string {
+  return `The latest assistant output is too large to send as chat messages, and the generated Markdown document (${formatByteSize(byteSize)}) exceeds ${adapter.displayName}'s document size limit (${formatByteSize(maxDocumentBytes)}).`;
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${formatByteValue(kib)} KiB`;
+  return `${formatByteValue(kib / 1024)} MiB`;
+}
+
+function formatByteValue(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function lastBoundaryBefore(text: string, pattern: RegExp, maxChars: number, minimumRatio: number): number {

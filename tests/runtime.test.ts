@@ -41,6 +41,22 @@ async function createRuntimeConfig(): Promise<TelegramTunnelConfig> {
   };
 }
 
+async function waitForCondition(assertion: () => void, timeoutMs = 250): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  }
+  if (lastError) throw lastError;
+  assertion();
+}
+
 function createRoute(binding: TelegramBindingMetadata, idle = true, promptLocalConfirmation: SessionRoute["actions"]["promptLocalConfirmation"] = async () => true) {
   const deliveries: Array<{ text: TelegramPromptContent; deliverAs?: "followUp" | "steer" }> = [];
   const outbound: string[] = [];
@@ -1172,9 +1188,52 @@ describe("InProcessTunnelRuntime", () => {
     await runtime.notifyTurnCompleted(route, "completed");
 
     expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    await waitForCondition(() => expect(route.notification.lastSummary).toBe("summary via llm"));
     expect(route.notification.lastSummary).toBe("summary via llm");
     expect(formatSummaryOutput(route)).toBe("summary via llm");
     expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+  });
+
+  it("sends Telegram completion output before waiting for LLM summary storage", async () => {
+    const config = await createRuntimeConfig();
+    config.summaryMode = "llm";
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-deferred-summary:/tmp/session-deferred-summary.jsonl",
+      sessionId: "session-deferred-summary",
+      sessionFile: "/tmp/session-deferred-summary.jsonl",
+      sessionLabel: "session-deferred-summary.jsonl",
+      chatId: 10106,
+      userId: 306,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Detailed assistant output that should be delivered without waiting for the LLM summary.";
+    let finishSummary!: (value: string) => void;
+    const summaryPromise = new Promise<string>((resolve) => { finishSummary = resolve; });
+    route.actions.summarizeText = vi.fn(async () => summaryPromise);
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push(text),
+    };
+
+    const notificationPromise = runtime.notifyTurnCompleted(route, "completed");
+    const notificationResult = await Promise.race([
+      notificationPromise.then(() => "resolved"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 25)),
+    ]);
+
+    expect(notificationResult).toBe("resolved");
+    expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+    expect(route.notification.lastSummary).toBeDefined();
+    expect(route.notification.lastSummary).not.toBe("summary via llm");
+
+    finishSummary("summary via llm");
+    await waitForCondition(() => expect(route.notification.lastSummary).toBe("summary via llm"));
   });
 
 

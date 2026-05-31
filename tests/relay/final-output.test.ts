@@ -16,24 +16,26 @@ function route(): SessionRoute {
   };
 }
 
-function adapter(options: { documents?: boolean; maxTextChars?: number } = {}) {
+function adapter(options: { documents?: boolean; maxTextChars?: number; maxDocumentBytes?: number } = {}) {
   const sentTexts: string[] = [];
   const sentDocuments: ChannelOutboundFile[] = [];
+  const capabilities: ChannelAdapter["capabilities"] = {
+    inlineButtons: true,
+    textMessages: true,
+    documents: options.documents ?? true,
+    images: true,
+    activityIndicators: false,
+    callbacks: true,
+    privateChats: true,
+    groupChats: true,
+    maxTextChars: options.maxTextChars ?? 20,
+    supportedImageMimeTypes: ["image/png"],
+  };
+  if (options.maxDocumentBytes !== undefined) capabilities.maxDocumentBytes = options.maxDocumentBytes;
   const fake: ChannelAdapter = {
     id: "slack",
     displayName: "Slack",
-    capabilities: {
-      inlineButtons: true,
-      textMessages: true,
-      documents: options.documents ?? true,
-      images: true,
-      activityIndicators: false,
-      callbacks: true,
-      privateChats: true,
-      groupChats: true,
-      maxTextChars: options.maxTextChars ?? 20,
-      supportedImageMimeTypes: ["image/png"],
-    },
+    capabilities,
     send: vi.fn(async (_payload: ChannelOutboundPayload) => undefined),
     sendText: vi.fn(async (_address, text) => { sentTexts.push(text); }),
     sendDocument: vi.fn(async (_address, file) => { sentDocuments.push(file); }),
@@ -115,6 +117,15 @@ describe("final output delivery policy", () => {
     await expect(sendFinalOutputWithFallback(fake, address, route(), "paragraph one\n\nparagraph two\n\nparagraph three", { maxMessageChunks: 2 })).resolves.toBe("unavailable");
     expect(sentDocuments).toEqual([]);
     expect(sentTexts[0]).toContain("too large");
+  });
+
+  it("reports a limitation when the Markdown document exceeds adapter size limits", async () => {
+    const { fake, sentTexts, sentDocuments } = adapter({ maxTextChars: 10, maxDocumentBytes: 12 });
+    await expect(sendFinalOutputWithFallback(fake, address, route(), "paragraph one\n\nparagraph two\n\nparagraph three", { maxMessageChunks: 2 })).resolves.toBe("unavailable");
+    expect(sentDocuments).toEqual([]);
+    expect(sentTexts).toHaveLength(1);
+    expect(sentTexts[0]).toContain("generated Markdown document");
+    expect(sentTexts[0]).toContain("exceeds Slack's document size limit");
   });
 
   it("creates shared Markdown filenames and files for latest assistant output", () => {
