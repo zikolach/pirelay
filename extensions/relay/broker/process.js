@@ -320,6 +320,18 @@ async function sendTelegramDocument(chatId, document, options, testDocument) {
   await api.sendDocument(chatId, document, options);
 }
 
+async function sendPreparedPlainText(chatId, text, keyboard) {
+  const replyMarkup = keyboard ? { reply_markup: toReplyMarkup(keyboard) } : undefined;
+  recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'prepared-text', chunks: 1, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
+  try {
+    await withRetry(() => sendTelegramMessage(chatId, String(text || ''), replyMarkup));
+    recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'sent', conversationId: String(chatId), details: { kind: 'prepared-text', chunks: 1 } });
+  } catch (error) {
+    recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'prepared-text', error: error instanceof Error ? error.message : String(error) } });
+    throw error;
+  }
+}
+
 async function sendPlainText(chatId, text, keyboard) {
   const chunks = chunkText(text);
   recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'attempt', conversationId: String(chatId), details: { kind: 'text', chunks: chunks.length, hasKeyboard: Boolean(keyboard), textLength: String(text || '').length } });
@@ -368,7 +380,7 @@ async function sendCompletedFullOutput(route, binding, sourcePrefix, imageHint) 
   });
   if (plan.kind === 'messages') {
     await sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
-    for (const chunk of plan.chunks) await sendPlainText(binding.chatId, chunk);
+    for (const chunk of plan.chunks) await sendPreparedPlainText(binding.chatId, chunk);
     if (imageHint) await sendPlainText(binding.chatId, imageHint.trim(), latestImagesKeyboardForRoute(route));
     return true;
   }

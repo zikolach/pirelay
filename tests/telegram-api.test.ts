@@ -59,6 +59,35 @@ describe("TelegramApiClient button and document payloads", () => {
     });
   });
 
+  it("sends prepared chat text without another formatting or redaction pass", async () => {
+    const config = await createRuntimeConfig();
+    config.maxTelegramMessageChars = 3900;
+    const client = new TelegramApiClient(config);
+    const sent: any[] = [];
+    (client as any).api = {
+      sendMessage: vi.fn(async (...args: any[]) => sent.push(args)),
+    };
+
+    await client.sendPreparedPlainText(123, [
+      "```",
+      "Key | Value",
+      "--- | ---",
+      "secret | token=abc123",
+      "```",
+    ].join("\n"));
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.[1]).toContain("token=abc123");
+    expect(sent[0]?.[1]).not.toContain("[redacted]");
+    expect(sent[0]?.[1]).toBe([
+      "```",
+      "Key | Value",
+      "--- | ---",
+      "secret | token=abc123",
+      "```",
+    ].join("\n"));
+  });
+
   it("formats and redacts chat text before chunking", async () => {
     const config = await createRuntimeConfig();
     config.maxTelegramMessageChars = 3900;

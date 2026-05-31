@@ -129,7 +129,15 @@ export class TelegramApiClient {
   async sendPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
     const redacted = redactSecret(text, this.config.redactionPatterns);
     const formatted = formatTelegramChatText(redacted);
-    const chunks = chunkTelegramText(formatted, this.config.maxTelegramMessageChars);
+    await this.sendPreparedPlainTextWithKeyboard(chatId, formatted, keyboard);
+  }
+
+  async sendPreparedPlainText(chatId: number, text: string): Promise<void> {
+    await this.sendPreparedPlainTextWithKeyboard(chatId, text);
+  }
+
+  async sendPreparedPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
+    const chunks = chunkTelegramText(text.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars);
     for (const chunk of chunks) {
       const isLast = chunk.index === chunk.total;
       await this.sendChunk(chatId, chunk, isLast ? keyboard : undefined);

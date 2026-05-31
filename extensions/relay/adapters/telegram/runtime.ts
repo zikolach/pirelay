@@ -2376,7 +2376,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     });
     if (plan.kind === "messages") {
       await this.api.sendPlainText(binding.chatId, `${sourcePrefix}✅ Pi task completed in ${durationLabel}. Final output:`);
-      for (const chunk of plan.chunks) await this.api.sendPlainText(binding.chatId, chunk);
+      const api = this.api as TelegramApiClient & { sendPreparedPlainText?: TelegramApiClient["sendPreparedPlainText"] };
+      for (const chunk of plan.chunks) {
+        if (api.sendPreparedPlainText) await api.sendPreparedPlainText(binding.chatId, chunk);
+        else await this.api.sendPlainText(binding.chatId, chunk);
+      }
       if (imageHint) await this.api.sendPlainTextWithKeyboard(binding.chatId, imageHint.trim(), this.latestImagesKeyboardForRoute(route));
       return;
     }
