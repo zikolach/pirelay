@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { PNG } from "pngjs";
 import { acceptedInboundImageFormatsText, acceptedInboundImageMimeTypes, base64ByteLength, imageMimeTypeToExtension, isAcceptedInboundImageMimeType, isAllowedImageMimeType, isConvertibleInboundImageMimeType, isDirectModelImageMimeType, normalizeImageMimeType, prepareInboundImageForPrompt } from "../../extensions/relay/media/index.js";
 
 const ONE_BY_ONE_GIF = Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==", "base64");
+const TWO_BY_TWO_GIF_WITH_BACKGROUND = Buffer.from("R0lGODlhAgACAIABAP8AAAAA/yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 describe("relay media helpers", () => {
@@ -43,6 +45,18 @@ describe("relay media helpers", () => {
     expect(prepared.converted).toBe(true);
     expect(prepared.bytes.subarray(0, PNG_SIGNATURE.length)).toEqual(PNG_SIGNATURE);
     expect(prepared.byteSize).toBe(prepared.bytes.byteLength);
+  });
+
+
+  it("composes GIF first frame over the logical screen background", () => {
+    const prepared = prepareInboundImageForPrompt(TWO_BY_TWO_GIF_WITH_BACKGROUND, "image/gif", { allowedDirectMimeTypes: ["image/png"], maxBytes: 1024 });
+    const png = PNG.sync.read(prepared.bytes);
+
+    expect({ width: png.width, height: png.height }).toEqual({ width: 2, height: 2 });
+    expect([...png.data.subarray(0, 4)]).toEqual([255, 0, 0, 255]);
+    expect([...png.data.subarray(4, 8)]).toEqual([0, 0, 255, 255]);
+    expect([...png.data.subarray(8, 12)]).toEqual([0, 0, 255, 255]);
+    expect([...png.data.subarray(12, 16)]).toEqual([0, 0, 255, 255]);
   });
 
   it("rejects corrupt and oversized GIF conversion inputs", () => {

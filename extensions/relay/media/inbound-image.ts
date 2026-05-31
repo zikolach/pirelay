@@ -115,17 +115,42 @@ function convertGifFirstFrameToPng(bytes: Buffer, options: { maxBytes: number; m
   }
 
   const png = new PNG({ width, height });
-  for (let y = 0; y < firstFrame.dims.height; y++) {
-    const sourceStart = y * firstFrame.dims.width * 4;
-    const targetStart = ((firstFrame.dims.top + y) * width + firstFrame.dims.left) * 4;
-    png.data.set(firstFrame.patch.subarray(sourceStart, sourceStart + firstFrame.dims.width * 4), targetStart);
-  }
+  initializeGifCanvasBackground(png, parsed);
+  drawGifFramePatch(png, firstFrame);
 
   const output = PNG.sync.write(png);
   if (output.byteLength > options.maxBytes) {
     throw new Error(`Converted GIF first frame is too large (${output.byteLength} bytes). Limit: ${options.maxBytes} bytes.`);
   }
   return output;
+}
+
+
+function initializeGifCanvasBackground(png: PNG, parsed: ParsedGif): void {
+  if (!parsed.lsd.gct.exists) return;
+  const color = parsed.gct[parsed.lsd.backgroundColorIndex];
+  if (!color) return;
+  for (let offset = 0; offset < png.data.length; offset += 4) {
+    png.data[offset] = color[0];
+    png.data[offset + 1] = color[1];
+    png.data[offset + 2] = color[2];
+    png.data[offset + 3] = 255;
+  }
+}
+
+function drawGifFramePatch(png: PNG, frame: { dims: { width: number; height: number; top: number; left: number }; patch: Uint8ClampedArray }): void {
+  for (let y = 0; y < frame.dims.height; y++) {
+    for (let x = 0; x < frame.dims.width; x++) {
+      const sourceOffset = (y * frame.dims.width + x) * 4;
+      const alpha = frame.patch[sourceOffset + 3];
+      if (alpha === 0) continue;
+      const targetOffset = ((frame.dims.top + y) * png.width + frame.dims.left + x) * 4;
+      png.data[targetOffset] = frame.patch[sourceOffset];
+      png.data[targetOffset + 1] = frame.patch[sourceOffset + 1];
+      png.data[targetOffset + 2] = frame.patch[sourceOffset + 2];
+      png.data[targetOffset + 3] = alpha;
+    }
+  }
 }
 
 function isGifImageFrame(frame: ParsedGif["frames"][number]): frame is Extract<ParsedGif["frames"][number], { image: unknown }> {

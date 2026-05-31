@@ -1,5 +1,5 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
-import type { ChannelBinding, ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import { assertKnownInboundFileSizeWithinLimit, type ChannelBinding, type ChannelButtonLayout, type ChannelInboundAction, type ChannelInboundEvent, type ChannelInboundMessage, type ChannelOutboundFile, type ChannelRouteAddress } from "../../core/channel-adapter.js";
 import { completeDiscordPairing } from "../channel-pairing.js";
 import { DiscordChannelAdapter, discordMentionsSharedRoomAddressing, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
@@ -769,6 +769,7 @@ export class DiscordRuntime {
     const images: ImageContent[] = [];
     try {
       for (const attachment of imageAttachments) {
+        assertKnownInboundFileSizeWithinLimit(attachment, maxBytes, "Image");
         const bytes = await this.adapter.downloadAttachment(attachment);
         const prepared = prepareInboundImagePromptContent(bytes, {
           mimeType: attachment.mimeType,

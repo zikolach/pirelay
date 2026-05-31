@@ -19,6 +19,7 @@ class FakeDiscordOperations implements DiscordApiOperations {
   readonly typing: string[] = [];
   readonly answers: Array<{ interactionId: string; text?: string; alert?: boolean }> = [];
   downloadBytes = new Uint8Array([1, 2, 3]);
+  readonly downloadUrls: string[] = [];
 
   constructor(private readonly connectError?: Error, private readonly typingError?: Error) {}
 
@@ -48,7 +49,8 @@ class FakeDiscordOperations implements DiscordApiOperations {
     this.answers.push({ interactionId, text: options?.text, alert: options?.alert });
   }
 
-  async downloadFile(_url: string): Promise<Uint8Array> {
+  async downloadFile(url: string): Promise<Uint8Array> {
+    this.downloadUrls.push(url);
     return this.downloadBytes;
   }
 }
@@ -896,6 +898,35 @@ describe("DiscordRuntime", () => {
     expect(sendUserMessage).toHaveBeenCalledTimes(2);
     expect(sendUserMessage.mock.calls[0]?.[0]).toMatchObject([{ type: "text", text: "inspect this" }, { type: "image", mimeType: "image/png" }]);
     expect(sendUserMessage.mock.calls[1]?.[0]).toMatchObject([{ type: "text", text: "Please inspect the attached image." }, { type: "image", mimeType: "image/png" }]);
+  });
+
+
+  it("rejects known oversized Discord image attachments before download", async () => {
+    const cfg = await config({ maxFileBytes: 10 * 1024 });
+    cfg.maxInboundImageBytes = 5;
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const { route: session, sendUserMessage } = route();
+    session.actions.getModel = () => ({ input: ["text", "image"] }) as never;
+    await runtime.registerRoute(session);
+    await runtime.start();
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+
+    await ops.handler?.(discordMessage("oversized", { attachments: [{ id: "a-big", filename: "big.gif", content_type: "image/gif", size: 6, url: "https://cdn.test/big.gif" }] }));
+
+    expect(ops.downloadUrls).toEqual([]);
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(ops.messages.at(-1)?.content).toContain("Image big.gif is too large");
   });
 
   it("routes Discord prompts to the online route when stale bindings exist for the same DM", async () => {

@@ -1,6 +1,6 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { appendFileSync } from "node:fs";
-import type { ChannelButtonLayout, ChannelInboundAction, ChannelInboundEvent, ChannelInboundMessage, ChannelOutboundFile, ChannelRouteAddress } from "../../core/channel-adapter.js";
+import { assertKnownInboundFileSizeWithinLimit, type ChannelButtonLayout, type ChannelInboundAction, type ChannelInboundEvent, type ChannelInboundMessage, type ChannelOutboundFile, type ChannelRouteAddress } from "../../core/channel-adapter.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { redactSecrets } from "../../config/setup.js";
 import { completeSlackPairing } from "../channel-pairing.js";
@@ -825,6 +825,7 @@ export class SlackRuntime {
     const images: ImageContent[] = [];
     try {
       for (const attachment of imageAttachments) {
+        assertKnownInboundFileSizeWithinLimit(attachment, maxBytes, "Image");
         const bytes = await this.adapter.downloadFile(attachment);
         const prepared = prepareInboundImagePromptContent(bytes, {
           mimeType: attachment.mimeType,
