@@ -47,6 +47,14 @@ describe("relay media helpers", () => {
     expect(prepared.byteSize).toBe(prepared.bytes.byteLength);
   });
 
+  it("converts GIFs from sliced buffer views", () => {
+    const padded = Buffer.concat([Buffer.from([0, 1, 2]), ONE_BY_ONE_GIF, Buffer.from([3, 4, 5])]);
+    const bytes = padded.subarray(3, 3 + ONE_BY_ONE_GIF.byteLength);
+    const prepared = prepareInboundImageForPrompt(bytes, "image/gif", { allowedDirectMimeTypes: ["image/png"], maxBytes: 1024 });
+
+    expect(prepared.mimeType).toBe("image/png");
+    expect(prepared.bytes.subarray(0, PNG_SIGNATURE.length)).toEqual(PNG_SIGNATURE);
+  });
 
   it("composes GIF first frame over the logical screen background", () => {
     const prepared = prepareInboundImageForPrompt(TWO_BY_TWO_GIF_WITH_BACKGROUND, "image/gif", { allowedDirectMimeTypes: ["image/png"], maxBytes: 1024 });

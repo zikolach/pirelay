@@ -89,8 +89,7 @@ export function prepareInboundImageForPrompt(inputBytes: Uint8Array, sourceMimeT
 function convertGifFirstFrameToPng(bytes: Buffer, options: { maxBytes: number; maxPixels?: number }): Buffer {
   let parsed;
   try {
-    const arrayBuffer = Uint8Array.from(bytes).buffer as ArrayBuffer;
-    parsed = parseGIF(arrayBuffer);
+    parsed = parseGIF(arrayBufferForGifDecode(bytes));
   } catch (error) {
     throw new Error(`Could not decode GIF image: ${errorMessage(error)}`);
   }
@@ -125,6 +124,17 @@ function convertGifFirstFrameToPng(bytes: Buffer, options: { maxBytes: number; m
   return output;
 }
 
+function arrayBufferForGifDecode(bytes: Buffer): ArrayBuffer {
+  const backing = bytes.buffer;
+  if (backing instanceof ArrayBuffer) {
+    if (bytes.byteOffset === 0 && bytes.byteLength === backing.byteLength) return backing;
+    return backing.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
 
 function initializeGifCanvasBackground(png: PNG, parsed: ParsedGif): void {
   if (!parsed.lsd.gct.exists) return;
