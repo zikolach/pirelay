@@ -1110,6 +1110,40 @@ describe("InProcessTunnelRuntime", () => {
     }
   });
 
+  it("falls back to deterministic summaries when the configured summarizer fails", async () => {
+    const config = await createRuntimeConfig();
+    config.summaryMode = "llm";
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-summary-failure:/tmp/session-summary-failure.jsonl",
+      sessionId: "session-summary-failure",
+      sessionFile: "/tmp/session-summary-failure.jsonl",
+      sessionLabel: "session-summary-failure.jsonl",
+      chatId: 10104,
+      userId: 304,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "quiet",
+    };
+    const { route } = createRoute(binding, true);
+    route.notification.lastAssistantText = "Detailed assistant output that should still get a fallback summary when LLM summarization fails.";
+    route.actions.summarizeText = vi.fn(async () => { throw new Error("model unavailable"); });
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendPlainText: async (_chatId: number, text: string) => sends.push(text),
+    };
+
+    await runtime.notifyTurnCompleted(route, "completed");
+
+    expect(route.actions.summarizeText).toHaveBeenCalledWith(route.notification.lastAssistantText, "llm");
+    expect(route.notification.lastSummary).toBeDefined();
+    expect(route.notification.lastSummary).not.toContain("model unavailable");
+    expect(formatSummaryOutput(route)).toBe(route.notification.lastSummary);
+    expect(sends.at(-1)).toBe(route.notification.lastAssistantText);
+  });
+
   it("uses the route summarizer when storing Telegram completion summaries", async () => {
     const config = await createRuntimeConfig();
     config.summaryMode = "llm";

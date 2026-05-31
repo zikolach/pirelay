@@ -2520,8 +2520,12 @@ export function getOrCreateTunnelRuntime(config: TelegramTunnelConfig): TunnelRu
 async function summarizeRouteNotificationText(route: SessionRoute, text: string, mode: TelegramTunnelConfig["summaryMode"]): Promise<string> {
   const summarizeText = route.actions.summarizeText;
   if (!summarizeText) return summarizeTextDeterministically(text);
-  const summary = (await summarizeText(text, mode)).trim();
-  return summary || summarizeTextDeterministically(text);
+  try {
+    const summary = (await summarizeText(text, mode)).trim();
+    return summary || summarizeTextDeterministically(text);
+  } catch {
+    return summarizeTextDeterministically(text);
+  }
 }
 
 export async function sendSessionNotification(

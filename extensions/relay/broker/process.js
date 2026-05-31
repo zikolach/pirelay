@@ -300,8 +300,14 @@ async function withRetry(operation) {
 
 async function appendTestTelegramOutbox(event) {
   if (!testTelegramOutboxPath) return false;
-  await appendFile(testTelegramOutboxPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
-  return true;
+  try {
+    await appendFile(testTelegramOutboxPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`PiRelay broker test Telegram outbox unavailable; falling back to Telegram API: ${message}`);
+    return false;
+  }
 }
 
 async function sendTelegramMessage(chatId, text, options) {
