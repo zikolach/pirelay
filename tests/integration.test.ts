@@ -2677,10 +2677,6 @@ describe("PiRelay integration behavior", () => {
     const route = [...registeredRoutes.values()][0]!;
 
     await pi.emit("agent_start", {}, context);
-    await pi.emit("message_update", {
-      message: { role: "assistant", content: [{ type: "text", text: "Partial streamed draft." }] },
-      assistantMessageEvent: {},
-    }, context);
     await pi.emit("message_end", {
       message: { role: "assistant", content: [{ type: "text", text: "Useful completed answer." }] },
     }, context);
