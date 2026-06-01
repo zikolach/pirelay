@@ -1,6 +1,6 @@
 ## Why
 
-PiRelay can report “The agent finished without a final assistant response” when the final `agent_end` payload does not contain non-empty assistant text. In some runs, a useful assistant draft or completed assistant message may already have arrived via streaming/message lifecycle events before a later empty assistant/tool-use update. PiRelay should use that safe assistant-only text before declaring the turn failed.
+PiRelay can report “The agent finished without a final assistant response” when the final `agent_end` payload does not contain non-empty assistant text. In some runs, useful assistant text may already have arrived in a completed assistant `message_end` event before a later empty assistant/tool-use update. PiRelay should use that safe assistant-only completed text before declaring the turn failed.
 
 ## What Changes
 
