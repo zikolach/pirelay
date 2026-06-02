@@ -184,6 +184,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let closeConnectQrScreen: (() => void) | undefined;
   let activeTurnImages: ImageContent[] = [];
   let activeTurnImagePathTexts: string[] = [];
+  let activeTurnCompletedAssistantText: string | undefined;
   let latestTurnImages: LatestTurnImage[] = [];
   let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
   let progressSequence = 0;
@@ -583,6 +584,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   function clearTurnImageCaches(): void {
     activeTurnImages = [];
     activeTurnImagePathTexts = [];
+    activeTurnCompletedAssistantText = undefined;
     latestTurnImages = [];
     latestTurnImageFileCandidates = [];
   }
@@ -2032,11 +2034,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
     if (event.message.role === "assistant") {
-      currentRoute.notification.lastAssistantText = extractTextContent(event.message.content);
-      currentRoute.lastActivityAt = Date.now();
-      if (currentRoute.notification.lastStatus === "running") {
-        recordProgress("assistant", "Drafting response");
-        publishRouteStateSoon();
+      const assistantText = extractTextContent(event.message.content);
+      if (assistantText) {
+        currentRoute.notification.lastAssistantText = assistantText;
+        currentRoute.lastActivityAt = Date.now();
+        if (currentRoute.notification.lastStatus === "running") {
+          recordProgress("assistant", "Drafting response");
+          publishRouteStateSoon();
+        }
       }
     }
   });
@@ -2046,9 +2051,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
     if (event.message.role === "assistant") {
-      currentRoute.notification.lastAssistantText = extractTextContent(event.message.content);
-      currentRoute.lastActivityAt = Date.now();
-      publishRouteStateSoon();
+      const assistantText = extractTextContent(event.message.content);
+      if (assistantText) {
+        activeTurnCompletedAssistantText = assistantText;
+        currentRoute.notification.lastAssistantText = assistantText;
+        currentRoute.lastActivityAt = Date.now();
+        publishRouteStateSoon();
+      }
     }
     if (event.message.role === "toolResult") {
       activeTurnImages.push(...extractImageContent(event.message.content));
@@ -2135,7 +2144,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.lastActivityAt = Date.now();
 
     const extraction = analyzeFinalAssistantExtraction(event.messages as AgentMessage[], configCache?.communicationDiagnostics);
-    const finalText = extraction.finalText;
+    const finalText = extraction.finalText ?? activeTurnCompletedAssistantText;
+    const finalTextSource = extraction.finalText ? "agent_end" : finalText ? "message-end-fallback" : "none";
     const turnId = createTurnId();
     currentRoute.notification.lastTurnId = turnId;
     const config = configCache;
@@ -2186,7 +2196,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
     const status = currentRoute.notification.abortRequested
       ? "aborted"
-      : currentRoute.notification.lastAssistantText
+      : finalText
         ? "completed"
         : "failed";
 
@@ -2194,11 +2204,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     recordDiagnostic({
       component: "runtime",
       event: "agent_end.final_extraction",
-      outcome: extraction.diagnostics.finalTextFound ? "final-text-found" : extraction.diagnostics.missingReason,
-      severity: extraction.diagnostics.finalTextFound || status === "aborted" ? "info" : "warning",
+      outcome: extraction.diagnostics.finalTextFound ? "final-text-found" : finalText ? "message-end-fallback" : extraction.diagnostics.missingReason,
+      severity: extraction.diagnostics.finalTextFound || finalText || status === "aborted" ? "info" : "warning",
       turnId,
       ...diagnosticRouteFields(),
-      details: { ...extraction.diagnostics, selectedStatus: status, abortRequested: Boolean(currentRoute.notification.abortRequested), hadPriorFailure: Boolean(currentRoute.notification.lastFailure) },
+      details: { ...extraction.diagnostics, selectedStatus: status, finalTextSource, usedMessageLifecycleFallback: finalTextSource === "message-end-fallback", abortRequested: Boolean(currentRoute.notification.abortRequested), hadPriorFailure: Boolean(currentRoute.notification.lastFailure) },
     });
     recordProgress("lifecycle", status === "completed" ? "Pi task completed" : status === "aborted" ? "Pi task aborted" : "Pi task failed");
     if (status === "failed" && !currentRoute.notification.lastFailure) {

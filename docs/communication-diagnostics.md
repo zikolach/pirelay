@@ -86,6 +86,7 @@ Interpretation:
 - `assistantMessageCount: 0` usually means the agent ended without any assistant message in the final event payload.
 - `assistantContentShapes` with tool-only blocks or empty text means PiRelay saw assistant content, but no non-empty text block to deliver.
 - `finalTextFound: true` with later delivery errors points away from LLM output and toward routing, broker, or adapter delivery.
+- `usedMessageLifecycleFallback: true` means the final `agent_end` payload omitted assistant text, but PiRelay safely completed the turn using non-empty assistant text already observed in a completed assistant `message_end` event.
 
 ## Investigate broker and adapter communication
 

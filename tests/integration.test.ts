@@ -2638,6 +2638,161 @@ describe("PiRelay integration behavior", () => {
     expect(discordOps.messages.some((message) => message.content.includes("Pi task aborted"))).toBe(true);
   });
 
+  it("falls back to preserved assistant text when agent_end omits final text", async () => {
+    const config = await createRuntimeConfig("pi-final-output-fallback-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const sendSessionNotification = vi.fn(async () => undefined);
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("fallback-final-output");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_end", {
+      message: { role: "assistant", content: [{ type: "text", text: "Useful completed answer." }] },
+    }, context);
+    await pi.emit("message_update", {
+      message: { role: "assistant", content: [{ type: "tool_use", id: "call-1" }] },
+      assistantMessageEvent: {},
+    }, context);
+    await pi.emit("agent_end", { messages: [] }, context);
+
+    expect(route.notification.lastAssistantText).toBe("Useful completed answer.");
+    expect(route.notification.lastStatus).toBe("completed");
+    expect(route.notification.lastFailure).toBeUndefined();
+    expect(sendSessionNotification).toHaveBeenCalledWith(fakeRuntime, route, "completed", expect.anything());
+  });
+
+  it("does not use stream-only drafts as final-output fallback", async () => {
+    const config = await createRuntimeConfig("pi-final-output-stream-only-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const sendSessionNotification = vi.fn(async () => undefined);
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("stream-only-not-final-output");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_update", {
+      message: { role: "assistant", content: [{ type: "text", text: "draft should not be terminal output" }] },
+      assistantMessageEvent: {},
+    }, context);
+    await pi.emit("agent_end", { messages: [] }, context);
+
+    expect(route.notification.lastAssistantText).toBe("draft should not be terminal output");
+    expect(route.notification.lastStatus).toBe("failed");
+    expect(route.notification.lastFailure).toBe("The agent finished without a final assistant response.");
+    expect(sendSessionNotification).toHaveBeenCalledWith(fakeRuntime, route, "failed", expect.anything());
+  });
+
+  it("does not use tool result text as final-output fallback", async () => {
+    const config = await createRuntimeConfig("pi-final-output-tool-result-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    const sendSessionNotification = vi.fn(async () => undefined);
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification,
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("tool-result-not-final-output");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_end", {
+      message: { role: "toolResult", content: [{ type: "text", text: "raw tool output should not be delivered" }] },
+    }, context);
+    await pi.emit("agent_end", { messages: [] }, context);
+
+    expect(route.notification.lastAssistantText).toBeUndefined();
+    expect(route.notification.lastStatus).toBe("failed");
+    expect(route.notification.lastFailure).toBe("The agent finished without a final assistant response.");
+    expect(sendSessionNotification).toHaveBeenCalledWith(fakeRuntime, route, "failed", expect.anything());
+  });
+
   it("restores persisted Discord bindings after restart and completes the closed loop without re-pairing", async () => {
     const config = await createRuntimeConfig("pi-discord-restore-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
