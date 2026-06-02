@@ -341,6 +341,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           await respond({ ok: true, result: formatRequesterFileDeliveryResult(result) });
           return;
         }
+        case "getSkillCommands": {
+          await respond({ ok: true, result: route.actions.getSkillCommands?.() ?? [] });
+          return;
+        }
         case "getLatestImages": {
           const outcome = await latestRouteImagesSafely(route);
           if (outcome.kind !== "success") {

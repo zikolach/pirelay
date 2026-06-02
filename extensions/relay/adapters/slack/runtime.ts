@@ -24,6 +24,17 @@ import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisio
 import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
 import { buildImagePromptContent, modelSupportsImages } from "../../core/utils.js";
 import { prepareInboundImagePromptContent } from "../../media/index.js";
+import {
+  filterRemoteSkills,
+  formatSkillList,
+  formatSkillOutcome,
+  invokeRemoteSkill,
+  isPendingSkillInputExpired,
+  pendingSkillInputKey,
+  resolveRemoteSkill,
+  skillConfigForRelay,
+  type PendingSkillInput,
+} from "../../core/skill-invocation.js";
 
 const SLACK_CHANNEL = "slack" as const;
 const SLACK_HELP_TEXT = buildHelpText({
@@ -61,6 +72,7 @@ export class SlackRuntime {
   private readonly operations?: SlackApiOperations;
   private readonly operationsInjected: boolean;
   private readonly routes = new Map<string, SessionRoute>();
+  private readonly pendingSkillInputs = new Map<string, PendingSkillInput>();
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
   private readonly activeSessionByConversationUser = new Map<string, string>();
@@ -742,6 +754,75 @@ export class SlackRuntime {
     await this.sendText(message, card.text, delegationTaskActionButtons(card.actions));
   }
 
+  private skillCommandsForRoute(route: SessionRoute) {
+    return route.actions.getSkillCommands?.() ?? [];
+  }
+
+  private pendingSkillKey(message: ChannelInboundMessage, route: SessionRoute): string {
+    return pendingSkillInputKey({ channel: SLACK_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId, sessionKey: route.sessionKey });
+  }
+
+  private takePendingSkillInput(message: ChannelInboundMessage, route: SessionRoute): PendingSkillInput | undefined {
+    const key = this.pendingSkillKey(message, route);
+    const pending = this.pendingSkillInputs.get(key);
+    if (!pending) return undefined;
+    this.pendingSkillInputs.delete(key);
+    return pending;
+  }
+
+  private setPendingSkillInput(message: ChannelInboundMessage, route: SessionRoute, skillName: string): void {
+    this.pendingSkillInputs.set(this.pendingSkillKey(message, route), {
+      channel: SLACK_CHANNEL,
+      instanceId: this.instanceId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      sessionKey: route.sessionKey,
+      skillName,
+      expiresAt: Date.now() + skillConfigForRelay(this.config).pendingInputExpiryMs,
+    });
+  }
+
+  private async sendSkillList(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
+    const config = skillConfigForRelay(this.config);
+    const skills = filterRemoteSkills(this.skillCommandsForRoute(route), config);
+    if (!config.enabled) {
+      await this.sendText(message, "Remote skill invocation is disabled.");
+      return;
+    }
+    if (skills.length === 0) {
+      await this.sendText(message, "No remote-invokable skills are available for this session.");
+      return;
+    }
+    await this.sendText(message, formatSkillList(skills));
+  }
+
+  private async handleSkillInvocationCommand(message: ChannelInboundMessage, route: SessionRoute, args: string): Promise<void> {
+    const [rawName, ...rest] = args.trim().split(/\s+/);
+    if (!rawName) {
+      await this.sendText(message, "Usage: relay skill <name> [input]. Use relay skills to list available skills.");
+      return;
+    }
+    if (rawName.toLowerCase() === "cancel") {
+      this.takePendingSkillInput(message, route);
+      await this.sendText(message, "Skill input cancelled.");
+      return;
+    }
+    const input = rest.join(" ").trim();
+    if (!input) {
+      const resolved = resolveRemoteSkill(rawName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
+      if (resolved.kind !== "ok") {
+        await this.sendText(message, resolved.message);
+        return;
+      }
+      this.setPendingSkillInput(message, route, resolved.skill.name);
+      await this.sendText(message, `Send input for skill ${resolved.skill.name} as your next message, or send relay skill cancel.`);
+      return;
+    }
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input });
+    if (outcome.kind === "success") route.actions.appendAudit(`Slack invoked remote skill ${outcome.result.skill.name}.`);
+    await this.sendText(message, formatSkillOutcome(outcome));
+  }
+
   private async handleBoundMessage(message: ChannelInboundMessage, binding: ChannelPersistedBindingRecord, route: SessionRoute): Promise<void> {
     const command = parseSlackCommand(message.text);
     if (command) {
@@ -751,6 +832,17 @@ export class SlackRuntime {
     }
     if (binding.paused) {
       await this.sendText(message, "Remote delivery is paused for this Slack binding. Use `relay resume` to re-enable prompts.");
+      return;
+    }
+    const pendingSkill = this.takePendingSkillInput(message, route);
+    if (pendingSkill) {
+      if (isPendingSkillInputExpired(pendingSkill)) {
+        await this.sendText(message, "That skill input request expired. Use `relay skill <name>` again.");
+        return;
+      }
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text });
+      if (outcome.kind === "success") route.actions.appendAudit(`Slack invoked remote skill ${outcome.result.skill.name}.`);
+      await this.sendText(message, formatSkillOutcome(outcome));
       return;
     }
     const unsupported = message.attachments.find((attachment) => attachment.supported === false);
@@ -922,6 +1014,12 @@ export class SlackRuntime {
         return;
       case "full":
         await this.sendText(message, formatFullOutput(route));
+        return;
+      case "skills":
+        await this.sendSkillList(message, route);
+        return;
+      case "skill":
+        await this.handleSkillInvocationCommand(message, route, command.args);
         return;
       case "alias": {
         const alias = normalizeAliasArg(command.args);

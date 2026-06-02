@@ -24,6 +24,17 @@ import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngres
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
+import {
+  filterRemoteSkills,
+  formatSkillList,
+  formatSkillOutcome,
+  invokeRemoteSkill,
+  isPendingSkillInputExpired,
+  pendingSkillInputKey,
+  resolveRemoteSkill,
+  skillConfigForRelay,
+  type PendingSkillInput,
+} from "../../core/skill-invocation.js";
 
 const DISCORD_CHANNEL = "discord" as const;
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -57,6 +68,7 @@ export class DiscordRuntime {
   private readonly diagnostics: CommunicationDiagnosticsLogger;
   private readonly adapter?: DiscordChannelAdapter;
   private readonly routes = new Map<string, SessionRoute>();
+  private readonly pendingSkillInputs = new Map<string, PendingSkillInput>();
   private readonly ownedBindingSessionKeys = new Set<string>();
   private readonly activeSessionByConversationUser = new Map<string, string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
@@ -727,6 +739,18 @@ export class DiscordRuntime {
       return;
     }
 
+    const pendingSkill = this.takePendingSkillInput(message, route);
+    if (pendingSkill) {
+      if (isPendingSkillInputExpired(pendingSkill)) {
+        await this.sendText(message, "That skill input request expired. Use `relay skill <name>` again.");
+        return;
+      }
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text });
+      if (outcome.kind === "success") route.actions.appendAudit(`Discord invoked remote skill ${outcome.result.skill.name}.`);
+      await this.sendText(message, formatSkillOutcome(outcome));
+      return;
+    }
+
     const unsupported = message.attachments.find((attachment) => attachment.supported === false);
     if (unsupported) {
       await this.sendText(message, unsupported.unsupportedReason ?? "Attachment is not supported by the Discord relay.");
@@ -756,6 +780,75 @@ export class DiscordRuntime {
     }
 
     await this.deliverDiscordPrompt(message, binding, route, promptText, { images });
+  }
+
+  private skillCommandsForRoute(route: SessionRoute) {
+    return route.actions.getSkillCommands?.() ?? [];
+  }
+
+  private pendingSkillKey(message: ChannelInboundMessage, route: SessionRoute): string {
+    return pendingSkillInputKey({ channel: DISCORD_CHANNEL, instanceId: this.instanceId, conversationId: message.conversation.id, userId: message.sender.userId, sessionKey: route.sessionKey });
+  }
+
+  private takePendingSkillInput(message: ChannelInboundMessage, route: SessionRoute): PendingSkillInput | undefined {
+    const key = this.pendingSkillKey(message, route);
+    const pending = this.pendingSkillInputs.get(key);
+    if (!pending) return undefined;
+    this.pendingSkillInputs.delete(key);
+    return pending;
+  }
+
+  private setPendingSkillInput(message: ChannelInboundMessage, route: SessionRoute, skillName: string): void {
+    this.pendingSkillInputs.set(this.pendingSkillKey(message, route), {
+      channel: DISCORD_CHANNEL,
+      instanceId: this.instanceId,
+      conversationId: message.conversation.id,
+      userId: message.sender.userId,
+      sessionKey: route.sessionKey,
+      skillName,
+      expiresAt: Date.now() + skillConfigForRelay(this.config).pendingInputExpiryMs,
+    });
+  }
+
+  private async sendSkillList(message: ChannelInboundMessage, route: SessionRoute): Promise<void> {
+    const config = skillConfigForRelay(this.config);
+    const skills = filterRemoteSkills(this.skillCommandsForRoute(route), config);
+    if (!config.enabled) {
+      await this.sendText(message, "Remote skill invocation is disabled.");
+      return;
+    }
+    if (skills.length === 0) {
+      await this.sendText(message, "No remote-invokable skills are available for this session.");
+      return;
+    }
+    await this.sendText(message, formatSkillList(skills));
+  }
+
+  private async handleSkillInvocationCommand(message: ChannelInboundMessage, route: SessionRoute, args: string): Promise<void> {
+    const [rawName, ...rest] = args.trim().split(/\s+/);
+    if (!rawName) {
+      await this.sendText(message, "Usage: relay skill <name> [input]. Use relay skills to list available skills.");
+      return;
+    }
+    if (rawName.toLowerCase() === "cancel") {
+      this.takePendingSkillInput(message, route);
+      await this.sendText(message, "Skill input cancelled.");
+      return;
+    }
+    const input = rest.join(" ").trim();
+    if (!input) {
+      const resolved = resolveRemoteSkill(rawName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
+      if (resolved.kind !== "ok") {
+        await this.sendText(message, resolved.message);
+        return;
+      }
+      this.setPendingSkillInput(message, route, resolved.skill.name);
+      await this.sendText(message, `Send input for skill ${resolved.skill.name} as your next message, or send relay skill cancel.`);
+      return;
+    }
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input });
+    if (outcome.kind === "success") route.actions.appendAudit(`Discord invoked remote skill ${outcome.result.skill.name}.`);
+    await this.sendText(message, formatSkillOutcome(outcome));
   }
 
   private async downloadAuthorizedImages(message: ChannelInboundMessage, imageAttachments: ChannelInboundMessage["attachments"]): Promise<ImageContent[] | undefined> {
@@ -823,6 +916,12 @@ export class DiscordRuntime {
         return;
       case "full":
         await this.sendText(message, formatFullOutput(route));
+        return;
+      case "skills":
+        await this.sendSkillList(message, route);
+        return;
+      case "skill":
+        await this.handleSkillInvocationCommand(message, route, command.args);
         return;
       case "images":
         await this.sendLatestImages(message, route);
@@ -1358,7 +1457,7 @@ export class DiscordRuntime {
   }
 }
 
-export type DiscordCommandName = "help" | "status" | "sessions" | "use" | "to" | "progress" | "notify" | "alias" | "forget" | "recent" | "activity" | "summary" | "full" | "images" | "send-file" | "sendfile" | "send-image" | "sendimage" | "steer" | "followup" | "abort" | "compact" | "pause" | "resume" | "disconnect";
+export type DiscordCommandName = "help" | "status" | "sessions" | "use" | "to" | "progress" | "notify" | "alias" | "forget" | "recent" | "activity" | "summary" | "full" | "skills" | "skill" | "images" | "send-file" | "sendfile" | "send-image" | "sendimage" | "steer" | "followup" | "abort" | "compact" | "pause" | "resume" | "disconnect";
 
 type DiscordCommand = { name: DiscordCommandName; args: string };
 
@@ -1376,6 +1475,8 @@ export const DISCORD_SUPPORTED_COMMANDS: readonly DiscordCommandName[] = [
   "activity",
   "summary",
   "full",
+  "skills",
+  "skill",
   "images",
   "send-file",
   "sendfile",

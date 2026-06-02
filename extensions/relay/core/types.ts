@@ -7,6 +7,7 @@ import type { RelayLifecycleNotificationRecord } from "../notifications/lifecycl
 import type { DelegationAutonomyLevel, DelegationTaskAuditEvent, DelegationTaskRecord, TrustedDelegationPeer } from "./agent-delegation.js";
 import type { ApprovalAuditEvent, ApprovalDecisionRequest, ApprovalDecisionResult, ApprovalGateConfig, ApprovalGrantRecord, ApprovalRequestRecord } from "./approval-gates.js";
 import type { ResolvedCommunicationDiagnosticsConfig } from "../diagnostics/communication.js";
+import type { RemoteSkillConfig, SkillCommandMetadata } from "./skill-invocation.js";
 
 export type DeliveryMode = "followUp" | "steer";
 export type SummaryMode = "deterministic" | "llm";
@@ -84,6 +85,7 @@ export interface TelegramTunnelConfig {
   delegation?: AgentDelegationRelayConfig;
   approvalGates?: ApprovalGateConfig;
   communicationDiagnostics?: ResolvedCommunicationDiagnosticsConfig;
+  skills?: RemoteSkillConfig;
   brokerNamespace?: string;
   pairingExpiryMs: number;
   busyDeliveryMode: DeliveryMode;
@@ -295,6 +297,7 @@ export interface SessionRouteActions {
   sendUserMessage(content: TelegramPromptContent, options?: { deliverAs?: DeliveryMode }): void;
   getLatestImages(): Promise<LatestTurnImage[]>;
   getImageByPath(relativePath: string): Promise<ImageFileLoadResult>;
+  getSkillCommands?(): SkillCommandMetadata[];
   appendAudit(message: string): void;
   notifyLocal?(message: string, level?: "info" | "warning" | "error"): void;
   setLocalStatus?(key: string, value: string): void;

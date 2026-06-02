@@ -21,6 +21,8 @@ export const CANONICAL_REMOTE_COMMANDS = [
   { command: "to", usage: "/to <session> <prompt>", description: "send one prompt without switching sessions" },
   { command: "summary", usage: "/summary", description: "latest summary/excerpt" },
   { command: "full", usage: "/full", description: "latest full assistant output" },
+  { command: "skills", usage: "/skills", description: "list remote-invokable local skills", allowedWhilePaused: true },
+  { command: "skill", usage: "/skill <name> [input]", description: "invoke an allowed local skill" },
   { command: "images", usage: "/images", description: "download latest image outputs or generated image files" },
   { command: "send-file", usage: "/send-file <path> [caption]", description: "send a validated workspace file to this chat" },
   { command: "sendfile", usage: "/sendfile <path> [caption]", description: "alias for /send-file", aliasOf: "send-file" },

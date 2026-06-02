@@ -11,6 +11,8 @@ import {
   buildFullOutputKeyboard,
   buildLatestImagesCallbackData,
   buildLatestImagesKeyboard,
+  buildSkillListKeyboard,
+  buildSkillSelectCallbackData,
   buildSessionDashboardKeyboard,
   buildSessionListDashboardKeyboard,
   parseTelegramActionCallbackData,
@@ -47,6 +49,10 @@ describe("telegram action callbacks", () => {
       kind: "latest-images",
       turnId: "turn-1",
     });
+    expect(parseTelegramActionCallbackData(buildSkillSelectCallbackData("github"))).toEqual({
+      kind: "skill-select",
+      skillName: "github",
+    });
     expect(parseTelegramActionCallbackData("ans:turn-1:wat")).toBeUndefined();
   });
 
@@ -69,6 +75,10 @@ describe("telegram action callbacks", () => {
     ]);
     expect(buildFullOutputKeyboard("abc123")).toEqual([[{"callbackData":"full:abc123:chat","text":"📄 Show in chat"},{"callbackData":"full:abc123:md","text":"⬇️ Download .md"}]]);
     expect(buildLatestImagesKeyboard("abc123", 2)).toEqual([[{ text: "🖼 Download 2 images", callbackData: "imgs:abc123" }]]);
+    expect(buildSkillListKeyboard([{ name: "github" }, { name: "summarize" }])).toEqual([
+      [{ text: "github", callbackData: "skill:github" }],
+      [{ text: "summarize", callbackData: "skill:summarize" }],
+    ]);
     expect(buildAnswerAmbiguityKeyboard("abc123", "tok")).toEqual([
       [
         { text: "➡️ Send as prompt", callbackData: "ans:abc123:amb:tok:prompt" },

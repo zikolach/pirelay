@@ -25,6 +25,7 @@ import {
   buildAnswerActionKeyboard,
   buildFullOutputKeyboard,
   buildLatestImagesKeyboard,
+  buildSkillListKeyboard,
   buildSessionDashboardKeyboard,
   buildSessionListDashboardKeyboard,
   isIndexedSessionDashboardRef,
@@ -62,6 +63,17 @@ import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { formatFullOutput, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { containsMarkdownTable, formatTelegramChatText } from "./formatting.js";
+import {
+  filterRemoteSkills,
+  formatSkillList,
+  formatSkillOutcome,
+  invokeRemoteSkill,
+  isPendingSkillInputExpired,
+  pendingSkillInputKey,
+  resolveRemoteSkill,
+  skillConfigForRelay,
+  type PendingSkillInput,
+} from "../../core/skill-invocation.js";
 import { commandIntentFromPipeline, runTelegramIngressPipeline, telegramActionFromPipelineResult } from "./middleware.js";
 import { delegationIngressEventKey, delegationRoomFromMessage, evaluateDelegationIngress } from "../../core/agent-delegation-runtime.js";
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
@@ -159,6 +171,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly routes = new Map<string, SessionRoute>();
   private readonly answerFlows = new Map<string, ReturnType<typeof startGuidedAnswerFlow>>();
   private readonly pendingCustomAnswers = new Map<string, PendingCustomAnswerState>();
+  private readonly pendingSkillInputs = new Map<string, PendingSkillInput>();
   private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
@@ -461,6 +474,33 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!pending) return undefined;
     this.pendingCustomAnswers.delete(key);
     return pending;
+  }
+
+  private telegramSkillKey(route: SessionRoute, chatId: number, userId: number): string {
+    return pendingSkillInputKey({ channel: "telegram", conversationId: String(chatId), userId: String(userId), sessionKey: route.sessionKey });
+  }
+
+  private setPendingSkillInput(route: SessionRoute, chatId: number, userId: number, skillName: string): void {
+    this.pendingSkillInputs.set(this.telegramSkillKey(route, chatId, userId), {
+      channel: "telegram",
+      conversationId: String(chatId),
+      userId: String(userId),
+      sessionKey: route.sessionKey,
+      skillName,
+      expiresAt: Date.now() + skillConfigForRelay(this.config).pendingInputExpiryMs,
+    });
+  }
+
+  private takePendingSkillInput(route: SessionRoute, chatId: number, userId: number): PendingSkillInput | undefined {
+    const key = this.telegramSkillKey(route, chatId, userId);
+    const pending = this.pendingSkillInputs.get(key);
+    if (!pending) return undefined;
+    this.pendingSkillInputs.delete(key);
+    return pending;
+  }
+
+  private skillCommandsForRoute(route: SessionRoute) {
+    return route.actions.getSkillCommands?.() ?? [];
   }
 
   private setPendingAmbiguity(route: SessionRoute, user: TelegramUserSummary, turnId: string, text: string): string | undefined {
@@ -874,6 +914,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
     if (route.binding.paused) {
       await this.api.answerCallbackQuery(callback.callbackQueryId, "Tunnel paused.");
+      return;
+    }
+
+    if (action.kind === "skill-select") {
+      await this.handleSkillSelectionCallback(route, callback, action.skillName);
       return;
     }
 
@@ -1813,6 +1858,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, formatFullOutput(route));
         return;
       }
+      case "skills": {
+        await this.sendSkillList(route, message.chat.id);
+        return;
+      }
+      case "skill": {
+        await this.handleSkillInvocationCommand(route, message.chat.id, message.user.id, args);
+        return;
+      }
       case "images": {
         await this.sendLatestImages(route, message.chat.id);
         return;
@@ -2033,6 +2086,22 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     if (!binding) return;
     if (binding.paused) {
       await this.api.sendPlainText(message.chat.id, "The tunnel is paused. Use /resume first.");
+      return;
+    }
+
+    const pendingSkill = this.takePendingSkillInput(route, message.chat.id, message.user.id);
+    if (pendingSkill) {
+      if (isPendingSkillInputExpired(pendingSkill)) {
+        await this.api.sendPlainText(message.chat.id, "That skill input request expired. Use /skill <name> again.");
+        return;
+      }
+      if (message.text.trim().toLowerCase() === "/cancel" || message.text.trim().toLowerCase() === "/skill cancel") {
+        await this.api.sendPlainText(message.chat.id, "Skill input cancelled.");
+        return;
+      }
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text });
+      if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
+      await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
       return;
     }
 
@@ -2360,6 +2429,58 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async sendRecentActivity(route: SessionRoute, chatId: number): Promise<void> {
     await this.api.sendPlainText(chatId, formatRecentActivity(route.notification.recentActivity, { limit: recentActivityLimit(this.config) }));
+  }
+
+  private async sendSkillList(route: SessionRoute, chatId: number): Promise<void> {
+    const config = skillConfigForRelay(this.config);
+    const skills = filterRemoteSkills(this.skillCommandsForRoute(route), config);
+    if (!config.enabled) {
+      await this.api.sendPlainText(chatId, "Remote skill invocation is disabled.");
+      return;
+    }
+    if (skills.length === 0) {
+      await this.api.sendPlainText(chatId, "No remote-invokable skills are available for this session.");
+      return;
+    }
+    await this.api.sendPlainTextWithKeyboard(chatId, formatSkillList(skills), buildSkillListKeyboard(skills));
+  }
+
+  private async handleSkillInvocationCommand(route: SessionRoute, chatId: number, userId: number, args: string): Promise<void> {
+    const [rawName, ...rest] = args.trim().split(/\s+/);
+    if (!rawName) {
+      await this.api.sendPlainText(chatId, "Usage: /skill <name> [input]. Use /skills to list available skills.");
+      return;
+    }
+    if (rawName.toLowerCase() === "cancel") {
+      this.takePendingSkillInput(route, chatId, userId);
+      await this.api.sendPlainText(chatId, "Skill input cancelled.");
+      return;
+    }
+    const input = rest.join(" ").trim();
+    if (!input) {
+      const resolved = resolveRemoteSkill(rawName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
+      if (resolved.kind !== "ok") {
+        await this.api.sendPlainText(chatId, resolved.message);
+        return;
+      }
+      this.setPendingSkillInput(route, chatId, userId, resolved.skill.name);
+      await this.api.sendPlainText(chatId, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
+      return;
+    }
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input });
+    if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
+    await this.api.sendPlainText(chatId, formatSkillOutcome(outcome));
+  }
+
+  private async handleSkillSelectionCallback(route: SessionRoute, callback: TelegramInboundCallback, skillName: string): Promise<void> {
+    const resolved = resolveRemoteSkill(skillName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
+    await this.api.answerCallbackQuery(callback.callbackQueryId, resolved.kind === "ok" ? "Send skill input." : "Skill unavailable.");
+    if (resolved.kind !== "ok") {
+      await this.api.sendPlainText(callback.chat.id, resolved.message);
+      return;
+    }
+    this.setPendingSkillInput(route, callback.chat.id, callback.user.id, resolved.skill.name);
+    await this.api.sendPlainText(callback.chat.id, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
   }
 
   private statusOf(route: SessionRoute, online: boolean): SessionStatusSnapshot {

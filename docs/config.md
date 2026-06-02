@@ -147,6 +147,26 @@ Communication diagnostics are opt-in local JSONL logs for troubleshooting runtim
 
 Environment overrides include `PI_RELAY_COMMUNICATION_DIAGNOSTICS`, `PI_RELAY_DIAGNOSTICS_LOG_PATH`, `PI_RELAY_DIAGNOSTICS_MAX_BYTES`, `PI_RELAY_DIAGNOSTICS_MAX_FILES`, `PI_RELAY_DIAGNOSTICS_INCLUDE_CONTENT_PREVIEW`, and `PI_RELAY_DIAGNOSTICS_PREVIEW_CHARS`. Keep content previews disabled unless you explicitly need short redacted snippets. See `docs/communication-diagnostics.md`.
 
+## Remote skills
+
+Remote skill invocation is disabled by default. Enable it only for skills you are comfortable exposing to authorized messenger users:
+
+```json
+{
+  "skills": {
+    "enabled": true,
+    "allow": ["github", "summarize"],
+    "deny": [],
+    "sources": ["project", "user"],
+    "maxList": 20,
+    "pendingInputExpiryMs": 120000,
+    "requireConfirmation": []
+  }
+}
+```
+
+Environment overrides include `PI_RELAY_SKILLS_ENABLED`, `PI_RELAY_SKILLS_ALLOW`, `PI_RELAY_SKILLS_DENY`, `PI_RELAY_SKILLS_SOURCES`, `PI_RELAY_SKILLS_MAX_LIST`, `PI_RELAY_SKILLS_PENDING_INPUT_EXPIRY_MS`, and `PI_RELAY_SKILLS_REQUIRE_CONFIRMATION`. PiRelay lists only safe skill names/descriptions and invokes skills by sending a skill-use prompt to the selected Pi session; it does not send raw skill files or arbitrary filesystem paths to messengers.
+
 ## Approval gates
 
 Approval gates are disabled by default and are explicit opt-in guardrails for remote messenger-owned turns. When `approvalGates.enabled: true`, matching Pi tool calls from accepted remote turns pause before execution and ask the active authorized requester to approve or deny the operation through Telegram, Discord, or Slack. Local Pi prompts never require messenger approval, even when a rule would match. Timeout, stale actions, revoked/paused bindings, offline sessions, or delivery failures block remote gated operations; approval gates are not a sandbox.

@@ -73,7 +73,7 @@ export interface RelayPrompt {
 }
 
 export interface RelayAction {
-  type: "abort" | "compact" | "pause" | "resume" | "repeat-last" | "read-last" | "spoken-output" | "approval" | "custom";
+  type: "abort" | "compact" | "pause" | "resume" | "repeat-last" | "read-last" | "spoken-output" | "approval" | "skill-list" | "skill-invoke" | "skill-input" | "skill-cancel" | "custom";
   safety: RelaySafetyClassification;
   requiresConfirmation?: boolean;
   metadata?: Record<string, unknown>;

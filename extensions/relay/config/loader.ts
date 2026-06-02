@@ -287,6 +287,7 @@ export async function loadRelayConfig(options: RelayConfigLoadOptions = {}): Pro
     brokerGroup: fileConfig.relay?.brokerGroup ?? env.PI_RELAY_BROKER_GROUP,
     brokerPeers: fileConfig.relay?.brokerPeers ?? [],
     approvalGates: resolveApprovalGates(fileConfig, env),
+    skills: fileConfig.relay?.skills ?? fileConfig.skills,
   };
   if (relay.stateDir === LEGACY_TELEGRAM_TUNNEL_STATE_DIR || env.PI_TELEGRAM_TUNNEL_STATE_DIR) warnings.push("Using legacy Telegram tunnel state directory fallback; prefer ~/.pi/agent/pirelay.");
 
