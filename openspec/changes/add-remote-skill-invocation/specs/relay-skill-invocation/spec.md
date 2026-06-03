@@ -7,7 +7,7 @@ PiRelay SHALL expose a safe, configurable list of local Pi skills to authorized 
 - **WHEN** an authorized bound messenger user invokes `/skills`, `relay skills`, or an equivalent platform command
 - **THEN** PiRelay reads skill command metadata from the selected live Pi session
 - **AND** returns a bounded list of skill names and safe descriptions filtered by relay skill policy
-- **AND** it does not include raw skill file contents, absolute filesystem paths, hidden prompts, tool internals, transcripts, tokens, or callback payloads
+- **AND** it does not include raw skill file contents, absolute filesystem paths, hidden prompts, tool internals, transcripts, tokens, or raw/unbounded callback payload contents
 
 #### Scenario: Skill discovery is unavailable
 - **WHEN** the selected route is offline, stale, or cannot provide command metadata

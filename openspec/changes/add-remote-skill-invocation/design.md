@@ -50,7 +50,7 @@ Rationale: adapters and broker code should not call stale contexts or build ad-h
 
 ### Pending-input state is requester-scoped
 
-When a user selects a skill without input, PiRelay records pending skill input keyed by channel, instance, conversation/thread, user, session, skill name, and an expiry. The next non-command text from the same authorized requester becomes skill input. `/cancel` or `skill cancel` clears the pending state.
+When a user selects a skill without input, PiRelay records pending skill input keyed by channel, instance, conversation/thread, user, route/session key, skill name, and an expiry. The next non-command text from the same authorized requester on that same selected route becomes skill input. `/cancel` or `skill cancel` clears the pending state.
 
 Rationale: many skills are naturally “Skill, then input”. Scoping prevents a different chat/user from completing the invocation.
 
