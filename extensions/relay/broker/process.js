@@ -1873,7 +1873,14 @@ async function handleAuthorizedCommand(message, route, command, args) {
       }
       const input = rest.join(' ').trim();
       if (!input) {
-        const resolved = resolveRemoteSkill(rawName, await skillCommandsForRoute(route), skillConfigForRelay(config));
+        let commands;
+        try {
+          commands = await skillCommandsForRoute(route);
+        } catch {
+          await sendPlainText(message.chat.id, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
+          return;
+        }
+        const resolved = resolveRemoteSkill(rawName, commands, skillConfigForRelay(config));
         if (resolved.kind !== 'ok') {
           await sendPlainText(message.chat.id, resolved.message);
           return;
