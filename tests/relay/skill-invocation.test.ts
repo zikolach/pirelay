@@ -63,6 +63,23 @@ describe("remote skill invocation helpers", () => {
     expect(result.message.length).toBeLessThan(360);
   });
 
+  it("keeps Telegram and broker skill list guidance on slash skill commands by default", () => {
+    const skills = filterRemoteSkills(commands, resolveRemoteSkillConfig({ enabled: true, allow: ["github"] }));
+    const message = formatSkillList(skills);
+    expect(message).toContain("Use /skill <name> <input>, or /skill <name> to send input as your next message.");
+    expect(message).not.toContain("relay skill <name>");
+    expect(message).not.toContain("relay skills");
+  });
+
+  it("formats Discord and Slack skill list guidance with relay-prefixed commands", () => {
+    const skills = filterRemoteSkills(commands, resolveRemoteSkillConfig({ enabled: true, allow: ["github"] }));
+    const message = formatSkillList(skills, { commandStyle: "relay-prefix" });
+    expect(message).toContain("Use relay skill <name> <input>, or relay skill <name> to send input as your next message.");
+    expect(message).toContain("Use relay skills to list available skills.");
+    expect(message).not.toContain("/skill");
+  });
+
+
   it("bounds only skill listing, not skill invocation resolution", () => {
     const manyCommands = Array.from({ length: 55 }, (_, index) => ({
       name: `skill-${String(index).padStart(2, "0")}`,

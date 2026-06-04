@@ -24,9 +24,9 @@ import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisio
 import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
 import { buildImagePromptContent, modelSupportsImages } from "../../core/utils.js";
 import { prepareInboundImagePromptContent } from "../../media/index.js";
+import { formatSlackSkillList } from "../skill-list-formatting.js";
 import {
   filterRemoteSkills,
-  formatSkillList,
   formatSkillOutcome,
   invokeRemoteSkill,
   isPendingSkillInputExpired,
@@ -793,7 +793,7 @@ export class SlackRuntime {
       await this.sendText(message, "No remote-invokable skills are available for this session.");
       return;
     }
-    await this.sendText(message, formatSkillList(skills));
+    await this.sendText(message, formatSlackSkillList(skills));
   }
 
   private async handleSkillInvocationCommand(message: ChannelInboundMessage, route: SessionRoute, args: string): Promise<void> {

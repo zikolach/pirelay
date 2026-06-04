@@ -24,9 +24,9 @@ import { buildDelegatedTaskPrompt, delegationCommandFromAction, delegationIngres
 import { transitionDelegationTask, type DelegationTaskRecord } from "../../core/agent-delegation.js";
 import { parseApprovalActionData, parseApprovalTextCommand, type ApprovalDecisionKind, type ApprovalDecisionResult } from "../../core/approval-gates.js";
 import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../../diagnostics/communication.js";
+import { formatDiscordSkillList } from "../skill-list-formatting.js";
 import {
   filterRemoteSkills,
-  formatSkillList,
   formatSkillOutcome,
   invokeRemoteSkill,
   isPendingSkillInputExpired,
@@ -821,7 +821,7 @@ export class DiscordRuntime {
       await this.sendText(message, "No remote-invokable skills are available for this session.");
       return;
     }
-    await this.sendText(message, formatSkillList(skills));
+    await this.sendText(message, formatDiscordSkillList(skills));
   }
 
   private async handleSkillInvocationCommand(message: ChannelInboundMessage, route: SessionRoute, args: string): Promise<void> {

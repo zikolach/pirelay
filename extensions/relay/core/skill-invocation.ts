@@ -55,6 +55,8 @@ export type SkillInvocationOutcome =
   | RouteActionOutcome<{ deliverAs?: DeliveryMode; skill: RemoteSkillSummary }>
   | { kind: "disabled" | "not-found" | "ambiguous" | "confirmation-required"; message: string; matches?: RemoteSkillSummary[]; skill?: RemoteSkillSummary };
 
+export type SkillListCommandStyle = "slash" | "relay-prefix";
+
 const DEFAULT_MAX_SKILL_LIST = 20;
 const DEFAULT_PENDING_INPUT_EXPIRY_MS = 2 * 60_000;
 const MAX_DESCRIPTION_CHARS = 160;
@@ -136,14 +138,19 @@ export function buildSkillInvocationPrompt(name: string, input: string): string 
   return [`Use the local Pi skill /skill:${name}${trimmed ? " with this input:" : "."}`, trimmed].filter(Boolean).join("\n\n");
 }
 
-export function formatSkillList(skills: RemoteSkillSummary[]): string {
+export function formatSkillList(skills: RemoteSkillSummary[], options: { commandStyle?: SkillListCommandStyle } = {}): string {
   const lines = ["Available remote skills:"];
   for (const skill of skills) {
     const suffix = skill.description ? ` — ${skill.description}` : "";
     lines.push(`- ${skill.name}${suffix}`);
   }
-  lines.push("", "Use /skill <name> <input>, or /skill <name> to send input as your next message.");
+  lines.push("", formatSkillListGuidance(options.commandStyle ?? "slash"));
   return lines.join("\n");
+}
+
+function formatSkillListGuidance(commandStyle: SkillListCommandStyle): string {
+  if (commandStyle === "relay-prefix") return "Use relay skill <name> <input>, or relay skill <name> to send input as your next message. Use relay skills to list available skills.";
+  return "Use /skill <name> <input>, or /skill <name> to send input as your next message.";
 }
 
 export function formatSkillInvocationAccepted(skill: RemoteSkillSummary, deliverAs?: DeliveryMode): string {
