@@ -81,10 +81,20 @@ describe("remote skill invocation helpers", () => {
     expect(resolveRemoteSkill("", commands, config)).toMatchObject({ kind: "not-found" });
   });
 
-  it("builds safe skill invocation prompt and uses route delivery", async () => {
+  it("builds safe skill invocation prompt, preserves requester context, and uses route delivery", async () => {
     const session = route();
-    const outcome = await invokeRemoteSkill(session, commands, resolveRemoteSkillConfig({ enabled: true, allow: ["summarize"] }), { name: "summarize", input: "https://example.com" });
+    const requester = {
+      channel: "telegram" as const,
+      instanceId: "default",
+      conversationId: "123",
+      userId: "456",
+      sessionKey: session.sessionKey,
+      safeLabel: "Telegram tester",
+      createdAt: Date.now(),
+    };
+    const outcome = await invokeRemoteSkill(session, commands, resolveRemoteSkillConfig({ enabled: true, allow: ["summarize"] }), { name: "summarize", input: "https://example.com", requester });
     expect(outcome).toMatchObject({ kind: "success", result: { skill: { name: "summarize" } } });
+    expect(session.remoteRequester).toEqual(requester);
     expect(session.actions.sendUserMessage).toHaveBeenCalledWith("Use the local Pi skill /skill:summarize with this input:\n\nhttps://example.com", undefined);
     expect(buildSkillInvocationPrompt("github", "")).toBe("Use the local Pi skill /skill:github.");
   });

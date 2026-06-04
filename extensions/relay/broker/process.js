@@ -934,11 +934,18 @@ async function skillCommandsForRoute(route) {
 
 async function sendSkillList(route, chatId) {
   const skillConfig = skillConfigForRelay(config);
-  const skills = filterRemoteSkills(await skillCommandsForRoute(route), skillConfig);
   if (!skillConfig.enabled) {
     await sendPlainText(chatId, 'Remote skill invocation is disabled.');
     return;
   }
+  let commands;
+  try {
+    commands = await skillCommandsForRoute(route);
+  } catch {
+    await sendPlainText(chatId, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
+    return;
+  }
+  const skills = filterRemoteSkills(commands, skillConfig);
   if (skills.length === 0) {
     await sendPlainText(chatId, 'No remote-invokable skills are available for this session.');
     return;
@@ -946,21 +953,27 @@ async function sendSkillList(route, chatId) {
   await sendPlainText(chatId, formatSkillList(skills));
 }
 
-async function invokeSkillForTelegram(route, chatId, user, skillName, input) {
-  const commands = await skillCommandsForRoute(route);
+async function invokeSkillForTelegram(route, message, skillName, input) {
+  let commands;
+  try {
+    commands = await skillCommandsForRoute(route);
+  } catch {
+    await sendPlainText(message.chat.id, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
+    return;
+  }
   const resolved = resolveRemoteSkill(skillName, commands, skillConfigForRelay(config));
   if (resolved.kind !== 'ok') {
-    await sendPlainText(chatId, resolved.message);
+    await sendPlainText(message.chat.id, resolved.message);
     return;
   }
   try {
-    await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: undefined });
+    await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: undefined, requester: requesterForMessage(route, message) });
   } catch {
-    await sendPlainText(chatId, 'Could not deliver the skill invocation to Pi. The session may be offline or unavailable.');
+    await sendPlainText(message.chat.id, 'Could not deliver the skill invocation to Pi. The session may be offline or unavailable.');
     return;
   }
   await requestClient(route, 'appendAudit', { message: `Telegram invoked remote skill ${resolved.skill.name}.` }).catch(() => undefined);
-  await sendPlainText(chatId, `Skill \`${resolved.skill.name}\` invocation accepted.`);
+  await sendPlainText(message.chat.id, `Skill \`${resolved.skill.name}\` invocation accepted.`);
 }
 
 function createAmbiguityToken() {
@@ -1869,7 +1882,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
         await sendPlainText(message.chat.id, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
         return;
       }
-      await invokeSkillForTelegram(route, message.chat.id, message.user, rawName, input);
+      await invokeSkillForTelegram(route, message, rawName, input);
       return;
     }
     case 'images': {
@@ -1992,7 +2005,7 @@ async function handleAuthorizedText(message, route) {
       await sendPlainText(message.chat.id, 'That skill input request expired. Use /skill <name> again.');
       return;
     }
-    await invokeSkillForTelegram(route, message.chat.id, message.user, pendingSkill.skillName, message.text);
+    await invokeSkillForTelegram(route, message, pendingSkill.skillName, message.text);
     return;
   }
 

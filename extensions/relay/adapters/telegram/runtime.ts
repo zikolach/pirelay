@@ -1868,7 +1868,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         return;
       }
       case "skill": {
-        await this.handleSkillInvocationCommand(route, message.chat.id, message.user.id, args);
+        await this.handleSkillInvocationCommand(route, message, args);
         return;
       }
       case "images": {
@@ -2104,7 +2104,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, "Skill input cancelled.");
         return;
       }
-      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text });
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text, requester: this.telegramRequester(route, message) });
       if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
       await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
       return;
@@ -2452,31 +2452,31 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     else await this.api.sendPlainText(chatId, formatSkillList(skills));
   }
 
-  private async handleSkillInvocationCommand(route: SessionRoute, chatId: number, userId: number, args: string): Promise<void> {
+  private async handleSkillInvocationCommand(route: SessionRoute, message: TelegramInboundMessage, args: string): Promise<void> {
     const [rawName, ...rest] = args.trim().split(/\s+/);
     if (!rawName) {
-      await this.api.sendPlainText(chatId, "Usage: /skill <name> [input]. Use /skills to list available skills.");
+      await this.api.sendPlainText(message.chat.id, "Usage: /skill <name> [input]. Use /skills to list available skills.");
       return;
     }
     if (rawName.toLowerCase() === "cancel") {
-      this.takePendingSkillInput(route, chatId, userId);
-      await this.api.sendPlainText(chatId, "Skill input cancelled.");
+      this.takePendingSkillInput(route, message.chat.id, message.user.id);
+      await this.api.sendPlainText(message.chat.id, "Skill input cancelled.");
       return;
     }
     const input = rest.join(" ").trim();
     if (!input) {
       const resolved = resolveRemoteSkill(rawName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
       if (resolved.kind !== "ok") {
-        await this.api.sendPlainText(chatId, resolved.message);
+        await this.api.sendPlainText(message.chat.id, resolved.message);
         return;
       }
-      this.setPendingSkillInput(route, chatId, userId, resolved.skill.name);
-      await this.api.sendPlainText(chatId, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
+      this.setPendingSkillInput(route, message.chat.id, message.user.id, resolved.skill.name);
+      await this.api.sendPlainText(message.chat.id, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
       return;
     }
-    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input });
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input, requester: this.telegramRequester(route, message) });
     if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
-    await this.api.sendPlainText(chatId, formatSkillOutcome(outcome));
+    await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
   }
 
   private async handleSkillSelectionCallback(route: SessionRoute, callback: TelegramInboundCallback, skillName: string): Promise<void> {

@@ -1,4 +1,5 @@
 import type { ChannelBinding } from "./channel-adapter.js";
+import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
 import type { DeliveryMode, SessionRoute, TelegramTunnelConfig } from "./types.js";
 import { deliverRoutePrompt, routeActionDisplayMessage, type RouteActionOutcome } from "./route-actions.js";
 
@@ -120,12 +121,12 @@ export function resolveRemoteSkill(name: string, commands: SkillCommandMetadata[
   return { kind: "ok", skill };
 }
 
-export async function invokeRemoteSkill(route: SessionRoute, commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig, request: { name: string; input: string; deliveryMode?: DeliveryMode }): Promise<SkillInvocationOutcome> {
+export async function invokeRemoteSkill(route: SessionRoute, commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig, request: { name: string; input: string; deliveryMode?: DeliveryMode; requester?: RelayFileDeliveryRequester }): Promise<SkillInvocationOutcome> {
   const resolved = resolveRemoteSkill(request.name, commands, config);
   if (resolved.kind !== "ok") return resolved;
   if (route.binding?.paused) return { kind: "unavailable", message: "The tunnel is currently paused. Use /resume or disconnect locally." };
   const prompt = buildSkillInvocationPrompt(resolved.skill.name, request.input);
-  const outcome = await deliverRoutePrompt(route, { content: prompt, deliverAs: request.deliveryMode, passUndefinedOptions: true });
+  const outcome = await deliverRoutePrompt(route, { content: prompt, deliverAs: request.deliveryMode, requester: request.requester, passUndefinedOptions: true });
   if (outcome.kind !== "success") return outcome;
   return { kind: "success", result: { deliverAs: outcome.result.deliverAs, skill: resolved.skill } };
 }
