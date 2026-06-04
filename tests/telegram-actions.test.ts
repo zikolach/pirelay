@@ -79,6 +79,12 @@ describe("telegram action callbacks", () => {
       [{ text: "github", callbackData: "skill:github" }],
       [{ text: "summarize", callbackData: "skill:summarize" }],
     ]);
+    const buttonSafeName = "a".repeat(58);
+    const tooLongName = "b".repeat(59);
+    expect(buildSkillSelectCallbackData(buttonSafeName).length).toBe(64);
+    expect(buildSkillListKeyboard([{ name: tooLongName }, { name: buttonSafeName }])).toEqual([
+      [{ text: buttonSafeName, callbackData: `skill:${buttonSafeName}` }],
+    ]);
     expect(buildAnswerAmbiguityKeyboard("abc123", "tok")).toEqual([
       [
         { text: "➡️ Send as prompt", callbackData: "ans:abc123:amb:tok:prompt" },

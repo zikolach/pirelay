@@ -63,6 +63,16 @@ describe("remote skill invocation helpers", () => {
     expect(result.message.length).toBeLessThan(360);
   });
 
+  it("bounds only skill listing, not skill invocation resolution", () => {
+    const manyCommands = Array.from({ length: 55 }, (_, index) => ({
+      name: `skill-${String(index).padStart(2, "0")}`,
+      sourceInfo: { scope: "project" },
+    } satisfies SkillCommandMetadata));
+    const config = resolveRemoteSkillConfig({ enabled: true, maxList: 10 });
+    expect(filterRemoteSkills(manyCommands, config)).toHaveLength(10);
+    expect(resolveRemoteSkill("skill-54", manyCommands, config)).toMatchObject({ kind: "ok", skill: { name: "skill-54" } });
+  });
+
   it("resolves exact, ambiguous, filtered, and confirmation-required skills", () => {
     const config = resolveRemoteSkillConfig({ enabled: true, allow: ["github", "summarize"], requireConfirmation: ["github"] });
     expect(resolveRemoteSkill("git", commands, config)).toMatchObject({ kind: "confirmation-required" });

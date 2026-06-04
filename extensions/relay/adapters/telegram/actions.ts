@@ -14,6 +14,7 @@ export type TelegramActionCallback =
   | { kind: "dashboard"; sessionRef: string; action: DashboardAction };
 
 const MAX_BUTTON_LABEL = 56;
+const MAX_CALLBACK_DATA_BYTES = 64;
 const FULL_OUTPUT_ACTION_MIN_CHARS = 2_000;
 
 function encodePart(value: string): string {
@@ -151,7 +152,14 @@ export function buildLatestImagesKeyboard(turnId: string, count?: number): Teleg
 }
 
 export function buildSkillListKeyboard(skills: Array<{ name: string }>, maxRows = 10): TelegramInlineKeyboard {
-  return skills.slice(0, maxRows).map((skill) => [{ text: skill.name, callbackData: buildSkillSelectCallbackData(skill.name) }]);
+  const rows: TelegramInlineKeyboard = [];
+  for (const skill of skills) {
+    const callbackData = buildSkillSelectCallbackData(skill.name);
+    if (callbackData.length > MAX_CALLBACK_DATA_BYTES) continue;
+    rows.push([{ text: skill.name, callbackData }]);
+    if (rows.length >= maxRows) break;
+  }
+  return rows;
 }
 
 export function buildSessionDashboardKeyboard(sessionRef: string, options: { paused?: boolean; busy?: boolean; hasOutput?: boolean; hasImages?: boolean } = {}): TelegramInlineKeyboard {

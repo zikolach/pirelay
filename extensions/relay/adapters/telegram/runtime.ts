@@ -1858,6 +1858,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, formatFullOutput(route));
         return;
       }
+      case "cancel": {
+        this.takePendingSkillInput(route, message.chat.id, message.user.id);
+        await this.api.sendPlainText(message.chat.id, "Skill input cancelled.");
+        return;
+      }
       case "skills": {
         await this.sendSkillList(route, message.chat.id);
         return;
@@ -2442,7 +2447,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.api.sendPlainText(chatId, "No remote-invokable skills are available for this session.");
       return;
     }
-    await this.api.sendPlainTextWithKeyboard(chatId, formatSkillList(skills), buildSkillListKeyboard(skills));
+    const keyboard = buildSkillListKeyboard(skills);
+    if (keyboard.length > 0) await this.api.sendPlainTextWithKeyboard(chatId, formatSkillList(skills), keyboard);
+    else await this.api.sendPlainText(chatId, formatSkillList(skills));
   }
 
   private async handleSkillInvocationCommand(route: SessionRoute, chatId: number, userId: number, args: string): Promise<void> {

@@ -953,7 +953,12 @@ async function invokeSkillForTelegram(route, chatId, user, skillName, input) {
     await sendPlainText(chatId, resolved.message);
     return;
   }
-  await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: undefined });
+  try {
+    await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: undefined });
+  } catch {
+    await sendPlainText(chatId, 'Could not deliver the skill invocation to Pi. The session may be offline or unavailable.');
+    return;
+  }
   await requestClient(route, 'appendAudit', { message: `Telegram invoked remote skill ${resolved.skill.name}.` }).catch(() => undefined);
   await sendPlainText(chatId, `Skill \`${resolved.skill.name}\` invocation accepted.`);
 }
@@ -1831,6 +1836,11 @@ async function handleAuthorizedCommand(message, route, command, args) {
     }
     case 'full': {
       await sendPlainText(message.chat.id, route.notification?.lastAssistantText || 'No completed assistant output is available yet for this session.');
+      return;
+    }
+    case 'cancel': {
+      takePendingSkillInput(route, message.chat.id, message.user.id);
+      await sendPlainText(message.chat.id, 'Skill input cancelled.');
       return;
     }
     case 'skills': {

@@ -95,29 +95,8 @@ export function isValidSkillName(name: string): boolean {
 }
 
 export function filterRemoteSkills(commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig): RemoteSkillSummary[] {
-  if (!config.enabled) return [];
-  const allow = new Set(config.allow);
-  const deny = new Set(config.deny);
-  const allowedSources = new Set(config.sources);
-  const confirmation = new Set(config.requireConfirmation);
-  const seen = new Set<string>();
-  const skills: RemoteSkillSummary[] = [];
-  for (const command of commands) {
-    const name = normalizeSkillName(command.name);
-    if (!name || !isValidSkillName(name) || seen.has(name)) continue;
-    if (allow.size > 0 && !allow.has(name)) continue;
-    if (deny.has(name)) continue;
-    const source = remoteSkillSource(command);
-    if (allowedSources.size > 0 && !allowedSources.has(source)) continue;
-    seen.add(name);
-    skills.push({
-      name,
-      description: safeSkillDescription(command.description),
-      source,
-      requiresConfirmation: confirmation.has(name),
-    });
-  }
-  return skills.sort((left, right) => left.name.localeCompare(right.name)).slice(0, config.maxList);
+  const skills = resolvePolicyAllowedSkills(commands, config);
+  return skills.slice(0, config.maxList);
 }
 
 export function listRemoteSkills(commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig): SkillListResult {
@@ -131,7 +110,7 @@ export function resolveRemoteSkill(name: string, commands: SkillCommandMetadata[
   if (!config.enabled) return { kind: "disabled", message: "Remote skill invocation is disabled." };
   const normalized = normalizeSkillName(name);
   if (!normalized || !isValidSkillName(normalized)) return { kind: "not-found", message: `Skill ${quoteName(name)} is not available for remote invocation.` };
-  const skills = filterRemoteSkills(commands, { ...config, maxList: 50 });
+  const skills = resolvePolicyAllowedSkills(commands, config);
   const exact = skills.find((skill) => skill.name === normalized);
   const matches = exact ? [exact] : skills.filter((skill) => skill.name.startsWith(normalized));
   if (matches.length === 0) return { kind: "not-found", message: `Skill ${quoteName(normalized)} is not available for remote invocation.` };
@@ -196,6 +175,32 @@ export function pendingSkillInputKey(key: PendingSkillInputKey): string {
 
 export function isPendingSkillInputExpired(pending: Pick<PendingSkillInput, "expiresAt">, now = Date.now()): boolean {
   return pending.expiresAt <= now;
+}
+
+function resolvePolicyAllowedSkills(commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig): RemoteSkillSummary[] {
+  if (!config.enabled) return [];
+  const allow = new Set(config.allow);
+  const deny = new Set(config.deny);
+  const allowedSources = new Set(config.sources);
+  const confirmation = new Set(config.requireConfirmation);
+  const seen = new Set<string>();
+  const skills: RemoteSkillSummary[] = [];
+  for (const command of commands) {
+    const name = normalizeSkillName(command.name);
+    if (!name || !isValidSkillName(name) || seen.has(name)) continue;
+    if (allow.size > 0 && !allow.has(name)) continue;
+    if (deny.has(name)) continue;
+    const source = remoteSkillSource(command);
+    if (allowedSources.size > 0 && !allowedSources.has(source)) continue;
+    seen.add(name);
+    skills.push({
+      name,
+      description: safeSkillDescription(command.description),
+      source,
+      requiresConfirmation: confirmation.has(name),
+    });
+  }
+  return skills.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function normalizeSkillName(name: string): string | undefined {
