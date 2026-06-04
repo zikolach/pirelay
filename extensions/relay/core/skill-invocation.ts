@@ -110,7 +110,7 @@ export function listRemoteSkills(commands: SkillCommandMetadata[], config: Resol
 export function resolveRemoteSkill(name: string, commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig, options: { allowConfirmationRequired?: boolean } = {}): SkillResolveResult {
   if (!config.enabled) return { kind: "disabled", message: "Remote skill invocation is disabled." };
   const normalized = normalizeSkillName(name);
-  if (!normalized || !isValidSkillName(normalized)) return { kind: "not-found", message: `Skill ${quoteName(name)} is not available for remote invocation.` };
+  if (!normalized || !isValidSkillName(normalized)) return { kind: "not-found", message: "Skill name is invalid or unavailable for remote invocation." };
   const skills = resolvePolicyAllowedSkills(commands, config);
   const exact = skills.find((skill) => skill.name === normalized);
   const matches = exact ? [exact] : skills.filter((skill) => skill.name.startsWith(normalized));

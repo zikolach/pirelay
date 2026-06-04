@@ -81,6 +81,27 @@ describe("remote skill invocation helpers", () => {
     expect(resolveRemoteSkill("", commands, config)).toMatchObject({ kind: "not-found" });
   });
 
+  it("does not echo invalid raw skill names in chat-formatted errors", () => {
+    const config = resolveRemoteSkillConfig({ enabled: true, allow: ["github", "summarize"] });
+    for (const rawName of ["", "`github`", "git\nhub"]) {
+      const result = resolveRemoteSkill(rawName, commands, config);
+      expect(result.kind).toBe("not-found");
+      if (result.kind !== "not-found") throw new Error(`Expected not-found for ${rawName}`);
+      expect(result.message).toBe("Skill name is invalid or unavailable for remote invocation.");
+      if (rawName) expect(result.message).not.toContain(rawName);
+      expect(result.message).not.toContain("`");
+      expect(result.message).not.toContain("\n");
+    }
+  });
+
+  it("quotes only normalized validated skill names in not-found messages", () => {
+    const config = resolveRemoteSkillConfig({ enabled: true, allow: ["summarize"] });
+    expect(resolveRemoteSkill(" GitHub ", commands, config)).toMatchObject({
+      kind: "not-found",
+      message: "Skill `github` is not available for remote invocation.",
+    });
+  });
+
   it("builds safe skill invocation prompt, preserves requester context, and uses route delivery", async () => {
     const session = route();
     const requester = {
