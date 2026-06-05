@@ -12,6 +12,7 @@ import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
 import type { SessionRoute, TelegramBindingMetadata, TelegramPromptContent, TelegramTunnelConfig, TunnelRuntime } from "../extensions/relay/core/types.js";
 
 const tempDirs: string[] = [];
+const STALE_EXTENSION_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -347,6 +348,99 @@ describe("InProcessTunnelRuntime", () => {
 
     expect(deliveries).toHaveLength(0);
     expect(sent[0]).toContain("Unauthorized");
+  });
+
+  it("handles stale skill command metadata during Telegram /skills and /skill commands", async () => {
+    const config = { ...await createRuntimeConfig(), skills: { enabled: true, allow: ["github"] } };
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-stale-skills:/tmp/session-stale-skills.jsonl",
+      sessionId: "session-stale-skills",
+      sessionFile: "/tmp/session-stale-skills.jsonl",
+      sessionLabel: "session-stale-skills.jsonl",
+      chatId: 123,
+      userId: 1,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getSkillCommands = vi.fn(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await expect((runtime as any).processInbound({
+      updateId: 10,
+      messageId: 10,
+      text: "/skills",
+      chat: { id: 123, type: "private" },
+      user: { id: 1, username: "owner" },
+    })).resolves.toBeUndefined();
+    await expect((runtime as any).processInbound({
+      updateId: 11,
+      messageId: 11,
+      text: "/skill github input",
+      chat: { id: 123, type: "private" },
+      user: { id: 1, username: "owner" },
+    })).resolves.toBeUndefined();
+
+    expect(sent).toEqual([
+      "No remote-invokable skills are available for this session.",
+      "Skill `github` is not available for remote invocation.",
+    ]);
+    expect(deliveries).toHaveLength(0);
+  });
+
+  it("handles unavailable skill command metadata during Telegram /skill pending-input delivery", async () => {
+    const config = { ...await createRuntimeConfig(), skills: { enabled: true, allow: ["github"], pendingInputExpiryMs: 60_000 } };
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-unavailable-skills:/tmp/session-unavailable-skills.jsonl",
+      sessionId: "session-unavailable-skills",
+      sessionFile: "/tmp/session-unavailable-skills.jsonl",
+      sessionLabel: "session-unavailable-skills.jsonl",
+      chatId: 124,
+      userId: 1,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getSkillCommands = vi.fn(() => [{ name: "github", sourceInfo: { scope: "user" } }]);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await expect((runtime as any).processInbound({
+      updateId: 12,
+      messageId: 12,
+      text: "/skill github",
+      chat: { id: 124, type: "private" },
+      user: { id: 1, username: "owner" },
+    })).resolves.toBeUndefined();
+    route.actions.getSkillCommands = vi.fn(() => { throw routeUnavailableError(); });
+    await expect((runtime as any).processInbound({
+      updateId: 13,
+      messageId: 13,
+      text: "pending input",
+      chat: { id: 124, type: "private" },
+      user: { id: 1, username: "owner" },
+    })).resolves.toBeUndefined();
+
+    expect(sent).toEqual([
+      "Send input for skill github as your next message, or send /skill cancel.",
+      "Skill `github` is not available for remote invocation.",
+    ]);
+    expect(deliveries).toHaveLength(0);
   });
 
   it("routes idle Telegram text as a normal Pi prompt with typing activity", async () => {

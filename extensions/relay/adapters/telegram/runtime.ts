@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveTelegramBindingAuthority, telegramDestinationKey } from "../../core/binding-authority.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
@@ -500,7 +500,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   }
 
   private skillCommandsForRoute(route: SessionRoute) {
-    return route.actions.getSkillCommands?.() ?? [];
+    return routeSkillCommandsSafely(route);
   }
 
   private setPendingAmbiguity(route: SessionRoute, user: TelegramUserSummary, turnId: string, text: string): string | undefined {

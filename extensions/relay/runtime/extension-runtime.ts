@@ -909,7 +909,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           const turnId = route.notification.lastTurnId ?? createTurnId();
           return loadImagePathForTelegram(live, relativePath, turnId, 0, route);
         },
-        getSkillCommands: () => pi.getCommands().filter((command) => command.source === "skill"),
+        getSkillCommands: () => {
+          const live = liveContextForRoute(route);
+          if (!live) return [];
+          try {
+            return pi.getCommands().filter((command) => command.source === "skill");
+          } catch (error) {
+            if (isStaleExtensionReferenceError(error)) {
+              invalidateLiveContextForRoute(route);
+              return [];
+            }
+            throw error;
+          }
+        },
         appendAudit: (message) => appendAudit(message, route),
         notifyLocal: (message, level = "info") => {
           const live = liveContextForRoute(route);

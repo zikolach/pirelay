@@ -10,7 +10,7 @@ import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, typ
 import { ensureStateDir } from "../state/paths.js";
 import { TunnelStateStore } from "../state/tunnel-store.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { normalizeBrokerNamespace } from "./supervisor.js";
@@ -342,7 +342,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           return;
         }
         case "getSkillCommands": {
-          await respond({ ok: true, result: route.actions.getSkillCommands?.() ?? [] });
+          await respond({ ok: true, result: routeSkillCommandsSafely(route) });
           return;
         }
         case "getLatestImages": {

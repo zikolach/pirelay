@@ -12,7 +12,7 @@ import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, ty
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
@@ -755,7 +755,7 @@ export class SlackRuntime {
   }
 
   private skillCommandsForRoute(route: SessionRoute) {
-    return route.actions.getSkillCommands?.() ?? [];
+    return routeSkillCommandsSafely(route);
   }
 
   private pendingSkillKey(message: ChannelInboundMessage, route: SessionRoute): string {
