@@ -15,7 +15,7 @@ Status: [x]
 Replace the shared `invokeRemoteSkill()` paused message that hard-codes `/resume` with neutral wording or a caller-provided command style. Add/update unit tests so Telegram, Discord, and Slack do not receive incorrect resume guidance from shared skill-invocation output.
 
 ## Task: Honor busy delivery mode for Telegram adapter skill invocation
-Status: [ ]
+Status: [x]
 
 Pass the configured busy delivery mode into Telegram local `/skill` invocation and pending-skill-input completion so busy sessions queue skill prompts consistently and acknowledgements include the queued mode. Add regression tests for idle and busy Telegram skill invocation behavior.
 

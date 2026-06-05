@@ -2104,7 +2104,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, "Skill input cancelled.");
         return;
       }
-      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text, requester: this.telegramRequester(route, message) });
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text, deliveryMode: this.config.busyDeliveryMode, requester: this.telegramRequester(route, message) });
       if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
       await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
       return;
@@ -2474,7 +2474,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.api.sendPlainText(message.chat.id, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
       return;
     }
-    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input, requester: this.telegramRequester(route, message) });
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input, deliveryMode: this.config.busyDeliveryMode, requester: this.telegramRequester(route, message) });
     if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
     await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
   }

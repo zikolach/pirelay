@@ -350,6 +350,124 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent[0]).toContain("Unauthorized");
   });
 
+  it("delivers idle Telegram /skill invocations without queued-mode acknowledgement", async () => {
+    const config = { ...await createRuntimeConfig(), skills: { enabled: true, allow: ["github"] } };
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-idle-skill:/tmp/session-idle-skill.jsonl",
+      sessionId: "session-idle-skill",
+      sessionFile: "/tmp/session-idle-skill.jsonl",
+      sessionLabel: "session-idle-skill.jsonl",
+      chatId: 121,
+      userId: 1,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getSkillCommands = vi.fn(() => [{ name: "github", sourceInfo: { scope: "user" } }]);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 8,
+      messageId: 8,
+      text: "/skill github inspect repo",
+      chat: { id: 121, type: "private" },
+      user: { id: 1, username: "owner" },
+    });
+
+    expect(deliveries).toEqual([{ text: "Use the local Pi skill /skill:github with this input:\n\ninspect repo", deliverAs: undefined }]);
+    expect(sent).toEqual(["Skill `github` invocation accepted."]);
+  });
+
+  it("queues busy Telegram /skill invocations with the configured delivery mode", async () => {
+    const config = { ...await createRuntimeConfig(), busyDeliveryMode: "steer" as const, skills: { enabled: true, allow: ["github"] } };
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-busy-skill:/tmp/session-busy-skill.jsonl",
+      sessionId: "session-busy-skill",
+      sessionFile: "/tmp/session-busy-skill.jsonl",
+      sessionLabel: "session-busy-skill.jsonl",
+      chatId: 122,
+      userId: 1,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, false);
+    route.actions.getSkillCommands = vi.fn(() => [{ name: "github", sourceInfo: { scope: "user" } }]);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 9,
+      messageId: 9,
+      text: "/skill github inspect repo",
+      chat: { id: 122, type: "private" },
+      user: { id: 1, username: "owner" },
+    });
+
+    expect(deliveries).toEqual([{ text: "Use the local Pi skill /skill:github with this input:\n\ninspect repo", deliverAs: "steer" }]);
+    expect(sent).toEqual(["Skill `github` invocation accepted (steer)."]);
+  });
+
+  it("queues busy Telegram pending skill input with the configured delivery mode", async () => {
+    const config = { ...await createRuntimeConfig(), busyDeliveryMode: "followUp" as const, skills: { enabled: true, allow: ["github"], pendingInputExpiryMs: 60_000 } };
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-busy-pending-skill:/tmp/session-busy-pending-skill.jsonl",
+      sessionId: "session-busy-pending-skill",
+      sessionFile: "/tmp/session-busy-pending-skill.jsonl",
+      sessionLabel: "session-busy-pending-skill.jsonl",
+      chatId: 125,
+      userId: 1,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, false);
+    route.actions.getSkillCommands = vi.fn(() => [{ name: "github", sourceInfo: { scope: "user" } }]);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 14,
+      messageId: 14,
+      text: "/skill github",
+      chat: { id: 125, type: "private" },
+      user: { id: 1, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 15,
+      messageId: 15,
+      text: "inspect repo",
+      chat: { id: 125, type: "private" },
+      user: { id: 1, username: "owner" },
+    });
+
+    expect(deliveries).toEqual([{ text: "Use the local Pi skill /skill:github with this input:\n\ninspect repo", deliverAs: "followUp" }]);
+    expect(sent).toEqual([
+      "Send input for skill github as your next message, or send /skill cancel.",
+      "Skill `github` invocation accepted (followUp).",
+    ]);
+  });
+
   it("handles stale skill command metadata during Telegram /skills and /skill commands", async () => {
     const config = { ...await createRuntimeConfig(), skills: { enabled: true, allow: ["github"] } };
     const store = new TunnelStateStore(config.stateDir);
