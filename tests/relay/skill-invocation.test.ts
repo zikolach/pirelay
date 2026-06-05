@@ -137,10 +137,16 @@ describe("remote skill invocation helpers", () => {
     expect(buildSkillInvocationPrompt("github", "")).toBe("Use the local Pi skill /skill:github.");
   });
 
-  it("does not deliver when route is paused or unavailable", async () => {
+  it("does not deliver or hard-code channel-specific resume guidance when route is paused", async () => {
     const paused = route({ binding: { paused: true } as never });
     const pausedOutcome = await invokeRemoteSkill(paused, commands, resolveRemoteSkillConfig({ enabled: true, allow: ["summarize"] }), { name: "summarize", input: "input" });
-    expect(pausedOutcome.kind).toBe("unavailable");
+    expect(pausedOutcome).toMatchObject({
+      kind: "unavailable",
+      message: "Remote delivery is currently paused for this binding. Resume remote delivery from the paired chat or disconnect locally.",
+    });
+    if (pausedOutcome.kind !== "unavailable") throw new Error("Expected paused skill invocation to be unavailable");
+    expect(pausedOutcome.message).not.toContain("/resume");
+    expect(pausedOutcome.message).not.toContain("relay resume");
     expect(paused.actions.sendUserMessage).not.toHaveBeenCalled();
   });
 

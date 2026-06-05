@@ -126,7 +126,7 @@ export function resolveRemoteSkill(name: string, commands: SkillCommandMetadata[
 export async function invokeRemoteSkill(route: SessionRoute, commands: SkillCommandMetadata[], config: ResolvedRemoteSkillConfig, request: { name: string; input: string; deliveryMode?: DeliveryMode; requester?: RelayFileDeliveryRequester }): Promise<SkillInvocationOutcome> {
   const resolved = resolveRemoteSkill(request.name, commands, config);
   if (resolved.kind !== "ok") return resolved;
-  if (route.binding?.paused) return { kind: "unavailable", message: "The tunnel is currently paused. Use /resume or disconnect locally." };
+  if (route.binding?.paused) return { kind: "unavailable", message: "Remote delivery is currently paused for this binding. Resume remote delivery from the paired chat or disconnect locally." };
   const prompt = buildSkillInvocationPrompt(resolved.skill.name, request.input);
   const outcome = await deliverRoutePrompt(route, { content: prompt, deliverAs: request.deliveryMode, requester: request.requester, passUndefinedOptions: true });
   if (outcome.kind !== "success") return outcome;

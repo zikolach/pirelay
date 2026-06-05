@@ -10,7 +10,7 @@ Status: [x]
 Update the in-process `getSkillCommands` path so stale extension references or missing live context cannot throw through `/skills` or `/skill` handling. Add regression coverage for stale/unavailable route skill listing and invocation paths, including broker bridge behavior if needed.
 
 ## Task: Use platform-neutral paused-skill messaging in shared helper
-Status: [ ]
+Status: [x]
 
 Replace the shared `invokeRemoteSkill()` paused message that hard-codes `/resume` with neutral wording or a caller-provided command style. Add/update unit tests so Telegram, Discord, and Slack do not receive incorrect resume guidance from shared skill-invocation output.
 
