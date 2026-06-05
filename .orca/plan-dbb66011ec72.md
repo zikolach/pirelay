@@ -20,7 +20,7 @@ Status: [x]
 Pass the configured busy delivery mode into Telegram local `/skill` invocation and pending-skill-input completion so busy sessions queue skill prompts consistently and acknowledgements include the queued mode. Add regression tests for idle and busy Telegram skill invocation behavior.
 
 ## Task: Honor busy delivery mode for Discord and Slack skill invocation
-Status: [ ]
+Status: [x]
 
 Pass each adapter’s configured busy delivery mode into direct `relay skill` invocation and pending-skill-input completion for Discord and Slack. Add targeted adapter tests confirming busy sessions use the configured steer/follow-up mode and report it in the acknowledgement.
 

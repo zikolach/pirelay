@@ -42,7 +42,7 @@ function configWithSkills(stateDir: string): TelegramTunnelConfig {
   };
 }
 
-function route(): SessionRoute {
+function route(idle = true): SessionRoute {
   return {
     sessionKey: "session:/tmp/session.jsonl",
     sessionId: "session",
@@ -50,7 +50,7 @@ function route(): SessionRoute {
     notification: {},
     actions: {
       context: {} as never,
-      isIdle: () => true,
+      isIdle: () => idle,
       getModel: () => undefined,
       sendUserMessage: vi.fn(),
       getLatestImages: async () => [],
@@ -63,6 +63,63 @@ function route(): SessionRoute {
       compact: async () => undefined,
     },
   } as SessionRoute;
+}
+
+async function setupBusyDiscordSkillRuntime(busyDeliveryMode: "followUp" | "steer" = "steer") {
+  const stateDir = await mkdtemp(join(tmpdir(), "pirelay-discord-busy-skills-"));
+  const session = route(false);
+  await new TunnelStateStore(stateDir).upsertChannelBinding({
+    channel: "discord",
+    conversationId: "discord-conversation",
+    userId: "discord-user",
+    sessionKey: session.sessionKey,
+    sessionId: session.sessionId,
+    sessionLabel: session.sessionLabel,
+    boundAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+  });
+  const sent: string[] = [];
+  let handler: ((event: DiscordGatewayEvent) => Promise<void>) | undefined;
+  const operations: DiscordApiOperations = {
+    connect: async (nextHandler) => { handler = nextHandler; },
+    sendMessage: async (payload: DiscordSendMessagePayload) => { sent.push(payload.content); },
+    sendFile: async () => undefined,
+    sendTyping: async () => undefined,
+    answerInteraction: async () => undefined,
+  };
+  const runtime = new DiscordRuntime({ ...configWithSkills(stateDir), busyDeliveryMode, discord: { enabled: true, botToken: "discord-token", allowUserIds: ["discord-user"] } }, { operations });
+  await runtime.registerRoute(session);
+  await runtime.start();
+  if (!handler) throw new Error("Discord handler was not registered");
+  return { session, sent, runtime, handler };
+}
+
+async function setupBusySlackSkillRuntime(busyDeliveryMode: "followUp" | "steer" = "steer") {
+  const stateDir = await mkdtemp(join(tmpdir(), "pirelay-slack-busy-skills-"));
+  const session = route(false);
+  await new TunnelStateStore(stateDir).upsertChannelBinding({
+    channel: "slack",
+    conversationId: "slack-conversation",
+    userId: "slack-user",
+    sessionKey: session.sessionKey,
+    sessionId: session.sessionId,
+    sessionLabel: session.sessionLabel,
+    boundAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+  });
+  const sent: string[] = [];
+  let handler: ((event: SlackEnvelope) => Promise<void>) | undefined;
+  const operations: SlackApiOperations = {
+    startSocketMode: async (nextHandler) => { handler = nextHandler; },
+    postMessage: async (payload: SlackPostMessagePayload) => { sent.push(payload.text); },
+    uploadFile: async () => undefined,
+    postEphemeral: async (payload) => { sent.push(payload.text); },
+  };
+  const runtime = new SlackRuntime({ ...configWithSkills(stateDir), busyDeliveryMode, slack: { enabled: true, botToken: "xoxb-token", allowUserIds: ["slack-user"], botUserId: "slack-bot" } }, { operations });
+  await runtime.registerRoute(session);
+  await runtime.start();
+  if (!handler) throw new Error("Slack handler was not registered");
+  return { session, sent, runtime, handler };
 }
 
 describe("adapter skill list formatting", () => {
@@ -152,6 +209,28 @@ describe("adapter skill list formatting", () => {
     expect(session.actions.sendUserMessage).not.toHaveBeenCalled();
   });
 
+  it("queues busy Discord direct skill invocations with the configured steer mode", async () => {
+    const { session, sent, runtime, handler } = await setupBusyDiscordSkillRuntime("steer");
+    await handler({ type: "message", payload: { id: "discord-direct-skill", channel_id: "discord-conversation", author: { id: "discord-user" }, content: "relay skill github inspect repo" } });
+    await runtime.stop();
+
+    expect(session.actions.sendUserMessage).toHaveBeenCalledWith("Use the local Pi skill /skill:github with this input:\n\ninspect repo", { deliverAs: "steer" });
+    expect(sent).toEqual(["Skill \\`github\\` invocation accepted (steer)."]);
+  });
+
+  it("queues busy Discord pending skill input with the configured steer mode", async () => {
+    const { session, sent, runtime, handler } = await setupBusyDiscordSkillRuntime("steer");
+    await handler({ type: "message", payload: { id: "discord-pending-skill", channel_id: "discord-conversation", author: { id: "discord-user" }, content: "relay skill github" } });
+    await handler({ type: "message", payload: { id: "discord-pending-input", channel_id: "discord-conversation", author: { id: "discord-user" }, content: "inspect later" } });
+    await runtime.stop();
+
+    expect(session.actions.sendUserMessage).toHaveBeenCalledWith("Use the local Pi skill /skill:github with this input:\n\ninspect later", { deliverAs: "steer" });
+    expect(sent).toEqual([
+      "Send input for skill github as your next message, or send relay skill cancel.",
+      "Skill \\`github\\` invocation accepted (steer).",
+    ]);
+  });
+
   it("sends Slack runtime skill lists with relay-prefixed guidance through public inbound handling", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-slack-skill-list-"));
     const session = route();
@@ -185,6 +264,28 @@ describe("adapter skill list formatting", () => {
     expect(sent[0]).toContain("Use relay skill <name> <input>, or relay skill <name> to send input as your next message.");
     expect(sent[0]).toContain("Use relay skills to list available skills.");
     expect(sent[0]).not.toContain("/skill");
+  });
+
+  it("queues busy Slack direct skill invocations with the configured steer mode", async () => {
+    const { session, sent, runtime, handler } = await setupBusySlackSkillRuntime("steer");
+    await handler({ type: "event_callback", eventId: "slack-direct-skill", event: { type: "message", channel_type: "im", channel: "slack-conversation", user: "slack-user", text: "relay skill github inspect repo", ts: "1", team: "T1" } });
+    await runtime.stop();
+
+    expect(session.actions.sendUserMessage).toHaveBeenCalledWith("Use the local Pi skill /skill:github with this input:\n\ninspect repo", { deliverAs: "steer" });
+    expect(sent).toEqual(["Skill `github` invocation accepted (steer)."]);
+  });
+
+  it("queues busy Slack pending skill input with the configured steer mode", async () => {
+    const { session, sent, runtime, handler } = await setupBusySlackSkillRuntime("steer");
+    await handler({ type: "event_callback", eventId: "slack-pending-skill", event: { type: "message", channel_type: "im", channel: "slack-conversation", user: "slack-user", text: "relay skill github", ts: "2", team: "T1" } });
+    await handler({ type: "event_callback", eventId: "slack-pending-input", event: { type: "message", channel_type: "im", channel: "slack-conversation", user: "slack-user", text: "inspect later", ts: "3", team: "T1" } });
+    await runtime.stop();
+
+    expect(session.actions.sendUserMessage).toHaveBeenCalledWith("Use the local Pi skill /skill:github with this input:\n\ninspect later", { deliverAs: "steer" });
+    expect(sent).toEqual([
+      "Send input for skill github as your next message, or send relay skill cancel.",
+      "Skill `github` invocation accepted (steer).",
+    ]);
   });
 
   it("answers Slack unavailable skill invocation flows without delivering prompts", async () => {

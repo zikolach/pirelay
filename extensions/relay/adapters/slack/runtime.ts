@@ -818,7 +818,7 @@ export class SlackRuntime {
       await this.sendText(message, `Send input for skill ${resolved.skill.name} as your next message, or send relay skill cancel.`);
       return;
     }
-    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input, requester: this.slackRequester(route, message) });
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input, deliveryMode: this.config.busyDeliveryMode, requester: this.slackRequester(route, message) });
     if (outcome.kind === "success") route.actions.appendAudit(`Slack invoked remote skill ${outcome.result.skill.name}.`);
     await this.sendText(message, formatSkillOutcome(outcome));
   }
@@ -840,7 +840,7 @@ export class SlackRuntime {
         await this.sendText(message, "That skill input request expired. Use `relay skill <name>` again.");
         return;
       }
-      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text, requester: this.slackRequester(route, message) });
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text, deliveryMode: this.config.busyDeliveryMode, requester: this.slackRequester(route, message) });
       if (outcome.kind === "success") route.actions.appendAudit(`Slack invoked remote skill ${outcome.result.skill.name}.`);
       await this.sendText(message, formatSkillOutcome(outcome));
       return;
