@@ -25,6 +25,6 @@ Status: [x]
 Pass each adapter’s configured busy delivery mode into direct `relay skill` invocation and pending-skill-input completion for Discord and Slack. Add targeted adapter tests confirming busy sessions use the configured steer/follow-up mode and report it in the acknowledgement.
 
 ## Task: Honor busy delivery mode for broker-owned Telegram skill invocation
-Status: [ ]
+Status: [x]
 
 Update broker-owned Telegram skill delivery to choose `deliverAs` from `config.busyDeliveryMode` when the target route is busy, and include that mode in the accepted acknowledgement. Add broker/integration coverage for busy `/skill` and pending-input skill delivery.

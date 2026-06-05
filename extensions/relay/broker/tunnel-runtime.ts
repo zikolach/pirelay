@@ -298,7 +298,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
           if (typeof request.auditMessage === "string" && request.auditMessage) {
             route.actions.appendAudit(request.auditMessage);
           }
-          await respond({ ok: true });
+          await respond({ ok: true, result: outcome.result });
           return;
         }
         case "resolveApprovalDecision": {

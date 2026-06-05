@@ -149,6 +149,7 @@ const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}'
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 const testTelegramOutboxPath = testTelegramOutboxPathFromEnv(process.env);
+const testIngressSecret = process.env.PI_RELAY_BROKER_TEST_INGRESS_SECRET;
 const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
 function recordDiagnostic(event) {
   if (!diagnosticsLogger.config?.enabled) return;
@@ -966,14 +967,18 @@ async function invokeSkillForTelegram(route, message, skillName, input) {
     await sendPlainText(message.chat.id, resolved.message);
     return;
   }
+  let deliveryResult;
   try {
-    await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: undefined, requester: requesterForMessage(route, message) });
+    deliveryResult = await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: config.busyDeliveryMode, requester: requesterForMessage(route, message) });
   } catch {
     await sendPlainText(message.chat.id, 'Could not deliver the skill invocation to Pi. The session may be offline or unavailable.');
     return;
   }
+  const deliveredAs = deliveryResult && typeof deliveryResult === 'object' && (deliveryResult.deliverAs === 'steer' || deliveryResult.deliverAs === 'followUp')
+    ? deliveryResult.deliverAs
+    : undefined;
   await requestClient(route, 'appendAudit', { message: `Telegram invoked remote skill ${resolved.skill.name}.` }).catch(() => undefined);
-  await sendPlainText(message.chat.id, `Skill \`${resolved.skill.name}\` invocation accepted.`);
+  await sendPlainText(message.chat.id, `Skill \`${resolved.skill.name}\` invocation accepted${deliveredAs ? ` (${deliveredAs})` : ''}.`);
 }
 
 function createAmbiguityToken() {
@@ -2588,6 +2593,15 @@ async function handleClientRequest(socket, message) {
           );
         }
         recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String((sentCompletedFullOutput ? route.notification?.lastAssistantText : message.text) || '').length, terminalStatus: message.terminalStatus } });
+        respond(true, true);
+        return;
+      }
+      case 'testProcessInbound': {
+        if (!skipPolling || !testIngressSecret || message.testIngressSecret !== testIngressSecret) {
+          respond(false, undefined, 'Test inbound processing is unavailable.');
+          return;
+        }
+        await processInbound(message.message);
         respond(true, true);
         return;
       }
