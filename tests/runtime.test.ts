@@ -468,6 +468,50 @@ describe("InProcessTunnelRuntime", () => {
     ]);
   });
 
+  it("does not fetch Telegram skill metadata while remote skills are disabled", async () => {
+    const config = { ...await createRuntimeConfig(), skills: { enabled: false, allow: ["github"] } };
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-disabled-skills:/tmp/session-disabled-skills.jsonl",
+      sessionId: "session-disabled-skills",
+      sessionFile: "/tmp/session-disabled-skills.jsonl",
+      sessionLabel: "session-disabled-skills.jsonl",
+      chatId: 126,
+      userId: 1,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const { route, deliveries } = createRoute(binding, true);
+    route.actions.getSkillCommands = vi.fn(() => { throw new Error("should not fetch skill metadata while disabled"); });
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({
+      updateId: 16,
+      messageId: 16,
+      text: "/skills",
+      chat: { id: 126, type: "private" },
+      user: { id: 1, username: "owner" },
+    });
+    await (runtime as any).processInbound({
+      updateId: 17,
+      messageId: 17,
+      text: "/skill github inspect repo",
+      chat: { id: 126, type: "private" },
+      user: { id: 1, username: "owner" },
+    });
+
+    expect(sent).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
+    expect(route.actions.getSkillCommands).not.toHaveBeenCalled();
+    expect(deliveries).toHaveLength(0);
+  });
+
   it("handles stale skill command metadata during Telegram /skills and /skill commands", async () => {
     const config = { ...await createRuntimeConfig(), skills: { enabled: true, allow: ["github"] } };
     const store = new TunnelStateStore(config.stateDir);

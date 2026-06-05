@@ -173,6 +173,43 @@ describe("adapter skill list formatting", () => {
     expect(sent[0]).not.toContain("/skill");
   });
 
+  it("does not fetch Discord skill metadata while remote skills are disabled", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-discord-disabled-skills-"));
+    const session = route();
+    session.actions.getSkillCommands = vi.fn(() => { throw new Error("should not fetch skill metadata while disabled"); });
+    await new TunnelStateStore(stateDir).upsertChannelBinding({
+      channel: "discord",
+      conversationId: "discord-conversation",
+      userId: "discord-user",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    const sent: string[] = [];
+    let handler: ((event: DiscordGatewayEvent) => Promise<void>) | undefined;
+    const operations: DiscordApiOperations = {
+      connect: async (nextHandler) => { handler = nextHandler; },
+      sendMessage: async (payload: DiscordSendMessagePayload) => { sent.push(payload.content); },
+      sendFile: async () => undefined,
+      sendTyping: async () => undefined,
+      answerInteraction: async () => undefined,
+    };
+    const runtime = new DiscordRuntime({ ...configWithSkills(stateDir), skills: { enabled: false }, discord: { enabled: true, botToken: "discord-token", allowUserIds: ["discord-user"] } }, { operations });
+
+    await runtime.registerRoute(session);
+    await runtime.start();
+    if (!handler) throw new Error("Discord handler was not registered");
+    await handler({ type: "message", payload: { id: "discord-disabled-skills", channel_id: "discord-conversation", author: { id: "discord-user" }, content: "relay skills" } });
+    await handler({ type: "message", payload: { id: "discord-disabled-skill", channel_id: "discord-conversation", author: { id: "discord-user" }, content: "relay skill github inspect repo" } });
+    await runtime.stop();
+
+    expect(sent).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
+    expect(session.actions.getSkillCommands).not.toHaveBeenCalled();
+    expect(session.actions.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("answers Discord stale skill metadata flows with no available skills", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-discord-stale-skills-"));
     const session = route();
@@ -264,6 +301,42 @@ describe("adapter skill list formatting", () => {
     expect(sent[0]).toContain("Use relay skill <name> <input>, or relay skill <name> to send input as your next message.");
     expect(sent[0]).toContain("Use relay skills to list available skills.");
     expect(sent[0]).not.toContain("/skill");
+  });
+
+  it("does not fetch Slack skill metadata while remote skills are disabled", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-slack-disabled-skills-"));
+    const session = route();
+    session.actions.getSkillCommands = vi.fn(() => { throw new Error("should not fetch skill metadata while disabled"); });
+    await new TunnelStateStore(stateDir).upsertChannelBinding({
+      channel: "slack",
+      conversationId: "slack-conversation",
+      userId: "slack-user",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    const sent: string[] = [];
+    let handler: ((event: SlackEnvelope) => Promise<void>) | undefined;
+    const operations: SlackApiOperations = {
+      startSocketMode: async (nextHandler) => { handler = nextHandler; },
+      postMessage: async (payload: SlackPostMessagePayload) => { sent.push(payload.text); },
+      uploadFile: async () => undefined,
+      postEphemeral: async (payload) => { sent.push(payload.text); },
+    };
+    const runtime = new SlackRuntime({ ...configWithSkills(stateDir), skills: { enabled: false }, slack: { enabled: true, botToken: "xoxb-token", allowUserIds: ["slack-user"], botUserId: "slack-bot" } }, { operations });
+
+    await runtime.registerRoute(session);
+    await runtime.start();
+    if (!handler) throw new Error("Slack handler was not registered");
+    await handler({ type: "event_callback", eventId: "slack-disabled-skills", event: { type: "message", channel_type: "im", channel: "slack-conversation", user: "slack-user", text: "relay skills", ts: "1", team: "T1" } });
+    await handler({ type: "event_callback", eventId: "slack-disabled-skill", event: { type: "message", channel_type: "im", channel: "slack-conversation", user: "slack-user", text: "relay skill github inspect repo", ts: "2", team: "T1" } });
+    await runtime.stop();
+
+    expect(sent).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
+    expect(session.actions.getSkillCommands).not.toHaveBeenCalled();
+    expect(session.actions.sendUserMessage).not.toHaveBeenCalled();
   });
 
   it("queues busy Slack direct skill invocations with the configured steer mode", async () => {

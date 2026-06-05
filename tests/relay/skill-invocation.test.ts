@@ -98,6 +98,19 @@ describe("remote skill invocation helpers", () => {
     expect(resolveRemoteSkill("", commands, config)).toMatchObject({ kind: "not-found" });
   });
 
+  it("bounds ambiguous skill match messages", () => {
+    const manyCommands = Array.from({ length: 15 }, (_, index) => ({
+      name: `build-${String(index).padStart(2, "0")}`,
+      sourceInfo: { scope: "project" },
+    } satisfies SkillCommandMetadata));
+    const result = resolveRemoteSkill("build", manyCommands, resolveRemoteSkillConfig({ enabled: true }));
+    expect(result).toMatchObject({ kind: "ambiguous" });
+    if (result.kind !== "ambiguous") throw new Error("Expected ambiguous result");
+    expect(result.matches).toHaveLength(15);
+    expect(result.message).toContain("build-00, build-01, build-02, build-03, build-04, build-05, build-06, build-07, build-08, build-09, and 5 more");
+    expect(result.message).not.toContain("build-10");
+  });
+
   it("does not echo invalid raw skill names in chat-formatted errors", () => {
     const config = resolveRemoteSkillConfig({ enabled: true, allow: ["github", "summarize"] });
     for (const rawName of ["", "`github`", "git\nhub"]) {

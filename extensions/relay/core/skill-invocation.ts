@@ -60,6 +60,7 @@ export type SkillListCommandStyle = "slash" | "relay-prefix";
 const DEFAULT_MAX_SKILL_LIST = 20;
 const DEFAULT_PENDING_INPUT_EXPIRY_MS = 2 * 60_000;
 const MAX_DESCRIPTION_CHARS = 160;
+const MAX_AMBIGUOUS_SKILL_MATCHES = 10;
 const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 export function resolveRemoteSkillConfig(config: RemoteSkillConfig | undefined): ResolvedRemoteSkillConfig {
@@ -117,7 +118,7 @@ export function resolveRemoteSkill(name: string, commands: SkillCommandMetadata[
   const exact = skills.find((skill) => skill.name === normalized);
   const matches = exact ? [exact] : skills.filter((skill) => skill.name.startsWith(normalized));
   if (matches.length === 0) return { kind: "not-found", message: `Skill ${quoteName(normalized)} is not available for remote invocation.` };
-  if (matches.length > 1) return { kind: "ambiguous", message: `Skill ${quoteName(normalized)} is ambiguous. Matches: ${matches.map((skill) => skill.name).join(", ")}.`, matches };
+  if (matches.length > 1) return { kind: "ambiguous", message: `Skill ${quoteName(normalized)} is ambiguous. Matches: ${formatAmbiguousSkillMatches(matches)}.`, matches };
   const skill = matches[0]!;
   if (skill.requiresConfirmation && !options.allowConfirmationRequired) return { kind: "confirmation-required", message: `Skill ${quoteName(skill.name)} requires confirmation before remote invocation.`, skill };
   return { kind: "ok", skill };
@@ -151,6 +152,12 @@ export function formatSkillList(skills: RemoteSkillSummary[], options: { command
 function formatSkillListGuidance(commandStyle: SkillListCommandStyle): string {
   if (commandStyle === "relay-prefix") return "Use relay skill <name> <input>, or relay skill <name> to send input as your next message. Use relay skills to list available skills.";
   return "Use /skill <name> <input>, or /skill <name> to send input as your next message.";
+}
+
+function formatAmbiguousSkillMatches(matches: RemoteSkillSummary[]): string {
+  const visible = matches.slice(0, MAX_AMBIGUOUS_SKILL_MATCHES).map((skill) => skill.name).join(", ");
+  const remaining = matches.length - MAX_AMBIGUOUS_SKILL_MATCHES;
+  return remaining > 0 ? `${visible}, and ${remaining} more` : visible;
 }
 
 export function formatSkillInvocationAccepted(skill: RemoteSkillSummary, deliverAs?: DeliveryMode): string {

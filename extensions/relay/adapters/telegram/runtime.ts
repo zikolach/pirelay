@@ -2104,7 +2104,12 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(message.chat.id, "Skill input cancelled.");
         return;
       }
-      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: pendingSkill.skillName, input: message.text, deliveryMode: this.config.busyDeliveryMode, requester: this.telegramRequester(route, message) });
+      const config = skillConfigForRelay(this.config);
+      if (!config.enabled) {
+        await this.api.sendPlainText(message.chat.id, "Remote skill invocation is disabled.");
+        return;
+      }
+      const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), config, { name: pendingSkill.skillName, input: message.text, deliveryMode: this.config.busyDeliveryMode, requester: this.telegramRequester(route, message) });
       if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
       await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
       return;
@@ -2438,11 +2443,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
 
   private async sendSkillList(route: SessionRoute, chatId: number): Promise<void> {
     const config = skillConfigForRelay(this.config);
-    const skills = filterRemoteSkills(this.skillCommandsForRoute(route), config);
     if (!config.enabled) {
       await this.api.sendPlainText(chatId, "Remote skill invocation is disabled.");
       return;
     }
+    const skills = filterRemoteSkills(this.skillCommandsForRoute(route), config);
     if (skills.length === 0) {
       await this.api.sendPlainText(chatId, "No remote-invokable skills are available for this session.");
       return;
@@ -2464,8 +2469,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
     const input = rest.join(" ").trim();
+    const config = skillConfigForRelay(this.config);
+    if (!config.enabled) {
+      await this.api.sendPlainText(message.chat.id, "Remote skill invocation is disabled.");
+      return;
+    }
     if (!input) {
-      const resolved = resolveRemoteSkill(rawName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
+      const resolved = resolveRemoteSkill(rawName, this.skillCommandsForRoute(route), config);
       if (resolved.kind !== "ok") {
         await this.api.sendPlainText(message.chat.id, resolved.message);
         return;
@@ -2474,13 +2484,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       await this.api.sendPlainText(message.chat.id, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
       return;
     }
-    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), skillConfigForRelay(this.config), { name: rawName, input, deliveryMode: this.config.busyDeliveryMode, requester: this.telegramRequester(route, message) });
+    const outcome = await invokeRemoteSkill(route, this.skillCommandsForRoute(route), config, { name: rawName, input, deliveryMode: this.config.busyDeliveryMode, requester: this.telegramRequester(route, message) });
     if (outcome.kind === "success") route.actions.appendAudit(`Telegram invoked remote skill ${outcome.result.skill.name}.`);
     await this.api.sendPlainText(message.chat.id, formatSkillOutcome(outcome));
   }
 
   private async handleSkillSelectionCallback(route: SessionRoute, callback: TelegramInboundCallback, skillName: string): Promise<void> {
-    const resolved = resolveRemoteSkill(skillName, this.skillCommandsForRoute(route), skillConfigForRelay(this.config));
+    const config = skillConfigForRelay(this.config);
+    if (!config.enabled) {
+      await this.api.answerCallbackQuery(callback.callbackQueryId, "Remote skills disabled.");
+      await this.api.sendPlainText(callback.chat.id, "Remote skill invocation is disabled.");
+      return;
+    }
+    const resolved = resolveRemoteSkill(skillName, this.skillCommandsForRoute(route), config);
     await this.api.answerCallbackQuery(callback.callbackQueryId, resolved.kind === "ok" ? "Send skill input." : "Skill unavailable.");
     if (resolved.kind !== "ok") {
       await this.api.sendPlainText(callback.chat.id, resolved.message);

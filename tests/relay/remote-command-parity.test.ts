@@ -1,30 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { CANONICAL_REMOTE_COMMAND_NAMES, buildHelpText, parsePrefixedRemoteCommand } from "../../extensions/relay/commands/remote.js";
+import { CANONICAL_REMOTE_COMMANDS, CANONICAL_REMOTE_COMMAND_NAMES, buildHelpText, parsePrefixedRemoteCommand } from "../../extensions/relay/commands/remote.js";
 import { DISCORD_NATIVE_COMMAND_NAME, DISCORD_NATIVE_SUBCOMMAND_NAMES } from "../../extensions/relay/adapters/discord/live-client.js";
 import { DISCORD_SUPPORTED_COMMANDS, parseDiscordCommand } from "../../extensions/relay/adapters/discord/runtime.js";
 
-const requiredCanonicalCommands = [
-  "help",
-  "status",
-  "sessions",
-  "use",
-  "to",
-  "alias",
-  "forget",
-  "progress",
-  "recent",
-  "summary",
-  "full",
-  "images",
-  "send-image",
-  "steer",
-  "followup",
-  "abort",
-  "compact",
-  "pause",
-  "resume",
-  "disconnect",
-] as const;
+const requiredCanonicalCommands = CANONICAL_REMOTE_COMMANDS
+  .filter((definition) => !("aliasOf" in definition))
+  .map((definition) => definition.command);
 
 describe("remote command parity metadata", () => {
   it("keeps the canonical command matrix explicit", () => {
