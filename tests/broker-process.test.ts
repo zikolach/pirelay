@@ -305,6 +305,70 @@ describe("telegram broker process", () => {
     expect(updated.channelBindings?.["discord:discord-session:memory"]).toEqual(discordBinding);
   });
 
+  it("reports paired broker-owned chats as offline instead of unpaired when no live route is registered", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-offline-text-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const testIngressSecret = "offline-text-secret";
+    const binding = {
+      sessionKey: "broker-offline-text:memory",
+      sessionId: "broker-offline-text",
+      sessionLabel: "Broker Offline Text",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+        PI_RELAY_BROKER_TEST_INGRESS_SECRET: testIngressSecret,
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret,
+        message: telegramMessage("hello while route is reconnecting", binding),
+      });
+    } finally {
+      client.close();
+    }
+
+    const texts = parseOutbox(await readFile(outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts).toEqual(["The selected Pi session is currently offline. Resume it locally, then try again."]);
+  });
+
   it("delivers broker-owned full-output chunks before structured answer actions", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);

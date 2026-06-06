@@ -2011,7 +2011,14 @@ async function handleAuthorizedCommand(message, route, command, args) {
 
 async function handleAuthorizedText(message, route) {
   if (!route?.binding) {
-    await sendPlainText(message.chat.id, 'This chat is not paired to an active Pi session. Run /relay connect telegram locally first.');
+    const persisted = await getPersistedBindingsForChat(message.chat.id, message.user.id);
+    if (!persisted) {
+      await sendPlainText(message.chat.id, 'Relay state is temporarily unavailable; retry shortly.');
+    } else if (persisted.length > 0) {
+      await sendPlainText(message.chat.id, 'The selected Pi session is currently offline. Resume it locally, then try again.');
+    } else {
+      await sendPlainText(message.chat.id, 'This chat is not paired to an active Pi session. Run /relay connect telegram locally first.');
+    }
     return;
   }
   if (route.binding.paused) {
