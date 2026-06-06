@@ -681,6 +681,33 @@ describe("telegram broker process", () => {
     expect(texts.at(-1)).toContain("invocation accepted (followUp)");
   });
 
+  it("does not fetch broker skill metadata while remote skills are disabled", async () => {
+    const harness = await startBrokerSkillHarness("followUp", false, { enabled: false });
+    try {
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github inspect repo", harness.binding, 1),
+      });
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github", harness.binding, 2),
+      });
+    } finally {
+      harness.client.close();
+    }
+
+    expect(harness.counters.skillMetadataRequests).toBe(0);
+    expect(harness.deliveries).toHaveLength(0);
+    const texts = parseOutbox(await readFile(harness.outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
+  });
+
   it("rejects pending broker client requests when the socket closes cleanly", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -702,7 +729,7 @@ describe("telegram broker process", () => {
   });
 });
 
-async function startBrokerSkillHarness(busyDeliveryMode: "followUp" | "steer", busy: boolean) {
+async function startBrokerSkillHarness(busyDeliveryMode: "followUp" | "steer", busy: boolean, skills: { enabled: boolean; allow?: string[] } = { enabled: true, allow: ["github"] }) {
   const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-skill-"));
   tempDirs.push(stateDir);
   const outboxPath = join(stateDir, "telegram-outbox.jsonl");
@@ -740,7 +767,7 @@ async function startBrokerSkillHarness(busyDeliveryMode: "followUp" | "steer", b
         stateDir,
         pollingTimeoutSeconds: 1,
         busyDeliveryMode,
-        skills: { enabled: true, allow: ["github"] },
+        skills,
       }),
       TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
       PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
@@ -751,9 +778,11 @@ async function startBrokerSkillHarness(busyDeliveryMode: "followUp" | "steer", b
   await waitForSocket(socketPath, child);
 
   const deliveries: Record<string, unknown>[] = [];
+  const counters = { skillMetadataRequests: 0 };
   const client = await openBrokerClient(socketPath, (payload) => {
     switch (payload.action) {
       case "getSkillCommands":
+        counters.skillMetadataRequests += 1;
         return [{ name: "github", sourceInfo: { scope: "user" } }];
       case "deliverPrompt":
         deliveries.push(payload);
@@ -778,7 +807,7 @@ async function startBrokerSkillHarness(busyDeliveryMode: "followUp" | "steer", b
       binding,
     },
   });
-  return { binding, client, deliveries, outboxPath, testIngressSecret };
+  return { binding, client, deliveries, outboxPath, testIngressSecret, counters };
 }
 
 function telegramMessage(text: string, binding: { chatId: number; userId: number }, updateId = 1) {

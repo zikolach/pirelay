@@ -953,6 +953,11 @@ async function sendSkillList(route, chatId) {
 }
 
 async function invokeSkillForTelegram(route, message, skillName, input) {
+  const skillConfig = skillConfigForRelay(config);
+  if (!skillConfig.enabled) {
+    await sendPlainText(message.chat.id, 'Remote skill invocation is disabled.');
+    return;
+  }
   let commands;
   try {
     commands = await skillCommandsForRoute(route);
@@ -960,7 +965,7 @@ async function invokeSkillForTelegram(route, message, skillName, input) {
     await sendPlainText(message.chat.id, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
     return;
   }
-  const resolved = resolveRemoteSkill(skillName, commands, skillConfigForRelay(config));
+  const resolved = resolveRemoteSkill(skillName, commands, skillConfig);
   if (resolved.kind !== 'ok') {
     await sendPlainText(message.chat.id, resolved.message);
     return;
@@ -1875,6 +1880,11 @@ async function handleAuthorizedCommand(message, route, command, args) {
         return;
       }
       const input = rest.join(' ').trim();
+      const skillConfig = skillConfigForRelay(config);
+      if (!skillConfig.enabled) {
+        await sendPlainText(message.chat.id, 'Remote skill invocation is disabled.');
+        return;
+      }
       if (!input) {
         let commands;
         try {
@@ -1883,7 +1893,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
           await sendPlainText(message.chat.id, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
           return;
         }
-        const resolved = resolveRemoteSkill(rawName, commands, skillConfigForRelay(config));
+        const resolved = resolveRemoteSkill(rawName, commands, skillConfig);
         if (resolved.kind !== 'ok') {
           await sendPlainText(message.chat.id, resolved.message);
           return;
