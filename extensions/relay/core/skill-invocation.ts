@@ -222,7 +222,6 @@ function normalizeSkillName(name: string): string | undefined {
   const normalized = name.trim().replace(/^\/?skill:/, "").toLowerCase();
   return normalized || undefined;
 }
-}
 
 function normalizeNameList(values: string[] | undefined): string[] {
   const normalized: string[] = [];
