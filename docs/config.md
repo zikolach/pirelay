@@ -165,7 +165,7 @@ Remote skill invocation is disabled by default. Enable it only for skills you ar
 }
 ```
 
-Environment overrides include `PI_RELAY_SKILLS_ENABLED`, `PI_RELAY_SKILLS_ALLOW`, `PI_RELAY_SKILLS_DENY`, `PI_RELAY_SKILLS_SOURCES`, `PI_RELAY_SKILLS_MAX_LIST`, `PI_RELAY_SKILLS_PENDING_INPUT_EXPIRY_MS`, and `PI_RELAY_SKILLS_REQUIRE_CONFIRMATION`. PiRelay lists only safe skill names/descriptions and invokes skills by sending a skill-use prompt to the selected Pi session; it does not send raw skill files or arbitrary filesystem paths to messengers.
+Environment overrides include `PI_RELAY_SKILLS_ENABLED`, `PI_RELAY_SKILLS_ALLOW`, `PI_RELAY_SKILLS_DENY`, `PI_RELAY_SKILLS_SOURCES`, `PI_RELAY_SKILLS_MAX_LIST`, `PI_RELAY_SKILLS_PENDING_INPUT_EXPIRY_MS`, and `PI_RELAY_SKILLS_REQUIRE_CONFIRMATION`. PiRelay lists only safe skill names/descriptions and invokes skills by sending a skill-use prompt to the selected Pi session; it does not send raw skill files or arbitrary filesystem paths to messengers. Skills listed in `requireConfirmation` are currently blocked with a confirmation-required response; approval prompting for those skills is reserved for a future change.
 
 ## Approval gates
 

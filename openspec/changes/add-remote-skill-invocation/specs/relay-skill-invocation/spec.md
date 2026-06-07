@@ -38,9 +38,9 @@ PiRelay SHALL gate remote skill listing and invocation with explicit configurati
 - **AND** source information shown to the messenger is limited to a safe category label rather than full paths
 
 #### Scenario: Risky skill requires confirmation
-- **WHEN** policy marks a skill name or source as requiring confirmation
-- **THEN** PiRelay obtains the configured local or remote approval before invoking that skill
-- **AND** it refuses the invocation if confirmation expires, is denied, or targets a stale route
+- **WHEN** policy marks a skill name as requiring confirmation
+- **THEN** PiRelay refuses remote invocation with a confirmation-required response
+- **AND** it does not invoke the skill until an explicit approval flow is implemented by a future change
 
 ### Requirement: Remote skill invocation
 PiRelay SHALL let authorized messenger users invoke allowed local skills with explicit input while preserving route-action safety.
