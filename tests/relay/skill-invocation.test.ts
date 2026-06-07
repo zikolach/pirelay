@@ -54,6 +54,21 @@ describe("remote skill invocation helpers", () => {
     expect(filterRemoteSkills(commands, config).map((skill) => skill.name)).toEqual(["github", "summarize"]);
   });
 
+  it("normalizes skill names and source filters case-insensitively", () => {
+    const config = resolveRemoteSkillConfig({
+      enabled: true,
+      allow: ["/Skill:GitHub"],
+      sources: ["User" as never],
+    });
+    expect(filterRemoteSkills([{ name: "Skill:GitHub", sourceInfo: { scope: "user" } }], config)).toMatchObject([
+      { name: "github", source: "user" },
+    ]);
+    expect(resolveRemoteSkill("/Skill:GitHub", [{ name: "/Skill:GitHub", sourceInfo: { scope: "user" } }], config)).toMatchObject({
+      kind: "ok",
+      skill: { name: "github" },
+    });
+  });
+
   it("formats disabled, empty, and bounded skill list responses", () => {
     expect(listRemoteSkills(commands, resolveRemoteSkillConfig(undefined))).toMatchObject({ kind: "disabled" });
     expect(listRemoteSkills(commands, resolveRemoteSkillConfig({ enabled: true, allow: ["missing"] }))).toMatchObject({ kind: "empty" });

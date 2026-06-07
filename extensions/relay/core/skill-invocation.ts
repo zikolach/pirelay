@@ -219,7 +219,7 @@ function resolvePolicyAllowedSkills(commands: SkillCommandMetadata[], config: Re
 }
 
 function normalizeSkillName(name: string): string | undefined {
-  const normalized = name.trim().replace(/^\/?skill:/, "").toLowerCase();
+  const normalized = name.trim().toLowerCase().replace(/^\/?skill:/, "");
   return normalized || undefined;
 }
 
@@ -233,8 +233,16 @@ function normalizeNameList(values: string[] | undefined): string[] {
 }
 
 function normalizeSources(values: RemoteSkillSource[] | undefined): RemoteSkillSource[] {
-  const allowed = new Set<RemoteSkillSource>(["project", "user", "package", "temporary", "unknown"]);
-  return [...new Set((values ?? []).filter((value) => allowed.has(value)))];
+  const normalized: RemoteSkillSource[] = [];
+  for (const value of values ?? []) {
+    const source = String(value).trim().toLowerCase();
+    if (isRemoteSkillSource(source)) normalized.push(source);
+  }
+  return [...new Set(normalized)];
+}
+
+function isRemoteSkillSource(value: string): value is RemoteSkillSource {
+  return value === "project" || value === "user" || value === "package" || value === "temporary" || value === "unknown";
 }
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
