@@ -10,9 +10,11 @@ export type TelegramActionCallback =
   | { kind: "full-chat"; turnId: string }
   | { kind: "full-markdown"; turnId: string }
   | { kind: "latest-images"; turnId: string }
+  | { kind: "skill-select"; skillName: string }
   | { kind: "dashboard"; sessionRef: string; action: DashboardAction };
 
 const MAX_BUTTON_LABEL = 56;
+const MAX_CALLBACK_DATA_BYTES = 64;
 const FULL_OUTPUT_ACTION_MIN_CHARS = 2_000;
 
 function encodePart(value: string): string {
@@ -56,6 +58,10 @@ export function buildFullMarkdownCallbackData(turnId: string): string {
 
 export function buildLatestImagesCallbackData(turnId: string): string {
   return `imgs:${encodePart(turnId)}`;
+}
+
+export function buildSkillSelectCallbackData(skillName: string): string {
+  return `skill:${encodePart(skillName)}`;
 }
 
 export function sessionDashboardRef(sessionKey: string): string {
@@ -115,6 +121,12 @@ export function parseTelegramActionCallbackData(data: string): TelegramActionCal
     return { kind: "latest-images", turnId };
   }
 
+  if (parts[0] === "skill" && parts.length === 2) {
+    const skillName = decodePart(parts[1]);
+    if (!skillName) return undefined;
+    return { kind: "skill-select", skillName };
+  }
+
   return undefined;
 }
 
@@ -137,6 +149,17 @@ export function buildFullOutputKeyboard(turnId: string): TelegramInlineKeyboard 
 export function buildLatestImagesKeyboard(turnId: string, count?: number): TelegramInlineKeyboard {
   const label = count && count > 1 ? `🖼 Download ${count} images` : "🖼 Download image";
   return [[{ text: label, callbackData: buildLatestImagesCallbackData(turnId) }]];
+}
+
+export function buildSkillListKeyboard(skills: Array<{ name: string }>, maxRows = 10): TelegramInlineKeyboard {
+  const rows: TelegramInlineKeyboard = [];
+  for (const skill of skills) {
+    const callbackData = buildSkillSelectCallbackData(skill.name);
+    if (callbackData.length > MAX_CALLBACK_DATA_BYTES) continue;
+    rows.push([{ text: skill.name, callbackData }]);
+    if (rows.length >= maxRows) break;
+  }
+  return rows;
 }
 
 export function buildSessionDashboardKeyboard(sessionRef: string, options: { paused?: boolean; busy?: boolean; hasOutput?: boolean; hasImages?: boolean } = {}): TelegramInlineKeyboard {

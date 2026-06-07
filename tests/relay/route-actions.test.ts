@@ -18,6 +18,7 @@ import {
   routeImageByPathSafely,
   routeIdleState,
   routeModelState,
+  routeSkillCommandsSafely,
   routeUnavailableError,
   routeWorkspaceRoot,
   routeWorkspaceRootSafely,
@@ -236,6 +237,13 @@ describe("route action lifetime helpers", () => {
     expect(routeModelState(route({ getModel: () => undefined, isIdle: () => true }))).toEqual({ available: true, model: undefined });
     expect(routeModelState(route({ getModel: () => undefined, isIdle: () => undefined }))).toEqual({ available: false });
     expect(routeModelState(route({ getModel: () => { throw new Error(STALE_EXTENSION_ERROR); } }))).toEqual({ available: false });
+  });
+
+  it("contains unavailable skill command metadata lookup failures", () => {
+    expect(routeSkillCommandsSafely(route({ getSkillCommands: () => [{ name: "github", sourceInfo: { scope: "user" } }] }))).toEqual([{ name: "github", sourceInfo: { scope: "user" } }]);
+    expect(routeSkillCommandsSafely(route({ getSkillCommands: () => { throw new Error(STALE_EXTENSION_ERROR); } }))).toEqual([]);
+    expect(routeSkillCommandsSafely(route({ getSkillCommands: () => { throw routeUnavailableError(); } }))).toEqual([]);
+    expect(() => routeSkillCommandsSafely(route({ getSkillCommands: () => { throw new Error("command registry failed"); } }))).toThrow("command registry failed");
   });
 
   it("contains stale raw context failures", () => {

@@ -9,6 +9,7 @@ import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/cor
 const tempDirs: string[] = [];
 const servers: Server[] = [];
 const sockets: Socket[] = [];
+const STALE_EXTENSION_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.destroy();
@@ -55,6 +56,28 @@ describe("broker namespace isolation", () => {
     expect(secondMessages.some((message) => (message.route as { sessionKey?: string } | undefined)?.sessionKey === "docs-session")).toBe(true);
 
     await runtime.stop();
+  });
+
+  it("bridges stale skill command lookups as an empty metadata list", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-skills-"));
+    tempDirs.push(stateDir);
+    const runtime = new BrokerTunnelRuntime(config(stateDir));
+    const staleRoute = route("stale-skills-session");
+    staleRoute.actions.getSkillCommands = () => { throw new Error(STALE_EXTENSION_ERROR); };
+    (runtime as unknown as { routes: Map<string, SessionRoute> }).routes.set(staleRoute.sessionKey, staleRoute);
+    const responses: Array<Record<string, unknown>> = [];
+    (runtime as unknown as { writeMessage(message: Record<string, unknown>): void }).writeMessage = (message) => { responses.push(message); };
+
+    await (runtime as unknown as { handleMessage(line: string): Promise<void> }).handleMessage(JSON.stringify({
+      type: "request",
+      requestId: "skills-1",
+      protocolVersion: 1,
+      action: "getSkillCommands",
+      sessionKey: staleRoute.sessionKey,
+    }));
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0]).toMatchObject({ type: "response", requestId: "skills-1", ok: true, result: [] });
   });
 
   it("does not share route registration or delivery across namespace sockets", async () => {

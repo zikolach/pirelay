@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { DEFAULT_STATE_DIR, getDefaultConfigPath } from "../state/paths.js";
 import type { AgentDelegationRelayConfig, ConfigLoadResult, DiscordRelayConfig, SlackRelayConfig, TelegramTunnelConfig } from "../core/types.js";
+import type { RemoteSkillConfig } from "../core/skill-invocation.js";
 import type { ApprovalGateConfig } from "../core/approval-gates.js";
 import type { MessengerInstanceFileConfig, RelayConfigFile } from "./schema.js";
 import { DEFAULT_MAX_PROGRESS_MESSAGE_CHARS, DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_MODE, DEFAULT_RECENT_ACTIVITY_LIMIT, DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS, normalizeProgressMode } from "../notifications/progress.js";
@@ -63,6 +64,7 @@ interface ConfigFileShape extends RelayConfigFile {
   maxProgressMessageChars?: number;
   approvalGates?: ApprovalGateConfig;
   communicationDiagnostics?: CommunicationDiagnosticsConfigInput;
+  skills?: RemoteSkillConfig;
   discord?: DiscordRelayConfig & LegacyMessengerFileShape;
   slack?: SlackRelayConfig & LegacyMessengerFileShape;
 }
@@ -389,6 +391,19 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     config: fileConfig?.relay?.communicationDiagnostics ?? fileConfig?.communicationDiagnostics,
     redactionPatterns,
   });
+  const baseSkillsConfig = fileConfig?.relay?.skills ?? fileConfig?.skills;
+  const skills: RemoteSkillConfig | undefined = baseSkillsConfig || process.env.PI_RELAY_SKILLS_ENABLED !== undefined
+    ? {
+      ...baseSkillsConfig,
+      enabled: parseBoolean(process.env.PI_RELAY_SKILLS_ENABLED, baseSkillsConfig?.enabled),
+      allow: parseStringList(process.env.PI_RELAY_SKILLS_ALLOW) ?? baseSkillsConfig?.allow,
+      deny: parseStringList(process.env.PI_RELAY_SKILLS_DENY) ?? baseSkillsConfig?.deny,
+      sources: (parseStringList(process.env.PI_RELAY_SKILLS_SOURCES) as RemoteSkillConfig["sources"] | undefined) ?? baseSkillsConfig?.sources,
+      maxList: parseNumber(process.env.PI_RELAY_SKILLS_MAX_LIST, baseSkillsConfig?.maxList ?? 20),
+      pendingInputExpiryMs: parseNumber(process.env.PI_RELAY_SKILLS_PENDING_INPUT_EXPIRY_MS, baseSkillsConfig?.pendingInputExpiryMs ?? 120_000),
+      requireConfirmation: parseStringList(process.env.PI_RELAY_SKILLS_REQUIRE_CONFIRMATION) ?? baseSkillsConfig?.requireConfirmation,
+    }
+    : undefined;
   const discordInstances = resolveDiscordConfigs(fileConfig, allowedImageMimeTypes);
   const slackInstances = resolveSlackConfigs(fileConfig, allowedImageMimeTypes);
   const discord = discordInstances.default ?? Object.values(discordInstances)[0];
@@ -449,6 +464,7 @@ export async function loadTelegramTunnelConfig(): Promise<ConfigLoadResult> {
     pollingTimeoutSeconds,
     redactionPatterns,
     communicationDiagnostics,
+    skills,
     maxInboundImageBytes,
     maxOutboundImageBytes,
     maxLatestImages,

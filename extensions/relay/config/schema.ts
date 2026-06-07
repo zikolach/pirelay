@@ -3,6 +3,7 @@ import type { DelegationAutonomyLevel, TrustedDelegationPeer } from "../core/age
 import type { ApprovalGateConfig } from "../core/approval-gates.js";
 import type { CommunicationDiagnosticsConfigInput, ResolvedCommunicationDiagnosticsConfig } from "../diagnostics/communication.js";
 import type { MessengerKind, MessengerRef } from "../core/messenger-ref.js";
+import type { RemoteSkillConfig } from "../core/skill-invocation.js";
 
 export interface RelayDefaultsConfig {
   pairingExpiryMs: number;
@@ -24,6 +25,7 @@ export interface RelayMachineConfig {
   brokerPeers: BrokerPeerConfig[];
   approvalGates?: ApprovalGateConfig;
   communicationDiagnostics?: CommunicationDiagnosticsConfigInput;
+  skills?: RemoteSkillConfig;
 }
 
 export interface RelayAgentDelegationConfig {
@@ -99,6 +101,7 @@ export interface RelayConfigFile {
   messengers?: Record<string, Record<string, MessengerInstanceFileConfig>>;
   approvalGates?: ApprovalGateConfig;
   communicationDiagnostics?: CommunicationDiagnosticsConfigInput;
+  skills?: RemoteSkillConfig;
   // Legacy input accepted only by migration/canonicalization.
   botToken?: string;
   TELEGRAM_BOT_TOKEN?: string;

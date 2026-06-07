@@ -309,6 +309,7 @@ function createMockPi() {
       const entry = { type: "custom", customType, data };
       appendedEntries.push(entry);
     }),
+    getCommands: vi.fn(() => Array.from(commands.keys()).map((name) => ({ name, source: name.startsWith("skill:") ? "skill" : "extension" }))),
   };
 
   commands.set("skill:relay", {
@@ -2003,6 +2004,41 @@ describe("PiRelay integration behavior", () => {
     expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(binding.sessionKey);
   });
 
+  it("contains stale local command metadata lookup without masking other route actions", async () => {
+    const config = await createRuntimeConfig("pi-stale-skill-commands-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const registeredRoutes: SessionRoute[] = [];
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route: SessionRoute) => { registeredRoutes.push(route); }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("stale-skill-commands");
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", {}, context);
+    const route = registeredRoutes.at(-1)!;
+
+    expect(route.actions.getSkillCommands?.().map((command) => command.name)).toEqual(["skill:relay"]);
+    expect(pi.api.getCommands).toHaveBeenCalledTimes(1);
+    pi.api.getCommands.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
+    expect(route.actions.getSkillCommands?.()).toEqual([]);
+    expect(pi.api.getCommands).toHaveBeenCalledTimes(2);
+    expect(route.actions.isIdle?.()).toBeUndefined();
+  });
+
   it("converts stale session-bound API failures in route actions", async () => {
     const config = await createRuntimeConfig("pi-stale-route-actions-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
@@ -2033,6 +2069,7 @@ describe("PiRelay integration behavior", () => {
     route.remoteRequester = { channel: "telegram", instanceId: "default", conversationId: "1", userId: "1", sessionKey: route.sessionKey, safeLabel: "Telegram", createdAt: Date.now() };
     pi.api.sendUserMessage.mockImplementationOnce(() => { throw new Error(STALE_EXTENSION_ERROR); });
     expect(() => route.actions.sendUserMessage("hello")).toThrow("The Pi session is unavailable");
+    expect(pi.api.sendUserMessage).toHaveBeenCalledWith("hello", undefined);
     expect(route.remoteRequester).toBeUndefined();
     expect(route.remoteRequesterPendingTurn).toBe(false);
     expect(route.actions.isIdle?.()).toBeUndefined();
@@ -2137,6 +2174,9 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", {}, first.context);
     const staleRoute = registeredRoutes.at(-1)!;
     await pi.emit("session_start", {}, second.context);
+    pi.api.getCommands.mockClear();
+    expect(staleRoute.actions.getSkillCommands?.()).toEqual([]);
+    expect(pi.api.getCommands).not.toHaveBeenCalled();
 
     let closeCount = 0;
     let customRendered = false;

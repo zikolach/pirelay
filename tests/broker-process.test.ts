@@ -305,6 +305,70 @@ describe("telegram broker process", () => {
     expect(updated.channelBindings?.["discord:discord-session:memory"]).toEqual(discordBinding);
   });
 
+  it("reports paired broker-owned chats as offline instead of unpaired when no live route is registered", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-offline-text-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const testIngressSecret = "offline-text-secret";
+    const binding = {
+      sessionKey: "broker-offline-text:memory",
+      sessionId: "broker-offline-text",
+      sessionLabel: "Broker Offline Text",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+        PI_RELAY_BROKER_TEST_INGRESS_SECRET: testIngressSecret,
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret,
+        message: telegramMessage("hello while route is reconnecting", binding),
+      });
+    } finally {
+      client.close();
+    }
+
+    const texts = parseOutbox(await readFile(outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts).toEqual(["The selected Pi session is currently offline. Resume it locally, then try again."]);
+  });
+
   it("delivers broker-owned full-output chunks before structured answer actions", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -601,6 +665,113 @@ describe("telegram broker process", () => {
     expect(document?.document.text).not.toContain("shhh-secret");
   });
 
+  it("delivers broker-owned idle Telegram /skill without queued-mode acknowledgement", async () => {
+    const harness = await startBrokerSkillHarness("followUp", false);
+    try {
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github inspect repo", harness.binding),
+      });
+    } finally {
+      harness.client.close();
+    }
+
+    expect(harness.deliveries).toHaveLength(1);
+    expect(harness.deliveries[0]).toMatchObject({
+      text: "Use the local Pi skill /skill:github with this input:\n\ninspect repo",
+    });
+    const texts = parseOutbox(await readFile(harness.outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts.at(-1)).toContain("invocation accepted.");
+    expect(texts.at(-1)).not.toContain("(followUp)");
+    expect(texts.at(-1)).not.toContain("(steer)");
+  });
+
+  it("queues broker-owned busy Telegram /skill delivery with the configured mode", async () => {
+    const harness = await startBrokerSkillHarness("steer", true);
+    try {
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github inspect repo", harness.binding),
+      });
+    } finally {
+      harness.client.close();
+    }
+
+    expect(harness.deliveries).toHaveLength(1);
+    expect(harness.deliveries[0]).toMatchObject({
+      text: "Use the local Pi skill /skill:github with this input:\n\ninspect repo",
+      deliverAs: "steer",
+    });
+    const texts = parseOutbox(await readFile(harness.outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts.at(-1)).toContain("invocation accepted (steer)");
+  });
+
+  it("queues broker-owned busy Telegram pending skill input with the configured mode", async () => {
+    const harness = await startBrokerSkillHarness("followUp", true);
+    try {
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github", harness.binding, 1),
+      });
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("inspect later", harness.binding, 2),
+      });
+    } finally {
+      harness.client.close();
+    }
+
+    expect(harness.deliveries).toHaveLength(1);
+    expect(harness.deliveries[0]).toMatchObject({
+      text: "Use the local Pi skill /skill:github with this input:\n\ninspect later",
+      deliverAs: "followUp",
+    });
+    const texts = parseOutbox(await readFile(harness.outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts).toContain("Send input for skill github as your next message, or send /skill cancel.");
+    expect(texts.at(-1)).toContain("invocation accepted (followUp)");
+  });
+
+  it("does not fetch broker skill metadata while remote skills are disabled", async () => {
+    const harness = await startBrokerSkillHarness("followUp", false, { enabled: false });
+    try {
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github inspect repo", harness.binding, 1),
+      });
+      await harness.client.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret: harness.testIngressSecret,
+        message: telegramMessage("/skill github", harness.binding, 2),
+      });
+    } finally {
+      harness.client.close();
+    }
+
+    expect(harness.counters.skillMetadataRequests).toBe(0);
+    expect(harness.deliveries).toHaveLength(0);
+    const texts = parseOutbox(await readFile(harness.outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
+  });
+
   it("rejects pending broker client requests when the socket closes cleanly", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -621,6 +792,97 @@ describe("telegram broker process", () => {
     }
   });
 });
+
+async function startBrokerSkillHarness(busyDeliveryMode: "followUp" | "steer", busy: boolean, skills: { enabled: boolean; allow?: string[] } = { enabled: true, allow: ["github"] }) {
+  const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-skill-"));
+  tempDirs.push(stateDir);
+  const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+  const testIngressSecret = `test-secret-${busyDeliveryMode}-${busy ? "busy" : "idle"}`;
+  const binding = {
+    sessionKey: `broker-skill-${busyDeliveryMode}-${busy ? "busy" : "idle"}:memory`,
+    sessionId: `broker-skill-${busyDeliveryMode}-${busy ? "busy" : "idle"}`,
+    sessionLabel: `Broker Skill ${busyDeliveryMode} ${busy ? "busy" : "idle"}`,
+    chatId: 123,
+    userId: 456,
+    boundAt: new Date(0).toISOString(),
+    lastSeenAt: new Date(0).toISOString(),
+    status: "active",
+  };
+  await writeFile(join(stateDir, "state.json"), JSON.stringify({
+    setup: {
+      botId: 1,
+      botUsername: "dummy_bot",
+      botDisplayName: "Dummy",
+      validatedAt: new Date(0).toISOString(),
+    },
+    pendingPairings: {},
+    bindings: { [binding.sessionKey]: binding },
+    channelBindings: {},
+  }));
+
+  const socketPath = join(stateDir, "broker.sock");
+  const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+  const child = spawn(process.execPath, [brokerPath], {
+    env: {
+      ...process.env,
+      TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+      TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+        botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+        stateDir,
+        pollingTimeoutSeconds: 1,
+        busyDeliveryMode,
+        skills,
+      }),
+      TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+      PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      PI_RELAY_BROKER_TEST_INGRESS_SECRET: testIngressSecret,
+    },
+  });
+  children.push(child);
+  await waitForSocket(socketPath, child);
+
+  const deliveries: Record<string, unknown>[] = [];
+  const counters = { skillMetadataRequests: 0 };
+  const client = await openBrokerClient(socketPath, (payload) => {
+    switch (payload.action) {
+      case "getSkillCommands":
+        counters.skillMetadataRequests += 1;
+        return [{ name: "github", sourceInfo: { scope: "user" } }];
+      case "deliverPrompt":
+        deliveries.push(payload);
+        return busy ? { deliverAs: payload.deliverAs } : {};
+      case "appendAudit":
+        return true;
+      default:
+        throw new Error(`Unexpected broker request: ${String(payload.action)}`);
+    }
+  });
+  await client.request({
+    type: "request",
+    action: "registerRoute",
+    clientId: "test-client",
+    route: {
+      sessionKey: binding.sessionKey,
+      sessionId: binding.sessionId,
+      sessionLabel: binding.sessionLabel,
+      online: true,
+      busy,
+      notification: { lastStatus: busy ? "running" : "idle" },
+      binding,
+    },
+  });
+  return { binding, client, deliveries, outboxPath, testIngressSecret, counters };
+}
+
+function telegramMessage(text: string, binding: { chatId: number; userId: number }, updateId = 1) {
+  return {
+    updateId,
+    messageId: updateId,
+    text,
+    chat: { id: binding.chatId, type: "private" },
+    user: { id: binding.userId, username: "owner" },
+  };
+}
 
 interface TestOutboxMessage {
   method: "sendMessage";
@@ -769,7 +1031,7 @@ function sendBrokerRequest(socketPath: string, payload: Record<string, unknown>)
   });
 }
 
-async function openBrokerClient(socketPath: string): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): void }> {
+async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: Record<string, unknown>) => unknown | Promise<unknown>): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): void }> {
   const socket = net.createConnection(socketPath);
   socket.setEncoding("utf8");
   await new Promise<void>((resolve, reject) => {
@@ -786,8 +1048,14 @@ async function openBrokerClient(socketPath: string): Promise<{ request(payload: 
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       if (line) {
-        const response = JSON.parse(line) as { requestId?: string; ok?: boolean; result?: unknown; error?: string };
+        const response = JSON.parse(line) as { type?: string; requestId?: string; ok?: boolean; result?: unknown; error?: string } & Record<string, unknown>;
         const requestId = response.requestId;
+        if (response.type === "request" && requestId && onBrokerRequest) {
+          void Promise.resolve(onBrokerRequest(response))
+            .then((result) => socket.write(`${JSON.stringify({ type: "response", requestId, ok: true, result })}\n`))
+            .catch((error) => socket.write(`${JSON.stringify({ type: "response", requestId, ok: false, error: error instanceof Error ? error.message : String(error) })}\n`));
+          continue;
+        }
         const waiter = requestId ? pending.get(requestId) : undefined;
         if (waiter) {
           pending.delete(requestId!);

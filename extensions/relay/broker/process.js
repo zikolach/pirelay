@@ -23,6 +23,7 @@ const [
   telegramRouteBindingModule,
   approvalGatesModule,
   communicationDiagnosticsModule,
+  skillInvocationModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
   jiti.import('../adapters/telegram/actions.ts'),
@@ -41,6 +42,7 @@ const [
   jiti.import('./telegram-route-binding.ts'),
   jiti.import('../core/approval-gates.ts'),
   jiti.import('../diagnostics/communication.ts'),
+  jiti.import('../core/skill-invocation.ts'),
 ]);
 
 function requiredFunction(module, modulePath, exportName) {
@@ -131,6 +133,13 @@ const routeWithPersistedTelegramBinding = requiredFunction(telegramRouteBindingM
 const parseApprovalActionData = requiredFunction(approvalGatesModule, './approval-gates.ts', 'parseApprovalActionData');
 const parseApprovalTextCommand = requiredFunction(approvalGatesModule, './approval-gates.ts', 'parseApprovalTextCommand');
 const createCommunicationDiagnosticsLogger = requiredFunction(communicationDiagnosticsModule, './communication-diagnostics.ts', 'createCommunicationDiagnosticsLogger');
+const buildSkillInvocationPrompt = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'buildSkillInvocationPrompt');
+const filterRemoteSkills = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'filterRemoteSkills');
+const formatSkillList = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'formatSkillList');
+const isPendingSkillInputExpired = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'isPendingSkillInputExpired');
+const pendingSkillInputKey = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'pendingSkillInputKey');
+const resolveRemoteSkill = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'resolveRemoteSkill');
+const skillConfigForRelay = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'skillConfigForRelay');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
@@ -138,6 +147,7 @@ const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}'
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 const testTelegramOutboxPath = testTelegramOutboxPathFromEnv(process.env);
+const testIngressSecret = process.env.PI_RELAY_BROKER_TEST_INGRESS_SECRET;
 const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
 function recordDiagnostic(event) {
   if (!diagnosticsLogger.config?.enabled) return;
@@ -161,6 +171,7 @@ const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
 const answerFlows = new Map();
 const pendingCustomAnswers = new Map();
+const pendingSkillInputs = new Map();
 const pendingAnswerAmbiguities = new Map();
 const activityIndicators = new Map();
 const progressStates = new Map();
@@ -890,6 +901,87 @@ function takePendingCustomAnswer(route, user) {
   if (!pending) return undefined;
   pendingCustomAnswers.delete(key);
   return pending;
+}
+
+function getPendingSkillKey(route, chatId, userId) {
+  return pendingSkillInputKey({ channel: 'telegram', conversationId: String(chatId), userId: String(userId), sessionKey: route.sessionKey });
+}
+
+function setPendingSkillInput(route, chatId, userId, skillName) {
+  pendingSkillInputs.set(getPendingSkillKey(route, chatId, userId), {
+    channel: 'telegram',
+    conversationId: String(chatId),
+    userId: String(userId),
+    sessionKey: route.sessionKey,
+    skillName,
+    expiresAt: Date.now() + skillConfigForRelay(config).pendingInputExpiryMs,
+  });
+}
+
+function takePendingSkillInput(route, chatId, userId) {
+  const key = getPendingSkillKey(route, chatId, userId);
+  const pending = pendingSkillInputs.get(key);
+  if (!pending) return undefined;
+  pendingSkillInputs.delete(key);
+  return pending;
+}
+
+async function skillCommandsForRoute(route) {
+  const response = await requestClient(route, 'getSkillCommands');
+  return Array.isArray(response) ? response : [];
+}
+
+async function sendSkillList(route, chatId) {
+  const skillConfig = skillConfigForRelay(config);
+  if (!skillConfig.enabled) {
+    await sendPlainText(chatId, 'Remote skill invocation is disabled.');
+    return;
+  }
+  let commands;
+  try {
+    commands = await skillCommandsForRoute(route);
+  } catch {
+    await sendPlainText(chatId, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
+    return;
+  }
+  const skills = filterRemoteSkills(commands, skillConfig);
+  if (skills.length === 0) {
+    await sendPlainText(chatId, 'No remote-invokable skills are available for this session.');
+    return;
+  }
+  await sendPlainText(chatId, formatSkillList(skills));
+}
+
+async function invokeSkillForTelegram(route, message, skillName, input) {
+  const skillConfig = skillConfigForRelay(config);
+  if (!skillConfig.enabled) {
+    await sendPlainText(message.chat.id, 'Remote skill invocation is disabled.');
+    return;
+  }
+  let commands;
+  try {
+    commands = await skillCommandsForRoute(route);
+  } catch {
+    await sendPlainText(message.chat.id, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
+    return;
+  }
+  const resolved = resolveRemoteSkill(skillName, commands, skillConfig);
+  if (resolved.kind !== 'ok') {
+    await sendPlainText(message.chat.id, resolved.message);
+    return;
+  }
+  let deliveryResult;
+  try {
+    deliveryResult = await requestClient(route, 'deliverPrompt', { text: buildSkillInvocationPrompt(resolved.skill.name, input), deliverAs: config.busyDeliveryMode, requester: requesterForMessage(route, message) });
+  } catch {
+    await sendPlainText(message.chat.id, 'Could not deliver the skill invocation to Pi. The session may be offline or unavailable.');
+    return;
+  }
+  const deliveredAs = deliveryResult && typeof deliveryResult === 'object' && (deliveryResult.deliverAs === 'steer' || deliveryResult.deliverAs === 'followUp')
+    ? deliveryResult.deliverAs
+    : undefined;
+  await requestClient(route, 'appendAudit', { message: `Telegram invoked remote skill ${resolved.skill.name}.` }).catch(() => undefined);
+  await sendPlainText(message.chat.id, `Skill \`${resolved.skill.name}\` invocation accepted${deliveredAs ? ` (${deliveredAs})` : ''}.`);
 }
 
 function createAmbiguityToken() {
@@ -1767,6 +1859,52 @@ async function handleAuthorizedCommand(message, route, command, args) {
       await sendPlainText(message.chat.id, route.notification?.lastAssistantText || 'No completed assistant output is available yet for this session.');
       return;
     }
+    case 'cancel': {
+      takePendingSkillInput(route, message.chat.id, message.user.id);
+      await sendPlainText(message.chat.id, 'Skill input cancelled.');
+      return;
+    }
+    case 'skills': {
+      await sendSkillList(route, message.chat.id);
+      return;
+    }
+    case 'skill': {
+      const [rawName, ...rest] = String(args || '').trim().split(/\s+/);
+      if (!rawName) {
+        await sendPlainText(message.chat.id, 'Usage: /skill <name> [input]. Use /skills to list available skills.');
+        return;
+      }
+      if (rawName.toLowerCase() === 'cancel') {
+        takePendingSkillInput(route, message.chat.id, message.user.id);
+        await sendPlainText(message.chat.id, 'Skill input cancelled.');
+        return;
+      }
+      const input = rest.join(' ').trim();
+      const skillConfig = skillConfigForRelay(config);
+      if (!skillConfig.enabled) {
+        await sendPlainText(message.chat.id, 'Remote skill invocation is disabled.');
+        return;
+      }
+      if (!input) {
+        let commands;
+        try {
+          commands = await skillCommandsForRoute(route);
+        } catch {
+          await sendPlainText(message.chat.id, 'Could not load remote skill metadata for this session. The session may be offline or unavailable.');
+          return;
+        }
+        const resolved = resolveRemoteSkill(rawName, commands, skillConfig);
+        if (resolved.kind !== 'ok') {
+          await sendPlainText(message.chat.id, resolved.message);
+          return;
+        }
+        setPendingSkillInput(route, message.chat.id, message.user.id, resolved.skill.name);
+        await sendPlainText(message.chat.id, `Send input for skill ${resolved.skill.name} as your next message, or send /skill cancel.`);
+        return;
+      }
+      await invokeSkillForTelegram(route, message, rawName, input);
+      return;
+    }
     case 'images': {
       await sendLatestImages(message, route);
       return;
@@ -1873,11 +2011,28 @@ async function handleAuthorizedCommand(message, route, command, args) {
 
 async function handleAuthorizedText(message, route) {
   if (!route?.binding) {
-    await sendPlainText(message.chat.id, 'This chat is not paired to an active Pi session. Run /relay connect telegram locally first.');
+    const persisted = await getPersistedBindingsForChat(message.chat.id, message.user.id);
+    if (!persisted) {
+      await sendPlainText(message.chat.id, 'Relay state is temporarily unavailable; retry shortly.');
+    } else if (persisted.length > 0) {
+      await sendPlainText(message.chat.id, 'The selected Pi session is currently offline. Resume it locally, then try again.');
+    } else {
+      await sendPlainText(message.chat.id, 'This chat is not paired to an active Pi session. Run /relay connect telegram locally first.');
+    }
     return;
   }
   if (route.binding.paused) {
     await sendPlainText(message.chat.id, 'The tunnel is paused. Use /resume first.');
+    return;
+  }
+
+  const pendingSkill = takePendingSkillInput(route, message.chat.id, message.user.id);
+  if (pendingSkill) {
+    if (isPendingSkillInputExpired(pendingSkill)) {
+      await sendPlainText(message.chat.id, 'That skill input request expired. Use /skill <name> again.');
+      return;
+    }
+    await invokeSkillForTelegram(route, message, pendingSkill.skillName, message.text);
     return;
   }
 
@@ -2453,6 +2608,15 @@ async function handleClientRequest(socket, message) {
           );
         }
         recordDiagnostic({ component: 'broker', event: 'send_to_bound_chat', outcome: 'sent', ...routeDiagnosticFields(route), details: { textLength: String((sentCompletedFullOutput ? route.notification?.lastAssistantText : message.text) || '').length, terminalStatus: message.terminalStatus } });
+        respond(true, true);
+        return;
+      }
+      case 'testProcessInbound': {
+        if (!skipPolling || !testIngressSecret || message.testIngressSecret !== testIngressSecret) {
+          respond(false, undefined, 'Test inbound processing is unavailable.');
+          return;
+        }
+        await processInbound(message.message);
         respond(true, true);
         return;
       }

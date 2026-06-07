@@ -206,6 +206,15 @@ export async function routeImageByPathSafely(route: SessionRoute, relativePath: 
   }
 }
 
+export function routeSkillCommandsSafely(route: SessionRoute): ReturnType<NonNullable<SessionRoute["actions"]["getSkillCommands"]>> {
+  try {
+    return route.actions.getSkillCommands?.() ?? [];
+  } catch (error) {
+    if (isRouteUnavailableError(error)) return [];
+    throw error;
+  }
+}
+
 export function isStaleExtensionReferenceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();

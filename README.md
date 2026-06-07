@@ -258,6 +258,9 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 | recent activity | `/recent` or `/activity` | `relay recent` or `relay activity` | `/relay recent` or `/relay activity` |
 | latest summary | `/summary` | `relay summary` | `/relay summary` |
 | full output | `/full` | `relay full` | `/relay full` |
+| list allowed local skills | `/skills` | `relay skills` | `/relay skills` |
+| invoke allowed local skill | `/skill <name> [input]` | `relay skill <name> [input]` | `/relay skill <name> [input]` |
+| cancel pending skill input | `/cancel` or `/skill cancel` | `relay cancel` or `relay skill cancel` | `/relay cancel` |
 | latest images | `/images` | `relay images` | `/relay images` |
 | send workspace image | `/send-image <path>` | `relay send-image <path>` | `/relay send-image <path>` |
 | send safe workspace file to requester | `/send-file <path> [caption]` | `relay send-file <path> [caption]` | `/relay send-file <path> [caption]` |
@@ -276,6 +279,8 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 Remote `/disconnect` is scoped to the requesting chat/conversation only: it revokes that Telegram, Discord, or Slack binding and suppresses future session output/buttons there, without disconnecting other messengers that remain paired to the same Pi session. Local `/relay disconnect` is broader and disconnects the current session from all paired messenger bindings.
 
 Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
+
+Remote skill invocation is opt-in via `skills.enabled`. When enabled, `/skills` lists allowed local Pi skills from the live session command registry, and `/skill <name> [input]` asks Pi to use that skill. If input is omitted, the next message from the same authorized requester is used as skill input; `/cancel` or `/skill cancel` cancels the pending input.
 
 Approval gates are disabled by default and act only as remote confirmation guardrails for sensitive Pi tool calls reached from remote messenger-owned turns, such as `git push`, package publishing, destructive shell commands, or protected file writes. Configure `approvalGates.enabled: true` plus explicit rules; matching remote operations pause and ask the active authorized requester to Approve once, Approve for session, or Deny. Local Pi prompts never require messenger approval. Timeout, stale/revoked/paused bindings, offline sessions, or delivery failures block remote gated operations by default. See `docs/config.md` for examples.
 

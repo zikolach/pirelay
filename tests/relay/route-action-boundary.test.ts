@@ -25,6 +25,7 @@ describe("route-action safety module boundaries", () => {
       "routeWorkspaceRootSafely",
       "latestRouteImagesSafely",
       "routeImageByPathSafely",
+      "routeSkillCommandsSafely",
       "probeRouteAvailability",
     ]) {
       expect(source).toContain(helper);

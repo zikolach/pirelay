@@ -2,3 +2,4 @@ node_modules/
 .pi/
 trash/
 run-slack-live-test.sh
+.idea/
