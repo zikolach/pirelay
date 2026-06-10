@@ -432,6 +432,46 @@ describe("PiRelay integration behavior", () => {
     expect(statuses).not.toContainEqual({ key: "relay", value: "tg ◇" });
   });
 
+  it("clears Telegram sync errors after a later successful registration", async () => {
+    const config = await createRuntimeConfig("pi-telegram-runtime-error-clear-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn()
+        .mockRejectedValueOnce(new Error("broker unavailable"))
+        .mockResolvedValue(undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, statuses } = createMockContext("telegram-runtime-error-clear");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    await pi.emit("session_start", {}, context);
+
+    expect(statuses).toContainEqual({ key: "relay-sync", value: "telegram sync error: broker unavailable" });
+    expect(statuses).toContainEqual({ key: "relay-sync", value: "" });
+  });
+
   it("bypasses approval gates for local-only tool calls", async () => {
     const config = await createRuntimeConfig("pi-approval-local-");
     await writeFile(config.configPath!, JSON.stringify({

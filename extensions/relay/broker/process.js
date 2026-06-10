@@ -1,5 +1,6 @@
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
+import lockfile from 'proper-lockfile';
 import { createJiti } from '@mariozechner/jiti';
 import { Api, GrammyError, HttpError, InputFile } from 'grammy';
 import { appendTestTelegramOutbox, testTelegramOutboxPathFromEnv } from './test-telegram-outbox.js';
@@ -556,10 +557,16 @@ async function saveState(state) {
 }
 
 async function updateState(mutator) {
-  const state = await loadState();
-  await mutator(state);
-  await saveState(state);
-  return state;
+  await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
+  const releaseLock = await lockfile.lock(config.stateDir, { realpath: false, stale: 60000, retries: { retries: 10, minTimeout: 10, maxTimeout: 100 } });
+  try {
+    const state = await loadState();
+    await mutator(state);
+    await saveState(state);
+    return state;
+  } finally {
+    await releaseLock();
+  }
 }
 
 async function cleanupExpiredPairings() {

@@ -115,6 +115,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       clientId: this.clientId,
       route: this.serializeRoute(route),
     });
+    route.actions.clearLocalStatus?.("relay-sync");
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
@@ -448,6 +449,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
         clientId: this.clientId,
         route: this.serializeRoute(route),
       });
+      route.actions.clearLocalStatus?.("relay-sync");
     }
   }
 
