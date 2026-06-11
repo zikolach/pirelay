@@ -38,9 +38,12 @@ describe("broker namespace isolation", () => {
     const runtime = new BrokerTunnelRuntime(config(stateDir));
     const firstMessages: Array<Record<string, unknown>> = [];
     const firstServer = await listenJsonBroker(socketPath(runtime), firstMessages);
+    const docsRoute = route("docs-session");
+    docsRoute.actions.clearLocalStatus = vi.fn();
 
-    await runtime.registerRoute(route("docs-session"));
+    await runtime.registerRoute(docsRoute);
     expect(firstMessages.map((message) => message.action)).toContain("registerRoute");
+    vi.mocked(docsRoute.actions.clearLocalStatus).mockClear();
 
     for (const socket of sockets.splice(0)) socket.destroy();
     (runtime as unknown as { socket?: Socket }).socket?.destroy();
@@ -54,6 +57,7 @@ describe("broker namespace isolation", () => {
 
     await waitForCondition(() => secondMessages.some((message) => message.action === "registerRoute"));
     expect(secondMessages.some((message) => (message.route as { sessionKey?: string } | undefined)?.sessionKey === "docs-session")).toBe(true);
+    expect(docsRoute.actions.clearLocalStatus).toHaveBeenCalledWith("relay-sync");
 
     await runtime.stop();
   });

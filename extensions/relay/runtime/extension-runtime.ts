@@ -1021,6 +1021,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     registrations.push(...[...slackRuntimes.values()].map((slack) => slack.registerRoute(route)));
     await Promise.all(registrations);
     const live = liveContextForRoute(route);
+    if (live) clearStatus("relay-sync", live);
     if (live) await refreshRelayStatuses(live).catch((error) => {
       if (isStaleExtensionReferenceError(error)) {
         if (latestContext === live) latestContext = undefined;
@@ -1156,6 +1157,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       await runtime.registerRoute(currentRoute);
       telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: true };
       telegramStarted = true;
+      clearStatus("relay-sync", ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       telegramRuntimeStatus = { enabled: Boolean(config.botToken), started: false, error: message };

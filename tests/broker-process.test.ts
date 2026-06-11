@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import lockfile from "proper-lockfile";
 import { extractStructuredAnswerMetadata } from "../extensions/relay/core/guided-answer.js";
 
 const tempDirs: string[] = [];
@@ -119,6 +120,107 @@ describe("telegram broker process", () => {
 
     const updated = JSON.parse(await readFile(statePath, "utf8")) as { bindings?: Record<string, { status?: string; revokedAt?: string; lastSeenAt?: string }> };
     expect(updated.bindings?.["revoked-session:memory"]).toMatchObject({ status: "revoked", revokedAt: revokedBinding.revokedAt, lastSeenAt: revokedBinding.lastSeenAt });
+  });
+
+  it("preserves concurrent store updates while registering routes", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    const setup = {
+      botId: 1,
+      botUsername: "dummy_bot",
+      botDisplayName: "Dummy",
+      validatedAt: new Date(0).toISOString(),
+    };
+    const existingBinding = {
+      sessionKey: "existing-session:memory",
+      sessionId: "existing-session",
+      sessionLabel: "Existing",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(1).toISOString(),
+      status: "active",
+    };
+    const concurrentBinding = {
+      sessionKey: "concurrent-session:memory",
+      sessionId: "concurrent-session",
+      sessionLabel: "Concurrent",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(2).toISOString(),
+      status: "active",
+    };
+    await writeFile(statePath, JSON.stringify({
+      setup,
+      pendingPairings: {},
+      bindings: { [existingBinding.sessionKey]: existingBinding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const releaseLock = await lockfile.lock(stateDir, { realpath: false, stale: 60_000 });
+    const registration = sendBrokerRequest(socketPath, {
+      type: "request",
+      requestId: "locked-register-route",
+      action: "registerRoute",
+      clientId: "test-client",
+      route: {
+        sessionKey: "new-session:memory",
+        sessionId: "new-session",
+        sessionLabel: "New",
+        online: true,
+        busy: false,
+        notification: {},
+        binding: {
+          sessionKey: "new-session:memory",
+          sessionId: "new-session",
+          sessionLabel: "New",
+          chatId: 123,
+          userId: 456,
+          boundAt: new Date(0).toISOString(),
+          lastSeenAt: new Date(3).toISOString(),
+        },
+      },
+    });
+    await expect(promiseIsPendingAfterEventLoopTurn(registration)).resolves.toBe(true);
+    const lockedState = JSON.parse(await readFile(statePath, "utf8")) as { bindings?: Record<string, unknown> };
+    expect(lockedState.bindings?.["new-session:memory"]).toBeUndefined();
+    await writeFile(statePath, JSON.stringify({
+      setup,
+      pendingPairings: {},
+      bindings: {
+        [existingBinding.sessionKey]: existingBinding,
+        [concurrentBinding.sessionKey]: concurrentBinding,
+      },
+      channelBindings: {},
+    }));
+    await releaseLock();
+
+    await registration;
+    const updated = JSON.parse(await readFile(statePath, "utf8")) as { bindings?: Record<string, unknown> };
+    expect(Object.keys(updated.bindings ?? {}).sort()).toEqual([
+      concurrentBinding.sessionKey,
+      existingBinding.sessionKey,
+      "new-session:memory",
+    ].sort());
   });
 
   it("does not authorize stale route bindings when broker state is corrupt", async () => {
@@ -902,6 +1004,15 @@ type TestOutboxEntry = TestOutboxMessage | TestOutboxDocument;
 
 function parseOutbox(raw: string): TestOutboxEntry[] {
   return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as TestOutboxEntry);
+}
+
+async function promiseIsPendingAfterEventLoopTurn(promise: Promise<unknown>): Promise<boolean> {
+  const pending = Symbol("pending");
+  const result = await Promise.race([
+    promise.then(() => "settled", () => "settled"),
+    new Promise<typeof pending>((resolve) => setImmediate(() => resolve(pending))),
+  ]);
+  return result === pending;
 }
 
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
