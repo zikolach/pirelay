@@ -2,7 +2,7 @@
 
 This project publishes PiRelay as the npm package `pirelay`.
 
-Publishing is currently **manual**. Pushing or merging to GitHub `main` does not publish to npm because this repository does not currently define a release workflow under `.github/workflows`.
+Publishing is automated from GitHub Releases through `.github/workflows/publish.yml`. Pushing or merging to GitHub `main` does not publish to npm; creating a published GitHub Release for a tag does.
 
 ## Semantic versioning
 
@@ -99,10 +99,22 @@ pi -e npm:pirelay@beta
 
 ## Publish
 
-For the current unscoped public package:
+### Automated GitHub Release publish
+
+The repository publish workflow runs when a GitHub Release is published. It requires a repository Actions secret named `NPM_TOKEN` with npm publish rights.
+
+For the first public publish of the unscoped package, the workflow uses:
 
 ```bash
-npm publish
+npm publish --provenance --access public
+```
+
+### Manual fallback
+
+For a local fallback from an authenticated maintainer machine:
+
+```bash
+npm publish --access public
 ```
 
 `prepublishOnly` runs `npm run typecheck && npm test` automatically before npm uploads the package.
@@ -110,7 +122,7 @@ npm publish
 If npm asks for two-factor authentication, enter the one-time password or pass it explicitly:
 
 ```bash
-npm publish --otp=<code>
+npm publish --otp=<code> --access public
 ```
 
 ## Verify after publishing
