@@ -1,4 +1,4 @@
-name: pirelay
+name: publish @zylab/pirelay
 
 on:
   release:
