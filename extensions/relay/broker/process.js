@@ -558,7 +558,7 @@ async function saveState(state) {
 
 async function updateState(mutator) {
   await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
-  const releaseLock = await lockfile.lock(config.stateDir, { realpath: false, stale: 60000, retries: { retries: 10, minTimeout: 10, maxTimeout: 100 } });
+  const releaseLock = await lockfile.lock(config.stateDir, { realpath: false, stale: 60_000, retries: { retries: 10, minTimeout: 10, maxTimeout: 100 } });
   try {
     const state = await loadState();
     await mutator(state);

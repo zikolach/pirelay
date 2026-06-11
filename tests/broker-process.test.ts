@@ -200,7 +200,9 @@ describe("telegram broker process", () => {
         },
       },
     });
-    await sleep(150);
+    await expect(promiseIsPendingAfterEventLoopTurn(registration)).resolves.toBe(true);
+    const lockedState = JSON.parse(await readFile(statePath, "utf8")) as { bindings?: Record<string, unknown> };
+    expect(lockedState.bindings?.["new-session:memory"]).toBeUndefined();
     await writeFile(statePath, JSON.stringify({
       setup,
       pendingPairings: {},
@@ -1004,8 +1006,13 @@ function parseOutbox(raw: string): TestOutboxEntry[] {
   return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as TestOutboxEntry);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function promiseIsPendingAfterEventLoopTurn(promise: Promise<unknown>): Promise<boolean> {
+  const pending = Symbol("pending");
+  const result = await Promise.race([
+    promise.then(() => "settled", () => "settled"),
+    new Promise<typeof pending>((resolve) => setImmediate(() => resolve(pending))),
+  ]);
+  return result === pending;
 }
 
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
