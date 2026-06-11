@@ -1,6 +1,6 @@
 # Releasing to npm
 
-This project publishes PiRelay as the npm package `pirelay`.
+This project publishes PiRelay as the npm package `@zylab/pirelay`.
 
 Publishing is automated from GitHub Releases through `.github/workflows/publish.yml`. Pushing or merging to GitHub `main` does not publish to npm; creating a published GitHub Release for a tag does.
 
@@ -53,7 +53,7 @@ Example resulting version:
 Users can install the beta explicitly:
 
 ```bash
-pi -e npm:pirelay@beta
+pi -e npm:@zylab/pirelay@beta
 ```
 
 ## Before publishing
@@ -68,7 +68,7 @@ pi -e npm:pirelay@beta
 2. Confirm the target package name is still available or points to this package:
 
    ```bash
-   npm view pirelay version
+   npm view @zylab/pirelay version
    ```
 
    A first-time publish may return `E404`; that is expected if the package has not been published yet.
@@ -103,7 +103,7 @@ pi -e npm:pirelay@beta
 
 The repository publish workflow runs when a GitHub Release is published. It requires a repository Actions secret named `NPM_TOKEN` with npm publish rights.
 
-For the first public publish of the unscoped package, the workflow uses:
+For the first public publish of the scoped package, the workflow uses:
 
 ```bash
 npm publish --provenance --access public
@@ -130,7 +130,7 @@ npm publish --otp=<code> --access public
 Install or run the exact published version through Pi:
 
 ```bash
-pi -e npm:pirelay@0.1.0
+pi -e npm:@zylab/pirelay@0.1.0
 ```
 
 For a later release, replace `0.1.0` with the version that was just published.
@@ -138,16 +138,12 @@ For a later release, replace `0.1.0` with the version that was just published.
 If a bad version is published, do not overwrite it. Deprecate the affected version and publish a fixed patch release:
 
 ```bash
-npm deprecate pirelay@<bad-version> "Use a newer patch version."
+npm deprecate @zylab/pirelay@<bad-version> "Use a newer patch version."
 ```
 
-## Future release automation
+## Release automation authentication
 
-Automatic npm publishing can be added later with GitHub Actions, but it should be a separate explicit change. Prefer publishing from signed/approved git tags or GitHub releases, not every push to `main`.
-
-Recommended authentication options:
+The GitHub Actions workflow publishes from GitHub Releases. Recommended authentication options:
 
 - npm Trusted Publishing, if available for the repository
-- a narrowly scoped `NPM_TOKEN` GitHub secret
-
-Until such a workflow exists, `npm publish` from an authenticated maintainer machine is the release mechanism.
+- a narrowly scoped `NPM_TOKEN` GitHub Actions secret with publish rights

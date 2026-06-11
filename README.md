@@ -6,7 +6,7 @@
 
 It pairs Telegram, Discord, or Slack chats with the exact Pi session you are using, then lets you monitor progress, receive completion notifications, and send prompts or control commands back into that same local Pi session.
 
-The npm package is `pirelay`. The canonical Pi command family is `/relay ...`; the old `/telegram-tunnel ...` namespace has been removed.
+The npm package is `@zylab/pirelay`. The canonical Pi command family is `/relay ...`; the old `/telegram-tunnel ...` namespace has been removed.
 
 ## What PiRelay does
 
@@ -100,7 +100,7 @@ Discord and Slack still document text prefixes first because native slash comman
 Install from npm when available:
 
 ```bash
-pi install npm:pirelay
+pi install npm:@zylab/pirelay
 ```
 
 Install from GitHub or a local checkout during development:
@@ -113,7 +113,7 @@ pi install /absolute/path/to/pirelay
 For a one-off run without adding it to settings:
 
 ```bash
-pi -e npm:pirelay
+pi -e npm:@zylab/pirelay
 ```
 
 ## Quick start
