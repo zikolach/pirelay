@@ -562,7 +562,7 @@ async function updateState(mutator) {
   const previous = stateUpdateQueue;
   let releaseQueue;
   const current = new Promise((resolve) => { releaseQueue = resolve; });
-  stateUpdateQueue = previous.then(() => current, () => current);
+  stateUpdateQueue = current;
   await previous.catch(() => undefined);
 
   try {
