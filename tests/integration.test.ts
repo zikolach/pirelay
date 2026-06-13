@@ -2860,6 +2860,15 @@ describe("PiRelay integration behavior", () => {
     const route = [...registeredRoutes.values()][0]!;
     await pi.emit("agent_start", {}, context);
     await pi.emit("message_update", {
+      message: { role: "assistant", content: [{ type: "text", text: "Visible draft without stream metadata." }] },
+    }, context);
+    await pi.emit("message_update", {
+      message: { role: "assistant", content: [{ type: "text", text: "Visible draft with partial stream metadata." }] },
+      assistantMessageEvent: {},
+    }, context);
+    expect(route.notification.progressEvent).toMatchObject({ kind: "lifecycle", text: "Pi task started" });
+
+    await pi.emit("message_update", {
       message: {
         role: "assistant",
         content: [
