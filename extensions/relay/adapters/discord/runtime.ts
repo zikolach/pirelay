@@ -1468,10 +1468,7 @@ export class DiscordRuntime {
       return;
     }
     const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
-    if (!shouldSendProgressActivity(mode, event)) {
-      this.clearProgressState(route);
-      return;
-    }
+    if (!shouldSendProgressActivity(mode, event)) return;
     let state = this.progressStates.get(key);
     if (!state) {
       state = { pending: [] };

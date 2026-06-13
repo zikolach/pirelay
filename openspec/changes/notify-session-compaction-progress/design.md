@@ -2,7 +2,7 @@
 
 Pi exposes compaction to extensions through `session_before_compact` and `session_compact`. `session_before_compact` fires for manual compaction and auto-compaction, including threshold and overflow paths, but it does not expose the compaction reason. `session_compact` fires after a compaction entry is successfully appended.
 
-PiRelay already tracks per-route progress through `SessionRoute.notification.progressEvent` and adapter/broker delivery loops. Progress modes are binding-specific: `quiet`, `normal`, `verbose`, and `completionOnly`. Existing non-terminal activity is generally delivered only for normal and verbose, while terminal output is still delivered for completion-only. This change needs a small exception: compaction lifecycle notifications should be visible in every progress mode except quiet.
+PiRelay already tracks per-route progress through `SessionRoute.notification.progressEvent` and adapter/broker delivery loops. Progress modes are binding-specific: `quiet`, `normal`, `verbose`, and `completion-only`. Existing non-terminal activity is generally delivered only for normal and verbose, while terminal output is still delivered for completion-only. This change needs a small exception: compaction lifecycle notifications should be visible in every progress mode except quiet.
 
 ## Goals / Non-Goals
 

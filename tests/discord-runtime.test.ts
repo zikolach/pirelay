@@ -188,6 +188,40 @@ describe("DiscordRuntime", () => {
     expect(betaOperations.messages).toHaveLength(messageCount);
   });
 
+  it("keeps queued Discord progress when a suppressed assistant update arrives", async () => {
+    const cfg = await config();
+    cfg.progressIntervalMs = 1;
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route().route;
+    session.notification.lastStatus = "running";
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "default",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    });
+
+    await runtime.start();
+
+    session.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Running tests", at: Date.now() };
+    await runtime.registerRoute(session);
+    session.notification.progressEvent = { id: "assistant-progress", kind: "assistant", text: "Drafting response", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
+
+    expect(ops.messages).toHaveLength(1);
+    expect(ops.messages[0]?.content).toContain("Running tests");
+    expect(ops.messages[0]?.content).not.toContain("Drafting response");
+  });
+
   it("delivers Discord compaction progress in completion-only mode but not quiet", async () => {
     const cfg = await config();
     cfg.progressIntervalMs = 1;

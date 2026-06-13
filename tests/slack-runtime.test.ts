@@ -871,6 +871,28 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts).toHaveLength(0);
   });
 
+  it("keeps queued Slack progress when a suppressed assistant update arrives", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.progressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "normal" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.start();
+
+    testRoute.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Running tests", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    testRoute.notification.progressEvent = { id: "assistant-progress", kind: "assistant", text: "Drafting response", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length === 1);
+
+    expect(operations.posts).toHaveLength(1);
+    expect(operations.posts[0]?.text).toContain("Running tests");
+    expect(operations.posts[0]?.text).not.toContain("Drafting response");
+  });
+
   it("delivers Slack compaction progress in completion-only mode but not quiet", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();
