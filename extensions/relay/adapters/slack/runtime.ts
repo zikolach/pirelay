@@ -9,7 +9,7 @@ import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemote
 import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
-import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendNonTerminalProgress } from "../../notifications/progress.js";
+import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
@@ -1494,12 +1494,13 @@ export class SlackRuntime {
     const event = route.notification.progressEvent;
     const binding = this.recentBindingBySessionKey.get(route.sessionKey);
     const key = this.progressKey(route);
-    if (!key || !event || !binding || binding.paused || route.notification.lastStatus !== "running") {
+    const deliverableEvent = event && (route.notification.lastStatus === "running" || event.kind === "compaction");
+    if (!key || !event || !deliverableEvent || !binding || binding.paused) {
       if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
       return;
     }
     const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
-    if (!shouldSendNonTerminalProgress(mode)) {
+    if (!shouldSendProgressActivity(mode, event)) {
       this.clearProgressState(route);
       return;
     }
@@ -1529,16 +1530,16 @@ export class SlackRuntime {
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeBindingForRoute(route, { includePaused: true, address: bindingAddress(expectedBinding) }) : undefined;
-    if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused || route.notification.lastStatus !== "running") {
+    if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused) {
       this.clearProgressStateByKey(key);
       return;
     }
     const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
-    if (!shouldSendNonTerminalProgress(mode)) {
+    const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
+    if (pending.length === 0) {
       this.clearProgressState(route);
       return;
     }
-    const pending = state.pending.splice(0);
     const text = formatProgressUpdate(pending, this.config);
     if (!text || !this.adapter) return;
     state.lastSentAt = Date.now();

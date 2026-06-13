@@ -87,7 +87,7 @@ import {
   progressIntervalMsFor,
   progressModeFor,
   recentActivityLimit,
-  shouldSendNonTerminalProgress,
+  shouldSendProgressActivity,
 } from "../../notifications/progress.js";
 import {
   buildImagePromptContent,
@@ -671,12 +671,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const event = route.notification.progressEvent;
     const binding = this.outputBindingForRoute(route);
     const key = this.progressKey(route);
-    if (!key || !event || !binding || binding.paused || route.notification.lastStatus !== "running") {
+    const deliverableEvent = event && (route.notification.lastStatus === "running" || event.kind === "compaction");
+    if (!key || !event || !deliverableEvent || !binding || binding.paused) {
       if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
       return;
     }
     const mode = progressModeFor(binding, this.config);
-    if (!shouldSendNonTerminalProgress(mode)) return;
+    if (!shouldSendProgressActivity(mode, event)) return;
     let state = this.progressStates.get(key);
     if (!state) {
       state = { pending: [] };
@@ -700,12 +701,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     state.timer = undefined;
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
-    if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused || route.notification.lastStatus !== "running") {
+    if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused) {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);
       return;
     }
-    const pending = state.pending.splice(0);
+    const mode = progressModeFor(binding, this.config);
+    const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
     const text = formatProgressUpdate(pending, this.config);
     if (!text) return;
     state.lastSentAt = Date.now();

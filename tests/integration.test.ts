@@ -472,6 +472,56 @@ describe("PiRelay integration behavior", () => {
     expect(statuses).toContainEqual({ key: "relay-sync", value: "" });
   });
 
+  it("publishes safe compaction progress from Pi compaction hooks", async () => {
+    const config = await createRuntimeConfig("pi-compaction-progress-hooks-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    let registeredRoute: SessionRoute | undefined;
+    const registerRoute = vi.fn(async (route: SessionRoute) => { registeredRoute = route; });
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute,
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("compaction-progress");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    await pi.emit("session_before_compact", { customInstructions: "SECRET_PROMPT" }, context);
+    await waitFor(() => registerRoute.mock.calls.length >= 2);
+
+    expect(registeredRoute?.notification.progressEvent).toMatchObject({ kind: "compaction", text: "Context compaction started" });
+    expect(JSON.stringify(registeredRoute?.notification.progressEvent)).not.toContain("SECRET_PROMPT");
+
+    await pi.emit("session_compact", { compactionEntry: { summary: "SECRET_SUMMARY" } }, context);
+    await waitFor(() => registerRoute.mock.calls.length >= 3);
+
+    expect(registeredRoute?.notification.progressEvent).toMatchObject({ kind: "compaction", text: "Context compaction completed" });
+    expect(JSON.stringify(registeredRoute?.notification)).not.toContain("SECRET_SUMMARY");
+    expect(registeredRoute?.notification.recentActivity?.map((entry) => entry.text)).toEqual([
+      "Context compaction started",
+      "Context compaction completed",
+    ]);
+  });
+
   it("bypasses approval gates for local-only tool calls", async () => {
     const config = await createRuntimeConfig("pi-approval-local-");
     await writeFile(config.configPath!, JSON.stringify({

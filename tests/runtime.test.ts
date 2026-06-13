@@ -2933,6 +2933,20 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     expect(sent).toEqual([]);
+
+    binding.progressMode = "completionOnly";
+    route.notification.lastStatus = "completed";
+    route.notification.progressEvent = createProgressActivity({ id: "p4", kind: "compaction", text: "Context compaction started", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(sent[0]).toContain("Context compaction started"));
+
+    sent.length = 0;
+    binding.progressMode = "quiet";
+    route.notification.progressEvent = createProgressActivity({ id: "p5", kind: "compaction", text: "Context compaction completed", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    expect(sent).toEqual([]);
   });
 
   it("sends requester-scoped workspace files from Telegram remote commands", async () => {

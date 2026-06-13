@@ -5,6 +5,8 @@ export const DEFAULT_PROGRESS_INTERVAL_MS = 30_000;
 export const DEFAULT_VERBOSE_PROGRESS_INTERVAL_MS = 10_000;
 export const DEFAULT_RECENT_ACTIVITY_LIMIT = 10;
 export const DEFAULT_MAX_PROGRESS_MESSAGE_CHARS = 700;
+export const COMPACTION_PROGRESS_STARTED_TEXT = "Context compaction started";
+export const COMPACTION_PROGRESS_COMPLETED_TEXT = "Context compaction completed";
 
 export const PROGRESS_MODES: ProgressMode[] = ["quiet", "normal", "verbose", "completionOnly"];
 
@@ -29,6 +31,15 @@ export function progressModeFor(binding: Pick<TelegramBindingMetadata, "progress
 
 export function shouldSendNonTerminalProgress(mode: ProgressMode): boolean {
   return mode === "normal" || mode === "verbose";
+}
+
+export function shouldSendCompactionProgress(mode: ProgressMode): boolean {
+  return mode !== "quiet";
+}
+
+export function shouldSendProgressActivity(mode: ProgressMode, entry: Pick<ProgressActivityEntry, "kind">): boolean {
+  if (entry.kind === "compaction") return shouldSendCompactionProgress(mode);
+  return shouldSendNonTerminalProgress(mode);
 }
 
 export function progressIntervalMsFor(mode: ProgressMode, config: Pick<TelegramTunnelConfig, "progressIntervalMs" | "verboseProgressIntervalMs">): number {

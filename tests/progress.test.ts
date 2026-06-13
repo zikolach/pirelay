@@ -8,7 +8,9 @@ import {
   normalizeProgressMode,
   progressIntervalMsFor,
   progressModeFor,
+  shouldSendCompactionProgress,
   shouldSendNonTerminalProgress,
+  shouldSendProgressActivity,
 } from "../extensions/relay/notifications/progress.js";
 import type { SessionNotificationState, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
@@ -35,6 +37,15 @@ describe("progress helpers", () => {
     expect(shouldSendNonTerminalProgress(mode)).toBe(true);
     expect(shouldSendNonTerminalProgress("quiet")).toBe(false);
     expect(progressIntervalMsFor(mode, config)).toBe(5_000);
+  });
+
+  it("sends compaction progress in every mode except quiet", () => {
+    expect(shouldSendCompactionProgress("quiet")).toBe(false);
+    expect(shouldSendCompactionProgress("normal")).toBe(true);
+    expect(shouldSendCompactionProgress("verbose")).toBe(true);
+    expect(shouldSendCompactionProgress("completionOnly")).toBe(true);
+    expect(shouldSendProgressActivity("completionOnly", { kind: "compaction" })).toBe(true);
+    expect(shouldSendProgressActivity("completionOnly", { kind: "tool" })).toBe(false);
   });
 
   it("redacts and bounds progress text", () => {

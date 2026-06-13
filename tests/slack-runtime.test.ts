@@ -871,6 +871,30 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts).toHaveLength(0);
   });
 
+  it("delivers Slack compaction progress in completion-only mode but not quiet", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.progressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "completed";
+    testRoute.notification.progressEvent = { id: "compact-start", kind: "compaction", text: "Context compaction started", at: Date.now() };
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "completionOnly" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
+
+    expect(operations.posts.at(-1)?.text).toContain("Context compaction started");
+
+    operations.posts.length = 0;
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "quiet" } });
+    testRoute.notification.progressEvent = { id: "compact-done", kind: "compaction", text: "Context compaction completed", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+
+    expect(operations.posts).toHaveLength(0);
+  });
+
   it("clears pending Slack progress when the binding is revoked before flush", async () => {
     vi.useFakeTimers();
     const operations = new FakeSlackOperations();

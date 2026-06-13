@@ -4,17 +4,17 @@ import { completeDiscordPairing } from "../channel-pairing.js";
 import { DiscordChannelAdapter, discordMentionsSharedRoomAddressing, discordPairingCommand, discordRelayPairingCommand, isDiscordIdentityAllowed, type DiscordApiOperations } from "./adapter.js";
 import { createDiscordLiveOperations } from "./live-client.js";
 import { TunnelStateStore } from "../../state/tunnel-store.js";
-import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
+import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressActivityEntry, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";
 import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation, buildHelpText } from "../../commands/remote.js";
 import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
-import { displayProgressMode, normalizeProgressMode, progressModeFor } from "../../notifications/progress.js";
+import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
-import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
+import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
 import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
 import { prepareInboundImagePromptContent } from "../../media/index.js";
@@ -73,6 +73,7 @@ export class DiscordRuntime {
   private readonly activeSessionByConversationUser = new Map<string, string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
   private readonly typingStates = new Map<string, { address: ChannelRouteAddress; timer?: ReturnType<typeof setTimeout> }>();
+  private readonly progressStates = new Map<string, { lastEventId?: string; pending: ProgressActivityEntry[]; lastSentAt?: number; timer?: ReturnType<typeof setTimeout> }>();
   private readonly invalidPairingAttempts = new Map<string, { count: number; resetAt: number }>();
   private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private started = false;
@@ -121,6 +122,7 @@ export class DiscordRuntime {
   async stop(): Promise<void> {
     this.started = false;
     this.clearAllTypingActivity();
+    this.clearAllProgressStates();
     await this.adapter?.stopPolling?.();
   }
 
@@ -131,10 +133,12 @@ export class DiscordRuntime {
       this.ownedBindingSessionKeys.add(route.sessionKey);
       this.recentBindingBySessionKey.set(route.sessionKey, binding);
     }
+    this.syncProgressDelivery(route);
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
     this.stopTypingActivity(sessionKey);
+    this.clearProgressStateBySessionKey(sessionKey);
     this.routes.delete(sessionKey);
     this.ownedBindingSessionKeys.delete(sessionKey);
     this.recentBindingBySessionKey.delete(sessionKey);
@@ -1421,6 +1425,90 @@ export class DiscordRuntime {
       return;
     }
     this.invalidPairingAttempts.set(key, { ...current, count: current.count + 1 });
+  }
+
+  private progressKey(route: SessionRoute): string | undefined {
+    const binding = this.recentBindingBySessionKey.get(route.sessionKey);
+    return binding ? channelDestinationKey({ channel: DISCORD_CHANNEL, instanceId: this.instanceId, sessionKey: route.sessionKey, conversationId: binding.conversationId, userId: binding.userId }) : undefined;
+  }
+
+  private clearAllProgressStates(): void {
+    for (const state of this.progressStates.values()) {
+      if (state.timer) clearTimeout(state.timer);
+    }
+    this.progressStates.clear();
+  }
+
+  private clearProgressStateByKey(key: string): void {
+    const state = this.progressStates.get(key);
+    if (state?.timer) clearTimeout(state.timer);
+    this.progressStates.delete(key);
+  }
+
+  private clearProgressStateBySessionKey(sessionKey: string): void {
+    const prefix = `${DISCORD_CHANNEL}:${this.instanceId}:${sessionKey}:`;
+    for (const [key] of this.progressStates) {
+      if (key.startsWith(prefix)) this.clearProgressStateByKey(key);
+    }
+  }
+
+  private clearProgressState(route: SessionRoute): void {
+    const key = this.progressKey(route);
+    if (key) this.clearProgressStateByKey(key);
+    else this.clearProgressStateBySessionKey(route.sessionKey);
+  }
+
+  private syncProgressDelivery(route: SessionRoute): void {
+    const event = route.notification.progressEvent;
+    const binding = this.recentBindingBySessionKey.get(route.sessionKey);
+    const key = this.progressKey(route);
+    const deliverableEvent = event && (route.notification.lastStatus === "running" || event.kind === "compaction");
+    if (!key || !event || !deliverableEvent || !binding || binding.paused) {
+      if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
+      return;
+    }
+    const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+    if (!shouldSendProgressActivity(mode, event)) {
+      this.clearProgressState(route);
+      return;
+    }
+    let state = this.progressStates.get(key);
+    if (!state) {
+      state = { pending: [] };
+      this.progressStates.set(key, state);
+    }
+    if (state.lastEventId === event.id) return;
+    state.lastEventId = event.id;
+    state.pending.push(event);
+    if (state.timer) return;
+    const interval = progressIntervalMsFor(mode, this.config);
+    const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
+    const delay = Math.max(0, interval - elapsed);
+    state.timer = setTimeout(() => {
+      void this.flushProgress(route.sessionKey, binding, key).catch((error: unknown) => {
+        this.lastError = safeDiscordRuntimeError(error);
+      });
+    }, delay);
+    unrefTimer(state.timer);
+  }
+
+  private async flushProgress(sessionKey: string, expectedBinding: ChannelPersistedBindingRecord, key: string): Promise<void> {
+    const state = this.progressStates.get(key);
+    if (!state) return;
+    state.timer = undefined;
+    const route = this.routes.get(sessionKey);
+    const binding = route ? await this.activeBindingForRoute(route, { includePaused: true, address: bindingAddress(expectedBinding) }) : undefined;
+    if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused) {
+      this.clearProgressStateByKey(key);
+      return;
+    }
+    const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
+    const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
+    if (pending.length === 0 || !this.adapter) return;
+    const text = formatProgressUpdate(pending, this.config);
+    if (!text) return;
+    state.lastSentAt = Date.now();
+    await this.adapter.sendText(bindingAddress(binding), text);
   }
 
   private startTypingActivity(route: SessionRoute, address: ChannelRouteAddress): void {

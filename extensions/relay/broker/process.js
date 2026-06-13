@@ -119,7 +119,7 @@ const normalizeProgressMode = requiredFunction(progressModule, './progress.ts', 
 const progressIntervalMsFor = requiredFunction(progressModule, './progress.ts', 'progressIntervalMsFor');
 const progressModeFor = requiredFunction(progressModule, './progress.ts', 'progressModeFor');
 const recentActivityLimit = requiredFunction(progressModule, './progress.ts', 'recentActivityLimit');
-const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progress.ts', 'shouldSendNonTerminalProgress');
+const shouldSendProgressActivity = requiredFunction(progressModule, './progress.ts', 'shouldSendProgressActivity');
 const HELP_TEXT = requiredString(commandsModule, './commands.ts', 'BROKER_HELP_TEXT');
 const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts', 'commandAllowsWhilePaused');
 const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
@@ -1194,12 +1194,13 @@ function clearProgressState(route) {
 function syncProgressDelivery(route) {
   const event = route?.notification?.progressEvent;
   const key = getProgressKey(route);
-  if (!key || !event || !route?.binding || route.binding.paused || route.notification?.lastStatus !== 'running') {
+  const deliverableEvent = event && (route?.notification?.lastStatus === 'running' || event.kind === 'compaction');
+  if (!key || !event || !deliverableEvent || !route?.binding || route.binding.paused) {
     if (route?.notification?.lastStatus && isTerminalStatus(route.notification.lastStatus)) clearProgressState(route);
     return;
   }
   const mode = progressModeFor(route.binding, config);
-  if (!shouldSendNonTerminalProgress(mode)) return;
+  if (!shouldSendProgressActivity(mode, event)) return;
   let state = progressStates.get(key);
   if (!state) {
     state = { pending: [] };
@@ -1225,12 +1226,14 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   state.timer = undefined;
   const route = routes.get(sessionKey);
   const binding = await activeBindingForRoute(route, { includePaused: true });
-  if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused || route.notification?.lastStatus !== 'running') {
+  if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused) {
     clearProgressStateByKey(key);
     return;
   }
   route.binding = binding;
-  const text = formatProgressUpdate(state.pending.splice(0), config);
+  const mode = progressModeFor(binding, config);
+  const pending = state.pending.splice(0).filter((entry) => (route.notification?.lastStatus === 'running' || entry.kind === 'compaction') && shouldSendProgressActivity(mode, entry));
+  const text = formatProgressUpdate(pending, config);
   if (!text) return;
   state.lastSentAt = Date.now();
   await sendPlainText(chatId, `${sourcePrefixForRoute(route)}${text}`);
