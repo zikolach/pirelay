@@ -699,6 +699,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const state = this.progressStates.get(key);
     if (!state) return;
     state.timer = undefined;
+    state.lastSentAt = Date.now();
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
     if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused) {

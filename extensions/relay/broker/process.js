@@ -1224,6 +1224,7 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   const state = progressStates.get(key);
   if (!state) return;
   state.timer = undefined;
+  state.lastSentAt = Date.now();
   const route = routes.get(sessionKey);
   const binding = await activeBindingForRoute(route, { includePaused: true });
   if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused) {

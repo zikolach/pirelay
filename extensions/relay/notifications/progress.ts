@@ -39,6 +39,7 @@ export function shouldSendCompactionProgress(mode: ProgressMode): boolean {
 
 export function shouldSendProgressActivity(mode: ProgressMode, entry: Pick<ProgressActivityEntry, "kind">): boolean {
   if (entry.kind === "compaction") return shouldSendCompactionProgress(mode);
+  if (entry.kind === "assistant") return mode === "verbose";
   return shouldSendNonTerminalProgress(mode);
 }
 

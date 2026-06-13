@@ -48,6 +48,14 @@ describe("progress helpers", () => {
     expect(shouldSendProgressActivity("completionOnly", { kind: "tool" })).toBe(false);
   });
 
+  it("keeps assistant heartbeat progress verbose-only", () => {
+    expect(shouldSendProgressActivity("quiet", { kind: "assistant" })).toBe(false);
+    expect(shouldSendProgressActivity("normal", { kind: "assistant" })).toBe(false);
+    expect(shouldSendProgressActivity("completionOnly", { kind: "assistant" })).toBe(false);
+    expect(shouldSendProgressActivity("verbose", { kind: "assistant" })).toBe(true);
+    expect(shouldSendProgressActivity("normal", { kind: "tool" })).toBe(true);
+  });
+
   it("redacts and bounds progress text", () => {
     const entry = createProgressActivity({ id: "p1", kind: "tool", text: "Running SECRET_TOKEN in tool" }, config);
     expect(entry?.text).toContain("[redacted]");

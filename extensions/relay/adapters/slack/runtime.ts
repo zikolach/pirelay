@@ -1528,6 +1528,7 @@ export class SlackRuntime {
     const state = this.progressStates.get(key);
     if (!state) return;
     state.timer = undefined;
+    state.lastSentAt = Date.now();
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeBindingForRoute(route, { includePaused: true, address: bindingAddress(expectedBinding) }) : undefined;
     if (!route || !binding || binding.conversationId !== expectedBinding.conversationId || binding.userId !== expectedBinding.userId || binding.paused) {

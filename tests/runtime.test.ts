@@ -2949,6 +2949,65 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toEqual([]);
   });
 
+  it("reserves progress interval while async progress flush is in flight", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1_000;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress-race:/tmp/session-progress-race.jsonl",
+      sessionId: "session-progress-race",
+      sessionFile: "/tmp/session-progress-race.jsonl",
+      sessionLabel: "session-progress-race.jsonl",
+      chatId: 1008,
+      userId: 28,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "normal",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    let releaseBindingLookup: (() => void) | undefined;
+    const bindingLookupGate = new Promise<void>((resolve) => {
+      releaseBindingLookup = resolve;
+    });
+    let bindingLookups = 0;
+    (runtime as any).activeOutputBindingForRoute = async () => {
+      bindingLookups += 1;
+      if (bindingLookups === 1) await bindingLookupGate;
+      return binding;
+    };
+
+    route.notification.progressEvent = createProgressActivity({ id: "p1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    vi.advanceTimersByTime(0);
+    await Promise.resolve();
+    expect(bindingLookups).toBe(1);
+
+    route.notification.progressEvent = createProgressActivity({ id: "p2", kind: "tool", text: "Editing files", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    vi.advanceTimersByTime(0);
+    await Promise.resolve();
+    expect(bindingLookups).toBe(1);
+    expect(sent).toEqual([]);
+
+    releaseBindingLookup?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("Running tests");
+    expect(sent[0]).toContain("Editing files");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sent).toHaveLength(1);
+  });
+
   it("sends requester-scoped workspace files from Telegram remote commands", async () => {
     const config = await createRuntimeConfig();
     const root = await mkdtemp(join(tmpdir(), "pirelay-telegram-remote-file-"));
