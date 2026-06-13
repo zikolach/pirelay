@@ -223,6 +223,53 @@ describe("telegram broker process", () => {
     ].sort());
   });
 
+  it("serializes concurrent broker state updates in one broker process", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    await writeFile(statePath, JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: {},
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const releaseLock = await lockfile.lock(stateDir, { realpath: false, stale: 60_000 });
+    const first = sendBrokerRequest(socketPath, registerRouteRequest("concurrent-one:memory", "Concurrent One"));
+    const second = sendBrokerRequest(socketPath, registerRouteRequest("concurrent-two:memory", "Concurrent Two"));
+    await expect(promiseIsPendingAfterEventLoopTurn(Promise.all([first, second]))).resolves.toBe(true);
+    await releaseLock();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    const updated = JSON.parse(await readFile(statePath, "utf8")) as { bindings?: Record<string, unknown> };
+    expect(Object.keys(updated.bindings ?? {}).sort()).toEqual([
+      "concurrent-one:memory",
+      "concurrent-two:memory",
+    ]);
+  });
+
   it("does not authorize stale route bindings when broker state is corrupt", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -1118,6 +1165,32 @@ function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams
 
     tryConnect();
   });
+}
+
+function registerRouteRequest(sessionKey: string, sessionLabel: string): Record<string, unknown> {
+  return {
+    type: "request",
+    requestId: `register-${sessionKey}`,
+    action: "registerRoute",
+    clientId: "test-client",
+    route: {
+      sessionKey,
+      sessionId: sessionKey.split(":")[0],
+      sessionLabel,
+      online: true,
+      busy: false,
+      notification: {},
+      binding: {
+        sessionKey,
+        sessionId: sessionKey.split(":")[0],
+        sessionLabel,
+        chatId: 123,
+        userId: 456,
+        boundAt: new Date(0).toISOString(),
+        lastSeenAt: new Date(3).toISOString(),
+      },
+    },
+  };
 }
 
 function sendBrokerRequest(socketPath: string, payload: Record<string, unknown>): Promise<unknown> {
