@@ -2822,7 +2822,7 @@ describe("PiRelay integration behavior", () => {
     expect(sendSessionNotification).toHaveBeenCalledWith(fakeRuntime, route, "completed", expect.anything());
   });
 
-  it("records safe visible assistant text updates as model progress", async () => {
+  it("records safe visible assistant text updates as verbose-only model progress", async () => {
     const config = await createRuntimeConfig("pi-visible-model-progress-");
     vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
     vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
@@ -2871,7 +2871,7 @@ describe("PiRelay integration behavior", () => {
     }, context);
 
     expect(route.notification.progressEvent).toMatchObject({
-      kind: "status",
+      kind: "assistant",
       text: "Model update",
       detail: expect.stringContaining("inspect the failing tests"),
     });
