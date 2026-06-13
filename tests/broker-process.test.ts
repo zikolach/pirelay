@@ -921,6 +921,88 @@ describe("telegram broker process", () => {
     expect(texts).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
   });
 
+  it("delivers compact broker progress and suppresses volatile normal-mode bookkeeping", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-progress-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-progress:memory",
+      sessionId: "broker-progress",
+      sessionLabel: "Broker Progress",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      progressMode: "normal",
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: { botId: 1, botUsername: "dummy_bot", botDisplayName: "Dummy", validatedAt: new Date(0).toISOString() },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1, progressIntervalMs: 1 }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      },
+    });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "volatile", kind: "tool", text: "Processed tool result", delivery: "volatile", at: Date.now() } },
+          binding,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(await readFile(outboxPath, "utf8").catch(() => "")).toBe("");
+
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "tool", kind: "tool", text: "Tool completed", detail: "bash", at: Date.now() } },
+          binding,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      client.close();
+    }
+
+    const texts = parseOutbox(await readFile(outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("Tool completed");
+    expect(texts[0]).not.toContain("Pi progress");
+    expect(texts[0]).not.toContain("Processed tool result");
+  });
+
   it("rejects pending broker client requests when the socket closes cleanly", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -1047,7 +1129,15 @@ interface TestOutboxDocument {
   options?: unknown;
 }
 
-type TestOutboxEntry = TestOutboxMessage | TestOutboxDocument;
+interface TestOutboxEditMessage {
+  method: "editMessageText";
+  chatId: number;
+  messageId: number;
+  text: string;
+  options?: unknown;
+}
+
+type TestOutboxEntry = TestOutboxMessage | TestOutboxDocument | TestOutboxEditMessage;
 
 function parseOutbox(raw: string): TestOutboxEntry[] {
   return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as TestOutboxEntry);

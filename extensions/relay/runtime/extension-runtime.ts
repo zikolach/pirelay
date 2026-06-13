@@ -13,7 +13,7 @@ import type { BindingEntryData, ChannelPersistedBindingRecord, DiscordRelayConfi
 import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
-import { appendRecentActivity, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
+import { appendRecentActivity, COMPACTION_PROGRESS_COMPLETED_TEXT, COMPACTION_PROGRESS_STARTED_TEXT, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
 import { authorityOutcomeAllowsDelivery, resolveChannelBindingAuthority, resolveTelegramBindingAuthority } from "../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../notifications/lifecycle.js";
 import { formatRelayStatusLine, type RelayStatusLineBindingState, type RelayStatusLineChannel } from "./status-line.js";
@@ -638,7 +638,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return images;
   }
 
-  function recordProgress(kind: "lifecycle" | "tool" | "assistant" | "status", text: string, detail?: string): void {
+  function recordProgress(kind: "lifecycle" | "tool" | "assistant" | "status" | "compaction", text: string, detail?: string, options: { delivery?: "milestone" | "volatile"; semanticKey?: string } = {}): void {
     if (!currentRoute) return;
     const config = configCache;
     const entry = createProgressActivity({
@@ -646,6 +646,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       kind,
       text,
       detail,
+      delivery: options.delivery,
+      semanticKey: options.semanticKey,
     }, config ?? { redactionPatterns: [], maxProgressMessageChars: undefined });
     if (!entry) return;
     currentRoute.notification.progressEvent = entry;
@@ -2021,6 +2023,24 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
   });
 
+  pi.on("session_before_compact", async (_event, ctx) => {
+    latestContext = ctx;
+    if (!currentRoute) return;
+    currentRoute.actions.context = ctx;
+    recordProgress("compaction", COMPACTION_PROGRESS_STARTED_TEXT);
+    recordDiagnostic({ component: "runtime", event: "session_before_compact", outcome: "started", ...diagnosticRouteFields() });
+    publishRouteStateSoon();
+  });
+
+  pi.on("session_compact", async (_event, ctx) => {
+    latestContext = ctx;
+    if (!currentRoute) return;
+    currentRoute.actions.context = ctx;
+    recordProgress("compaction", COMPACTION_PROGRESS_COMPLETED_TEXT);
+    recordDiagnostic({ component: "runtime", event: "session_compact", outcome: "completed", ...diagnosticRouteFields() });
+    publishRouteStateSoon();
+  });
+
   pi.on("agent_start", async (_event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
@@ -2054,7 +2074,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         currentRoute.notification.lastAssistantText = assistantText;
         currentRoute.lastActivityAt = Date.now();
         if (currentRoute.notification.lastStatus === "running") {
-          recordProgress("assistant", "Drafting response");
+          const streamEvent = event.assistantMessageEvent;
+          if (streamEvent?.type === "text_end" && typeof streamEvent.content === "string" && streamEvent.content.trim()) {
+            recordProgress("assistant", "Model update", summarizeTextDeterministically(streamEvent.content, 280), { delivery: "volatile", semanticKey: `assistant:${streamEvent.content}` });
+          }
           publishRouteStateSoon();
         }
       }
@@ -2079,7 +2102,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const toolText = extractTextContent(event.message.content as never);
       if (toolText) activeTurnImagePathTexts.push(toolText);
       if (currentRoute.notification.lastStatus === "running") {
-        recordProgress("tool", "Processed tool result");
+        recordProgress("tool", "Processed tool result", undefined, { delivery: "volatile", semanticKey: `tool-result:${event.message.toolCallId ?? "unknown"}` });
         publishRouteStateSoon();
       }
     }
@@ -2148,7 +2171,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       publishRouteStateSoon();
       return;
     }
-    recordProgress("tool", "Tool completed", event.toolName);
+    recordProgress("tool", "Tool completed", event.toolName, { delivery: "milestone", semanticKey: `tool-completed:${event.toolCallId}` });
     publishRouteStateSoon();
   });
 

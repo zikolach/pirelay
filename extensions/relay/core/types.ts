@@ -15,10 +15,12 @@ export type ProgressMode = "quiet" | "normal" | "verbose" | "completionOnly";
 
 export interface ProgressActivityEntry {
   id: string;
-  kind: "lifecycle" | "tool" | "assistant" | "status";
+  kind: "lifecycle" | "tool" | "assistant" | "status" | "compaction";
   text: string;
   detail?: string;
   at: number;
+  delivery?: "milestone" | "volatile";
+  semanticKey?: string;
 }
 
 export interface SharedRoomRelayConfig {

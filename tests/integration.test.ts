@@ -472,6 +472,56 @@ describe("PiRelay integration behavior", () => {
     expect(statuses).toContainEqual({ key: "relay-sync", value: "" });
   });
 
+  it("publishes safe compaction progress from Pi compaction hooks", async () => {
+    const config = await createRuntimeConfig("pi-compaction-progress-hooks-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    let registeredRoute: SessionRoute | undefined;
+    const registerRoute = vi.fn(async (route: SessionRoute) => { registeredRoute = route; });
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute,
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("compaction-progress");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", {}, context);
+    await pi.emit("session_before_compact", { customInstructions: "SECRET_PROMPT" }, context);
+    await waitFor(() => registerRoute.mock.calls.length >= 2);
+
+    expect(registeredRoute?.notification.progressEvent).toMatchObject({ kind: "compaction", text: "Context compaction started" });
+    expect(JSON.stringify(registeredRoute?.notification.progressEvent)).not.toContain("SECRET_PROMPT");
+
+    await pi.emit("session_compact", { compactionEntry: { summary: "SECRET_SUMMARY" } }, context);
+    await waitFor(() => registerRoute.mock.calls.length >= 3);
+
+    expect(registeredRoute?.notification.progressEvent).toMatchObject({ kind: "compaction", text: "Context compaction completed" });
+    expect(JSON.stringify(registeredRoute?.notification)).not.toContain("SECRET_SUMMARY");
+    expect(registeredRoute?.notification.recentActivity?.map((entry) => entry.text)).toEqual([
+      "Context compaction started",
+      "Context compaction completed",
+    ]);
+  });
+
   it("bypasses approval gates for local-only tool calls", async () => {
     const config = await createRuntimeConfig("pi-approval-local-");
     await writeFile(config.configPath!, JSON.stringify({
@@ -2770,6 +2820,93 @@ describe("PiRelay integration behavior", () => {
     expect(route.notification.lastStatus).toBe("completed");
     expect(route.notification.lastFailure).toBeUndefined();
     expect(sendSessionNotification).toHaveBeenCalledWith(fakeRuntime, route, "completed", expect.anything());
+  });
+
+  it("records safe visible assistant text updates as verbose-only model progress", async () => {
+    const config = await createRuntimeConfig("pi-visible-model-progress-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("visible-model-progress");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_update", {
+      message: { role: "assistant", content: [{ type: "text", text: "Visible draft without stream metadata." }] },
+    }, context);
+    await pi.emit("message_update", {
+      message: { role: "assistant", content: [{ type: "text", text: "Visible draft with partial stream metadata." }] },
+      assistantMessageEvent: {},
+    }, context);
+    expect(route.notification.progressEvent).toMatchObject({ kind: "lifecycle", text: "Pi task started" });
+
+    await pi.emit("message_update", {
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "SECRET_REASONING" },
+          { type: "text", text: "I'll inspect the failing tests and then patch the runtime." },
+        ],
+      },
+      assistantMessageEvent: { type: "text_end", contentIndex: 1, content: "I'll inspect the failing tests and then patch the runtime." },
+    }, context);
+
+    expect(route.notification.progressEvent).toMatchObject({
+      kind: "assistant",
+      text: "Model update",
+      detail: expect.stringContaining("inspect the failing tests"),
+      delivery: "volatile",
+      semanticKey: expect.stringContaining("inspect the failing tests"),
+    });
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_REASONING");
+
+    await pi.emit("message_end", {
+      message: { role: "toolResult", toolCallId: "tool-1", toolName: "bash", content: [{ type: "text", text: "SECRET_TOOL_RESULT" }], isError: false },
+    }, context);
+    expect(route.notification.progressEvent).toMatchObject({
+      kind: "tool",
+      text: "Processed tool result",
+      delivery: "volatile",
+      semanticKey: "tool-result:tool-1",
+    });
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_TOOL_RESULT");
+
+    await pi.emit("tool_execution_end", { toolCallId: "tool-1", toolName: "bash", result: {}, isError: false }, context);
+    expect(route.notification.progressEvent).toMatchObject({
+      kind: "tool",
+      text: "Tool completed",
+      detail: "bash",
+      delivery: "milestone",
+      semanticKey: "tool-completed:tool-1",
+    });
   });
 
   it("does not use stream-only drafts as final-output fallback", async () => {

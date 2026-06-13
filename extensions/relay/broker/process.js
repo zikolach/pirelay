@@ -119,7 +119,7 @@ const normalizeProgressMode = requiredFunction(progressModule, './progress.ts', 
 const progressIntervalMsFor = requiredFunction(progressModule, './progress.ts', 'progressIntervalMsFor');
 const progressModeFor = requiredFunction(progressModule, './progress.ts', 'progressModeFor');
 const recentActivityLimit = requiredFunction(progressModule, './progress.ts', 'recentActivityLimit');
-const shouldSendNonTerminalProgress = requiredFunction(progressModule, './progress.ts', 'shouldSendNonTerminalProgress');
+const shouldSendProgressActivity = requiredFunction(progressModule, './progress.ts', 'shouldSendProgressActivity');
 const HELP_TEXT = requiredString(commandsModule, './commands.ts', 'BROKER_HELP_TEXT');
 const commandAllowsWhilePaused = requiredFunction(commandsModule, './commands.ts', 'commandAllowsWhilePaused');
 const normalizeAliasArg = requiredFunction(commandsModule, './commands.ts', 'normalizeAliasArg');
@@ -319,7 +319,12 @@ async function appendBrokerTestTelegramOutbox(event) {
 
 async function sendTelegramMessage(chatId, text, options) {
   if (await appendBrokerTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
-  await api.sendMessage(chatId, text, options);
+  return api.sendMessage(chatId, text, options);
+}
+
+async function editTelegramMessage(chatId, messageId, text, options) {
+  if (await appendBrokerTestTelegramOutbox({ method: 'editMessageText', chatId, messageId, text, options })) return;
+  return api.editMessageText(chatId, messageId, text, options);
 }
 
 async function sendTelegramDocument(chatId, document, options, testDocument) {
@@ -339,6 +344,21 @@ async function sendPreparedPlainText(chatId, text, keyboard) {
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'prepared-text', error: error instanceof Error ? error.message : String(error) } });
     throw error;
   }
+}
+
+async function sendEditablePlainText(chatId, text) {
+  const chunk = chunkText(text)[0] || '';
+  const prepared = prepareTelegramChunkForSend(chunk);
+  const options = prepared.parseMode ? { parse_mode: prepared.parseMode } : undefined;
+  const message = await withRetry(() => sendTelegramMessage(chatId, prepared.text, options));
+  return typeof message?.message_id === 'number' ? message.message_id : undefined;
+}
+
+async function editPlainText(chatId, messageId, text) {
+  const chunk = chunkText(text)[0] || '';
+  const prepared = prepareTelegramChunkForSend(chunk);
+  const options = prepared.parseMode ? { parse_mode: prepared.parseMode } : undefined;
+  await withRetry(() => editTelegramMessage(chatId, messageId, prepared.text, options));
 }
 
 async function sendPlainText(chatId, text, keyboard) {
@@ -1194,12 +1214,13 @@ function clearProgressState(route) {
 function syncProgressDelivery(route) {
   const event = route?.notification?.progressEvent;
   const key = getProgressKey(route);
-  if (!key || !event || !route?.binding || route.binding.paused || route.notification?.lastStatus !== 'running') {
+  const deliverableEvent = event && (route?.notification?.lastStatus === 'running' || event.kind === 'compaction');
+  if (!key || !event || !deliverableEvent || !route?.binding || route.binding.paused) {
     if (route?.notification?.lastStatus && isTerminalStatus(route.notification.lastStatus)) clearProgressState(route);
     return;
   }
   const mode = progressModeFor(route.binding, config);
-  if (!shouldSendNonTerminalProgress(mode)) return;
+  if (!shouldSendProgressActivity(mode, event)) return;
   let state = progressStates.get(key);
   if (!state) {
     state = { pending: [] };
@@ -1223,17 +1244,32 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   const state = progressStates.get(key);
   if (!state) return;
   state.timer = undefined;
+  state.lastSentAt = Date.now();
   const route = routes.get(sessionKey);
   const binding = await activeBindingForRoute(route, { includePaused: true });
-  if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused || route.notification?.lastStatus !== 'running') {
+  if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused) {
     clearProgressStateByKey(key);
     return;
   }
   route.binding = binding;
-  const text = formatProgressUpdate(state.pending.splice(0), config);
+  const mode = progressModeFor(binding, config);
+  const pending = state.pending.splice(0).filter((entry) => (route.notification?.lastStatus === 'running' || entry.kind === 'compaction') && shouldSendProgressActivity(mode, entry));
+  const text = formatProgressUpdate(pending, config, { header: false });
   if (!text) return;
   state.lastSentAt = Date.now();
-  await sendPlainText(chatId, `${sourcePrefixForRoute(route)}${text}`);
+  const messageText = `${sourcePrefixForRoute(route)}${text}`;
+  if (state.lastText === messageText) return;
+  if (state.liveMessageId) {
+    try {
+      await editPlainText(chatId, state.liveMessageId, messageText);
+      state.lastText = messageText;
+      return;
+    } catch {
+      state.liveMessageId = undefined;
+    }
+  }
+  state.liveMessageId = await sendEditablePlainText(chatId, messageText);
+  state.lastText = messageText;
 }
 
 async function pairingHashForCode(nonce) {
