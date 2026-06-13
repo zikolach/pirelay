@@ -92,10 +92,12 @@ describe("progress helpers", () => {
   });
 
   it("sanitizes live progress before coalescing or formatting", () => {
-    const entry = createProgressActivity({ id: "secret", kind: "assistant", text: "Model update", detail: "SECRET_TOKEN chat 12345", delivery: "volatile" }, config)!;
+    const entry = createProgressActivity({ id: "secret", kind: "assistant", text: "Model update", detail: "SECRET_TOKEN chat 12345", semanticKey: "assistant:SECRET_TOKEN chat 12345", delivery: "volatile" }, config)!;
     const update = formatProgressUpdate([entry], config, { header: false });
     expect(update).toContain("[redacted]");
     expect(update).not.toContain("SECRET_TOKEN");
+    expect(entry.semanticKey).toContain("[redacted]");
+    expect(entry.semanticKey).not.toContain("secret_token");
   });
 
   it("stores bounded recent activity", () => {

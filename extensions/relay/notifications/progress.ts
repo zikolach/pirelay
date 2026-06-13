@@ -100,6 +100,7 @@ export function createProgressActivity(input: {
 }, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): ProgressActivityEntry | undefined {
   const text = sanitizeProgressText(input.text, config);
   const detail = sanitizeProgressText(input.detail, config);
+  const semanticKey = sanitizeProgressText(input.semanticKey, config);
   if (!text) return undefined;
   return {
     id: input.id,
@@ -108,7 +109,7 @@ export function createProgressActivity(input: {
     detail: detail || undefined,
     at: input.at ?? Date.now(),
     delivery: input.delivery,
-    semanticKey: input.semanticKey ? normalizeProgressKey(input.semanticKey) : undefined,
+    semanticKey: semanticKey ? normalizeProgressKey(semanticKey) : undefined,
   };
 }
 
