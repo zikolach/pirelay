@@ -158,7 +158,7 @@ export function formatProgressUpdate(entries: ProgressActivityEntry[], config: P
   if (latest.length === 0) return undefined;
   const marker = options.marker ?? DEFAULT_LIVE_PROGRESS_MARKER;
   const body = latest.map((entry) => `${marker} ${entry.text}${entry.detail ? ` — ${entry.detail}` : ""}`).join("\n");
-  const output = options.header ?? true ? `Pi progress\n${body}` : body;
+  const output = (options.header ?? true) ? `Pi progress\n${body}` : body;
   const maxChars = maxProgressMessageChars(config);
   return output.length > maxChars ? `${output.slice(0, maxChars - 1).trimEnd()}…` : output;
 }

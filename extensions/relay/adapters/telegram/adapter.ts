@@ -106,10 +106,20 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async updateLiveProgress(address: ChannelRouteAddress, ref: ChannelLiveProgressRef, text: string): Promise<void> {
-    if (!this.api.editPlainText) throw new Error("Telegram live progress editing is unavailable.");
+    if (!this.api.editPlainText) {
+      await this.sendText(address, text);
+      return;
+    }
     const messageId = Number(ref.messageId);
-    if (!Number.isSafeInteger(messageId)) throw new Error("Telegram live progress message id is invalid.");
-    await this.api.editPlainText(telegramChatId(address), messageId, text);
+    if (!Number.isSafeInteger(messageId)) {
+      await this.sendText(address, text);
+      return;
+    }
+    try {
+      await this.api.editPlainText(telegramChatId(address), messageId, text);
+    } catch {
+      await this.sendText(address, text);
+    }
   }
 
   async sendDocument(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
