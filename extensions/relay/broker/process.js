@@ -556,16 +556,29 @@ async function saveState(state) {
   await writeFile(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
 }
 
+let stateUpdateQueue = Promise.resolve();
+
 async function updateState(mutator) {
-  await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
-  const releaseLock = await lockfile.lock(config.stateDir, { realpath: false, stale: 60_000, retries: { retries: 10, minTimeout: 10, maxTimeout: 100 } });
+  const previous = stateUpdateQueue;
+  let releaseQueue;
+  const current = new Promise((resolve) => { releaseQueue = resolve; });
+  stateUpdateQueue = previous.then(() => current, () => current);
+  await previous.catch(() => undefined);
+
   try {
-    const state = await loadState();
-    await mutator(state);
-    await saveState(state);
-    return state;
+    await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
+    const releaseLock = await lockfile.lock(config.stateDir, { realpath: false, stale: 60_000, retries: { retries: 10, minTimeout: 10, maxTimeout: 100 } });
+    try {
+      const state = await loadState();
+      await mutator(state);
+      await saveState(state);
+      return state;
+    } finally {
+      await releaseLock();
+    }
   } finally {
-    await releaseLock();
+    releaseQueue();
+    if (stateUpdateQueue === current) stateUpdateQueue = Promise.resolve();
   }
 }
 
