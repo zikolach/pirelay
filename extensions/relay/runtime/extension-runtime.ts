@@ -2072,7 +2072,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         currentRoute.notification.lastAssistantText = assistantText;
         currentRoute.lastActivityAt = Date.now();
         if (currentRoute.notification.lastStatus === "running") {
-          recordProgress("assistant", "Drafting response");
+          const streamEvent = event.assistantMessageEvent;
+          if (streamEvent.type === "text_end" && streamEvent.content.trim()) {
+            recordProgress("status", "Model update", summarizeTextDeterministically(streamEvent.content, 280));
+          }
           publishRouteStateSoon();
         }
       }
