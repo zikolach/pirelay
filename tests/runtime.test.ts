@@ -2925,9 +2925,18 @@ describe("InProcessTunnelRuntime", () => {
     await vi.runOnlyPendingTimersAsync();
 
     await vi.waitFor(() => expect(sent[0]).toContain("Running tests (2×)"));
+    expect(sent[0]).not.toContain("Pi progress");
     expect(route.notification.recentActivity).toHaveLength(2);
 
     sent.length = 0;
+    binding.progressMode = "normal";
+    route.notification.progressEvent = createProgressActivity({ id: "assistant-normal", kind: "assistant", text: "Model update", detail: "Drafting text", delivery: "volatile", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    route.notification.progressEvent = createProgressActivity({ id: "tool-result-normal", kind: "tool", text: "Processed tool result", delivery: "volatile", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    expect(sent).toEqual([]);
+
     binding.progressMode = "quiet";
     route.notification.progressEvent = createProgressActivity({ id: "p3", kind: "tool", text: "Editing files", at: Date.now() }, config);
     (runtime as any).syncProgressDelivery(route);
@@ -2947,6 +2956,101 @@ describe("InProcessTunnelRuntime", () => {
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     expect(sent).toEqual([]);
+  });
+
+  it("edits Telegram live progress in place when supported", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress-edit:/tmp/session-progress-edit.jsonl",
+      sessionId: "session-progress-edit",
+      sessionFile: "/tmp/session-progress-edit.jsonl",
+      sessionLabel: "session-progress-edit.jsonl",
+      chatId: 1009,
+      userId: 29,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "normal",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sends: string[] = [];
+    const edits: Array<{ messageId: number; text: string }> = [];
+    (runtime as any).api = {
+      sendEditablePlainText: async (_chatId: number, text: string) => {
+        sends.push(text);
+        return 77;
+      },
+      editPlainText: async (_chatId: number, messageId: number, text: string) => {
+        edits.push({ messageId, text });
+      },
+      sendPlainText: async () => undefined,
+    };
+
+    route.notification.progressEvent = createProgressActivity({ id: "edit-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(sends).toHaveLength(1));
+    expect(sends[0]).toContain("Running tests");
+
+    route.notification.progressEvent = createProgressActivity({ id: "edit-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    await vi.waitFor(() => expect(edits).toHaveLength(1));
+    expect(edits[0]).toEqual(expect.objectContaining({ messageId: 77, text: expect.stringContaining("Editing files") }));
+  });
+
+  it("falls back to a new Telegram progress snapshot when editing fails", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress-edit-fallback:/tmp/session-progress-edit-fallback.jsonl",
+      sessionId: "session-progress-edit-fallback",
+      sessionFile: "/tmp/session-progress-edit-fallback.jsonl",
+      sessionLabel: "session-progress-edit-fallback.jsonl",
+      chatId: 1011,
+      userId: 31,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "normal",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sends: string[] = [];
+    let nextMessageId = 10;
+    (runtime as any).api = {
+      sendEditablePlainText: async (_chatId: number, text: string) => {
+        sends.push(text);
+        return nextMessageId++;
+      },
+      editPlainText: async () => {
+        throw new Error("message deleted");
+      },
+      sendPlainText: async () => undefined,
+    };
+
+    route.notification.progressEvent = createProgressActivity({ id: "fallback-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(sends).toHaveLength(1));
+
+    route.notification.progressEvent = createProgressActivity({ id: "fallback-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    await vi.waitFor(() => expect(sends).toHaveLength(2));
+    expect(sends[1]).toContain("Editing files");
   });
 
   it("reserves progress interval while async progress flush is in flight", async () => {

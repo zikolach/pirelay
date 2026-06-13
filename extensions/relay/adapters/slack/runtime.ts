@@ -1538,7 +1538,7 @@ export class SlackRuntime {
       this.clearProgressState(route);
       return;
     }
-    const text = formatProgressUpdate(pending, this.config);
+    const text = formatProgressUpdate(pending, this.config, { header: false });
     if (!text || !this.adapter) return;
     state.lastSentAt = Date.now();
     await this.adapter.sendText(bindingAddress(binding), text);

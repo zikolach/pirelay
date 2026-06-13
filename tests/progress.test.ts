@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendRecentActivity,
+  coalesceLiveProgressEntries,
   createProgressActivity,
   displayProgressMode,
   formatProgressUpdate,
@@ -8,6 +9,7 @@ import {
   normalizeProgressMode,
   progressIntervalMsFor,
   progressModeFor,
+  progressSemanticKey,
   shouldSendCompactionProgress,
   shouldSendNonTerminalProgress,
   shouldSendProgressActivity,
@@ -54,6 +56,7 @@ describe("progress helpers", () => {
     expect(shouldSendProgressActivity("completionOnly", { kind: "assistant" })).toBe(false);
     expect(shouldSendProgressActivity("verbose", { kind: "assistant" })).toBe(true);
     expect(shouldSendProgressActivity("normal", { kind: "tool" })).toBe(true);
+    expect(shouldSendProgressActivity("normal", { kind: "tool", text: "Processed tool result" })).toBe(false);
   });
 
   it("redacts and bounds progress text", () => {
@@ -68,6 +71,31 @@ describe("progress helpers", () => {
     const update = formatProgressUpdate([first, second], config);
     expect(update).toContain("Pi progress");
     expect(update).toContain("Running tests (2×)");
+  });
+
+  it("formats compact progress without the repeated header", () => {
+    const entry = createProgressActivity({ id: "p1", kind: "tool", text: "Running tests", at: 1 }, config)!;
+    const update = formatProgressUpdate([entry], config, { header: false });
+    expect(update).toBe("● Running tests");
+  });
+
+  it("deduplicates milestones semantically and keeps latest volatile status", () => {
+    const first = createProgressActivity({ id: "a", kind: "assistant", text: "Model update", detail: "Draft A", at: 1, delivery: "volatile", semanticKey: "assistant" }, config)!;
+    const second = createProgressActivity({ id: "b", kind: "assistant", text: "Model update", detail: "Draft B", at: 2, delivery: "volatile", semanticKey: "assistant" }, config)!;
+    const toolA = createProgressActivity({ id: "c", kind: "tool", text: "Tool completed", detail: "bash", at: 3, semanticKey: "tool:1" }, config)!;
+    const toolB = createProgressActivity({ id: "d", kind: "tool", text: "Tool completed", detail: "bash", at: 4, semanticKey: "tool:1" }, config)!;
+    const coalesced = coalesceLiveProgressEntries([first, second, toolA, toolB]);
+    expect(coalesced.map((entry) => entry.detail)).toContain("Draft B");
+    expect(coalesced.map((entry) => entry.detail)).not.toContain("Draft A");
+    expect(coalesced.find((entry) => entry.text.startsWith("Tool completed"))?.text).toBe("Tool completed (2×)");
+    expect(progressSemanticKey(toolA)).toBe(progressSemanticKey(toolB));
+  });
+
+  it("sanitizes live progress before coalescing or formatting", () => {
+    const entry = createProgressActivity({ id: "secret", kind: "assistant", text: "Model update", detail: "SECRET_TOKEN chat 12345", delivery: "volatile" }, config)!;
+    const update = formatProgressUpdate([entry], config, { header: false });
+    expect(update).toContain("[redacted]");
+    expect(update).not.toContain("SECRET_TOKEN");
   });
 
   it("stores bounded recent activity", () => {

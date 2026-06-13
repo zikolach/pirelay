@@ -789,8 +789,8 @@ describe("SlackRuntime foundations", () => {
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
-    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Pi progress") });
-    expect(operations.posts.at(-1)?.text).toContain("Running tests");
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Running tests") });
+    expect(operations.posts.at(-1)?.text).not.toContain("Pi progress");
   });
 
   it("uploads latest, explicit images, and requester-scoped Slack files", async () => {
@@ -890,6 +890,7 @@ describe("SlackRuntime foundations", () => {
 
     expect(operations.posts).toHaveLength(1);
     expect(operations.posts[0]?.text).toContain("Running tests");
+    expect(operations.posts[0]?.text).not.toContain("Pi progress");
     expect(operations.posts[0]?.text).not.toContain("Drafting response");
   });
 

@@ -9,6 +9,7 @@ import type {
   ChannelInboundFile,
   ChannelInboundHandler,
   ChannelInboundMessage,
+  ChannelLiveProgressRef,
   ChannelOutboundFile,
   ChannelOutboundPayload,
   ChannelRouteAddress,
@@ -31,6 +32,8 @@ const TELEGRAM_CHANNEL: ChannelAdapterKind = "telegram";
 export interface TelegramApiOperations {
   getUpdates(offset: number | undefined): Promise<Array<TelegramInboundMessage | TelegramInboundCallback>>;
   sendPlainTextWithKeyboard(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void>;
+  sendEditablePlainText?(chatId: number, text: string): Promise<number>;
+  editPlainText?(chatId: number, messageId: number, text: string): Promise<void>;
   sendDocumentData(chatId: number, filename: string, data: Uint8Array, caption?: string): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, text?: string, alert?: boolean): Promise<void>;
   sendChatAction(chatId: number, action?: "typing" | "upload_document" | "record_video"): Promise<void>;
@@ -91,6 +94,22 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   async sendText(address: ChannelRouteAddress, text: string, options?: { buttons?: ChannelButtonLayout }): Promise<void> {
     await this.api.sendPlainTextWithKeyboard(telegramChatId(address), text, options?.buttons ? toTelegramKeyboard(options.buttons) : undefined);
+  }
+
+  async sendLiveProgress(address: ChannelRouteAddress, text: string): Promise<ChannelLiveProgressRef | undefined> {
+    if (!this.api.sendEditablePlainText) {
+      await this.sendText(address, text);
+      return undefined;
+    }
+    const messageId = await this.api.sendEditablePlainText(telegramChatId(address), text);
+    return { messageId: String(messageId) };
+  }
+
+  async updateLiveProgress(address: ChannelRouteAddress, ref: ChannelLiveProgressRef, text: string): Promise<void> {
+    if (!this.api.editPlainText) throw new Error("Telegram live progress editing is unavailable.");
+    const messageId = Number(ref.messageId);
+    if (!Number.isSafeInteger(messageId)) throw new Error("Telegram live progress message id is invalid.");
+    await this.api.editPlainText(telegramChatId(address), messageId, text);
   }
 
   async sendDocument(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {

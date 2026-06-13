@@ -19,6 +19,8 @@ export interface ProgressActivityEntry {
   text: string;
   detail?: string;
   at: number;
+  delivery?: "milestone" | "volatile";
+  semanticKey?: string;
 }
 
 export interface SharedRoomRelayConfig {

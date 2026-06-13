@@ -319,7 +319,12 @@ async function appendBrokerTestTelegramOutbox(event) {
 
 async function sendTelegramMessage(chatId, text, options) {
   if (await appendBrokerTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
-  await api.sendMessage(chatId, text, options);
+  return api.sendMessage(chatId, text, options);
+}
+
+async function editTelegramMessage(chatId, messageId, text, options) {
+  if (await appendBrokerTestTelegramOutbox({ method: 'editMessageText', chatId, messageId, text, options })) return;
+  return api.editMessageText(chatId, messageId, text, options);
 }
 
 async function sendTelegramDocument(chatId, document, options, testDocument) {
@@ -339,6 +344,21 @@ async function sendPreparedPlainText(chatId, text, keyboard) {
     recordDiagnostic({ component: 'broker', event: 'notification.send', messenger: 'telegram', outcome: 'error', severity: 'warning', conversationId: String(chatId), details: { kind: 'prepared-text', error: error instanceof Error ? error.message : String(error) } });
     throw error;
   }
+}
+
+async function sendEditablePlainText(chatId, text) {
+  const chunk = chunkText(text)[0] || '';
+  const prepared = prepareTelegramChunkForSend(chunk);
+  const options = prepared.parseMode ? { parse_mode: prepared.parseMode } : undefined;
+  const message = await withRetry(() => sendTelegramMessage(chatId, prepared.text, options));
+  return typeof message?.message_id === 'number' ? message.message_id : undefined;
+}
+
+async function editPlainText(chatId, messageId, text) {
+  const chunk = chunkText(text)[0] || '';
+  const prepared = prepareTelegramChunkForSend(chunk);
+  const options = prepared.parseMode ? { parse_mode: prepared.parseMode } : undefined;
+  await withRetry(() => editTelegramMessage(chatId, messageId, prepared.text, options));
 }
 
 async function sendPlainText(chatId, text, keyboard) {
@@ -1234,10 +1254,22 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   route.binding = binding;
   const mode = progressModeFor(binding, config);
   const pending = state.pending.splice(0).filter((entry) => (route.notification?.lastStatus === 'running' || entry.kind === 'compaction') && shouldSendProgressActivity(mode, entry));
-  const text = formatProgressUpdate(pending, config);
+  const text = formatProgressUpdate(pending, config, { header: false });
   if (!text) return;
   state.lastSentAt = Date.now();
-  await sendPlainText(chatId, `${sourcePrefixForRoute(route)}${text}`);
+  const messageText = `${sourcePrefixForRoute(route)}${text}`;
+  if (state.lastText === messageText) return;
+  if (state.liveMessageId) {
+    try {
+      await editPlainText(chatId, state.liveMessageId, messageText);
+      state.lastText = messageText;
+      return;
+    } catch {
+      state.liveMessageId = undefined;
+    }
+  }
+  state.liveMessageId = await sendEditablePlainText(chatId, messageText);
+  state.lastText = messageText;
 }
 
 async function pairingHashForCode(nonce) {

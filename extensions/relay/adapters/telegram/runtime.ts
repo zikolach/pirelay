@@ -174,7 +174,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly pendingSkillInputs = new Map<string, PendingSkillInput>();
   private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number; liveMessageId?: number; lastText?: string }>();
   private readonly activeSessionByChatUser = new Map<string, string>();
   private readonly sharedRoomOutputDestinations = new Map<string, SharedRoomOutputDestination>();
   private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
@@ -709,10 +709,28 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
     const mode = progressModeFor(binding, this.config);
     const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
-    const text = formatProgressUpdate(pending, this.config);
+    const text = formatProgressUpdate(pending, this.config, { header: false });
     if (!text) return;
     state.lastSentAt = Date.now();
-    await this.api.sendPlainText(chatId, `${this.sourcePrefixForRoute(route)}${text}`);
+    const messageText = `${this.sourcePrefixForRoute(route)}${text}`;
+    if (state.lastText === messageText) return;
+    const editableApi = this.api as TelegramApiClient & { sendEditablePlainText?: (chatId: number, text: string) => Promise<number>; editPlainText?: (chatId: number, messageId: number, text: string) => Promise<void> };
+    if (state.liveMessageId && editableApi.editPlainText) {
+      try {
+        await editableApi.editPlainText(chatId, state.liveMessageId, messageText);
+        state.lastText = messageText;
+        return;
+      } catch {
+        state.liveMessageId = undefined;
+      }
+    }
+    if (editableApi.sendEditablePlainText) {
+      state.liveMessageId = await editableApi.sendEditablePlainText(chatId, messageText);
+      state.lastText = messageText;
+      return;
+    }
+    await this.api.sendPlainText(chatId, messageText);
+    state.lastText = messageText;
   }
 
   private async acquireLock(): Promise<void> {

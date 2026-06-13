@@ -219,6 +219,7 @@ describe("DiscordRuntime", () => {
 
     expect(ops.messages).toHaveLength(1);
     expect(ops.messages[0]?.content).toContain("Running tests");
+    expect(ops.messages[0]?.content).not.toContain("Pi progress");
     expect(ops.messages[0]?.content).not.toContain("Drafting response");
   });
 

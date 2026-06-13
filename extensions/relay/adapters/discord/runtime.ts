@@ -1503,7 +1503,7 @@ export class DiscordRuntime {
     const mode = progressModeFor({ progressMode: channelProgressMode(binding) }, this.config);
     const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
     if (pending.length === 0 || !this.adapter) return;
-    const text = formatProgressUpdate(pending, this.config);
+    const text = formatProgressUpdate(pending, this.config, { header: false });
     if (!text) return;
     state.lastSentAt = Date.now();
     await this.adapter.sendText(bindingAddress(binding), text);

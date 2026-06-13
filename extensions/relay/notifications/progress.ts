@@ -7,6 +7,7 @@ export const DEFAULT_RECENT_ACTIVITY_LIMIT = 10;
 export const DEFAULT_MAX_PROGRESS_MESSAGE_CHARS = 700;
 export const COMPACTION_PROGRESS_STARTED_TEXT = "Context compaction started";
 export const COMPACTION_PROGRESS_COMPLETED_TEXT = "Context compaction completed";
+export const DEFAULT_LIVE_PROGRESS_MARKER = "●";
 
 export const PROGRESS_MODES: ProgressMode[] = ["quiet", "normal", "verbose", "completionOnly"];
 
@@ -37,10 +38,25 @@ export function shouldSendCompactionProgress(mode: ProgressMode): boolean {
   return mode !== "quiet";
 }
 
-export function shouldSendProgressActivity(mode: ProgressMode, entry: Pick<ProgressActivityEntry, "kind">): boolean {
+export function shouldSendProgressActivity(mode: ProgressMode, entry: Pick<ProgressActivityEntry, "kind"> & Partial<Pick<ProgressActivityEntry, "text" | "delivery">>): boolean {
   if (entry.kind === "compaction") return shouldSendCompactionProgress(mode);
-  if (entry.kind === "assistant") return mode === "verbose";
+  if (progressActivityDelivery(entry) === "volatile") return mode === "verbose";
   return shouldSendNonTerminalProgress(mode);
+}
+
+export function progressActivityDelivery(entry: Pick<ProgressActivityEntry, "kind"> & Partial<Pick<ProgressActivityEntry, "text" | "delivery">>): "milestone" | "volatile" {
+  if (entry.delivery) return entry.delivery;
+  if (entry.kind === "assistant") return "volatile";
+  const text = entry.text?.trim() ?? "";
+  if (entry.kind === "status" && /^model update$/i.test(text)) return "volatile";
+  if (entry.kind === "tool" && /^processed tool result$/i.test(text)) return "volatile";
+  return "milestone";
+}
+
+export function progressSemanticKey(entry: Pick<ProgressActivityEntry, "kind" | "text" | "detail" | "semanticKey" | "delivery">): string {
+  if (entry.semanticKey?.trim()) return normalizeProgressKey(entry.semanticKey);
+  const delivery = progressActivityDelivery(entry);
+  return normalizeProgressKey(`${delivery}:${entry.kind}:${entry.text}:${entry.detail ?? ""}`);
 }
 
 export function progressIntervalMsFor(mode: ProgressMode, config: Pick<TelegramTunnelConfig, "progressIntervalMs" | "verboseProgressIntervalMs">): number {
@@ -79,6 +95,8 @@ export function createProgressActivity(input: {
   text: string;
   detail?: string;
   at?: number;
+  delivery?: ProgressActivityEntry["delivery"];
+  semanticKey?: string;
 }, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): ProgressActivityEntry | undefined {
   const text = sanitizeProgressText(input.text, config);
   const detail = sanitizeProgressText(input.detail, config);
@@ -89,6 +107,8 @@ export function createProgressActivity(input: {
     text,
     detail: detail || undefined,
     at: input.at ?? Date.now(),
+    delivery: input.delivery,
+    semanticKey: input.semanticKey ? normalizeProgressKey(input.semanticKey) : undefined,
   };
 }
 
@@ -104,11 +124,40 @@ export function appendRecentActivity(
   return next;
 }
 
-export function formatProgressUpdate(entries: ProgressActivityEntry[], config: Pick<TelegramTunnelConfig, "maxProgressMessageChars">): string | undefined {
-  const latest = coalesceProgressEntries(entries);
+export function coalesceLiveProgressEntries(entries: ProgressActivityEntry[]): ProgressActivityEntry[] {
+  type CountedProgressActivityEntry = ProgressActivityEntry & { count?: number };
+  const milestones = new Map<string, ProgressActivityEntry & { count?: number }>();
+  const volatileByKind = new Map<string, ProgressActivityEntry>();
+
+  for (const entry of entries) {
+    const delivery = progressActivityDelivery(entry);
+    if (delivery === "volatile") {
+      volatileByKind.set(`${entry.kind}:${normalizeProgressKey(entry.text)}`, { ...entry });
+      continue;
+    }
+    const key = progressSemanticKey(entry);
+    const existing = milestones.get(key);
+    if (existing) {
+      existing.count = (existing.count ?? 1) + 1;
+      existing.at = Math.max(existing.at, entry.at);
+      continue;
+    }
+    milestones.set(key, { ...entry });
+  }
+
+  const latestVolatile = [...volatileByKind.values()];
+  return ([...milestones.values(), ...latestVolatile] as CountedProgressActivityEntry[])
+    .sort((left, right) => left.at - right.at)
+    .slice(-5)
+    .map((entry) => entry.count && entry.count > 1 ? { ...entry, text: `${entry.text} (${entry.count}×)` } : entry);
+}
+
+export function formatProgressUpdate(entries: ProgressActivityEntry[], config: Pick<TelegramTunnelConfig, "maxProgressMessageChars">, options: { header?: boolean; marker?: string } = {}): string | undefined {
+  const latest = coalesceLiveProgressEntries(entries);
   if (latest.length === 0) return undefined;
-  const body = latest.map((entry) => `• ${entry.text}${entry.detail ? ` — ${entry.detail}` : ""}`).join("\n");
-  const output = `Pi progress\n${body}`;
+  const marker = options.marker ?? DEFAULT_LIVE_PROGRESS_MARKER;
+  const body = latest.map((entry) => `${marker} ${entry.text}${entry.detail ? ` — ${entry.detail}` : ""}`).join("\n");
+  const output = options.header ?? true ? `Pi progress\n${body}` : body;
   const maxChars = maxProgressMessageChars(config);
   return output.length > maxChars ? `${output.slice(0, maxChars - 1).trimEnd()}…` : output;
 }
@@ -128,24 +177,6 @@ export function sessionDisplayName(entry: { sessionLabel: string; alias?: string
   return entry.alias?.trim() || entry.sessionLabel;
 }
 
-function coalesceProgressEntries(entries: ProgressActivityEntry[]): ProgressActivityEntry[] {
-  const byText = new Map<string, ProgressActivityEntry & { count?: number }>();
-  for (const entry of entries) {
-    const key = `${entry.kind}:${entry.text}:${entry.detail ?? ""}`;
-    const existing = byText.get(key);
-    if (existing) {
-      existing.count = (existing.count ?? 1) + 1;
-      existing.at = Math.max(existing.at, entry.at);
-      continue;
-    }
-    byText.set(key, { ...entry });
-  }
-  return [...byText.values()]
-    .sort((left, right) => left.at - right.at)
-    .slice(-5)
-    .map((entry) => entry.count && entry.count > 1 ? { ...entry, text: `${entry.text} (${entry.count}×)` } : entry);
-}
-
 function relativeTime(at: number, now: number): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   if (seconds < 60) return `${seconds}s ago`;
@@ -153,6 +184,10 @@ function relativeTime(at: number, now: number): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   return `${hours}h ago`;
+}
+
+function normalizeProgressKey(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function positiveNumber(value: number | undefined, fallback: number): number {

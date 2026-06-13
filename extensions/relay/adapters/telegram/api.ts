@@ -132,6 +132,23 @@ export class TelegramApiClient {
     await this.sendPreparedChatTextWithKeyboard(chatId, formatted, keyboard);
   }
 
+  async sendEditablePlainText(chatId: number, text: string): Promise<number> {
+    const redacted = redactSecret(text, this.config.redactionPatterns);
+    const formatted = formatTelegramChatText(redacted);
+    const chunk = chunkTelegramText(formatted.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars)[0];
+    const rendered = this.renderPreparedChunk(chunk?.text ?? "");
+    const message = await this.withRetry(() => this.api.sendMessage(chatId, rendered.text, rendered.parseMode ? { parse_mode: rendered.parseMode } : undefined));
+    return message.message_id;
+  }
+
+  async editPlainText(chatId: number, messageId: number, text: string): Promise<void> {
+    const redacted = redactSecret(text, this.config.redactionPatterns);
+    const formatted = formatTelegramChatText(redacted);
+    const chunk = chunkTelegramText(formatted.replace(/\r\n/g, "\n"), this.config.maxTelegramMessageChars)[0];
+    const rendered = this.renderPreparedChunk(chunk?.text ?? "");
+    await this.withRetry(() => this.api.editMessageText(chatId, messageId, rendered.text, rendered.parseMode ? { parse_mode: rendered.parseMode } : undefined));
+  }
+
   /**
    * Sends chat text that is safe to render as Telegram HTML where supported.
    * The method applies configured secret redaction before chunking so callers

@@ -2874,8 +2874,30 @@ describe("PiRelay integration behavior", () => {
       kind: "assistant",
       text: "Model update",
       detail: expect.stringContaining("inspect the failing tests"),
+      delivery: "volatile",
+      semanticKey: expect.stringContaining("inspect the failing tests"),
     });
     expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_REASONING");
+
+    await pi.emit("message_end", {
+      message: { role: "toolResult", toolCallId: "tool-1", toolName: "bash", content: [{ type: "text", text: "SECRET_TOOL_RESULT" }], isError: false },
+    }, context);
+    expect(route.notification.progressEvent).toMatchObject({
+      kind: "tool",
+      text: "Processed tool result",
+      delivery: "volatile",
+      semanticKey: "tool-result:tool-1",
+    });
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_TOOL_RESULT");
+
+    await pi.emit("tool_execution_end", { toolCallId: "tool-1", toolName: "bash", result: {}, isError: false }, context);
+    expect(route.notification.progressEvent).toMatchObject({
+      kind: "tool",
+      text: "Tool completed",
+      detail: "bash",
+      delivery: "milestone",
+      semanticKey: "tool-completed:tool-1",
+    });
   });
 
   it("does not use stream-only drafts as final-output fallback", async () => {

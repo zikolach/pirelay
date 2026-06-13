@@ -197,10 +197,16 @@ export interface ChannelAdapter extends ChannelAdapterMetadata {
   handleWebhook?(payload: unknown, headers: Record<string, string>, handler: ChannelInboundHandler): Promise<void>;
   send(payload: ChannelOutboundPayload): Promise<void>;
   sendText(address: ChannelRouteAddress, text: string, options?: { buttons?: ChannelButtonLayout }): Promise<void>;
+  sendLiveProgress?(address: ChannelRouteAddress, text: string): Promise<ChannelLiveProgressRef | undefined>;
+  updateLiveProgress?(address: ChannelRouteAddress, ref: ChannelLiveProgressRef, text: string): Promise<void>;
   sendDocument(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void>;
   sendImage(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void>;
   sendActivity(address: ChannelRouteAddress, activity: ChannelOutboundActivity["activity"]): Promise<void>;
   answerAction(actionId: string, options?: { text?: string; alert?: boolean }): Promise<void>;
+}
+
+export interface ChannelLiveProgressRef {
+  messageId: string;
 }
 
 export type RelayPromptContent = string | (TextContent | ImageContent)[];
