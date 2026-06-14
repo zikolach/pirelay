@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.0 - 2026-06-14
+
+- Added cross-messenger live progress updates so supported Slack, Discord, and Telegram destinations update an existing progress message where possible instead of posting repeated snapshots. #78
+- Added Slack progress message references and `chat.update` support, with recoverable fallback to a new live progress message or plain text snapshot when updates fail. #78
+- Added Discord progress message references and bot-message edit support, with the same best-effort fallback semantics used by other messengers. #78
+- Shared the live progress delivery fallback model across runtimes: update existing progress, send a new live/editable progress message, then send a plain snapshot while keeping failures non-fatal. #78
+- Hardened stale/revoked/moved binding authority coverage so live progress refs are not edited after destination authority changes. #78
+- Improved relay progress UX with coalesced milestone progress, live-edit support for Telegram broker/direct paths, terminal-output separation, and safer progress-mode behavior. #77
+- Fixed broker state update queue and locking behavior to keep relay state writes serialized and resilient under concurrent broker activity. #75 #76
+
+## 0.7.2 - 2026-06-14
+
+- Fixed npm publishing for the scoped `@zylab/pirelay` package. #74
+
+## 0.7.1 - 2026-06-14
+
+- Added remote skill invocation so authorized messenger users can list and invoke allowed local Pi skills from paired sessions. #70
+- Added requester-scoped remote approval gates, shared-room agent delegation, and GIF image prompt support. #60 #61 #64 #66
+- Fixed Telegram broker pairing and reconnect resilience, readable terminal output rendering, Telegram markdown output, and streamed assistant output fallback behavior. #59 #65 #68 #69
+- Hardened approval action routing and archived completed OpenSpec changes. #62 #67
+- Fixed npm package public publishing and release preparation. #72 #73
+
 ## 0.7.0 - 2026-05-15
 
 - Added messenger command surfaces: Telegram BotCommand menus, Discord native `/relay` command metadata/routing, and Slack `/pirelay` slash-command manifest and runtime support. #56
