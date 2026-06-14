@@ -1254,8 +1254,15 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   route.binding = binding;
   const mode = progressModeFor(binding, config);
   const pending = state.pending.splice(0).filter((entry) => (route.notification?.lastStatus === 'running' || entry.kind === 'compaction') && shouldSendProgressActivity(mode, entry));
+  if (pending.length === 0) {
+    clearProgressStateByKey(key);
+    return;
+  }
   const text = formatProgressUpdate(pending, config, { header: false });
-  if (!text) return;
+  if (!text) {
+    clearProgressStateByKey(key);
+    return;
+  }
   state.lastSentAt = Date.now();
   const messageText = `${sourcePrefixForRoute(route)}${text}`;
   if (state.lastText === messageText) return;

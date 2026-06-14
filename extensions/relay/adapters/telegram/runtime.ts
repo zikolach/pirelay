@@ -709,8 +709,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
     const mode = progressModeFor(binding, this.config);
     const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
+    if (pending.length === 0) {
+      this.clearProgressState(route);
+      return;
+    }
     const text = formatProgressUpdate(pending, this.config, { header: false });
-    if (!text) return;
+    if (!text) {
+      this.clearProgressState(route);
+      return;
+    }
     state.lastSentAt = Date.now();
     const messageText = `${this.sourcePrefixForRoute(route)}${text}`;
     if (state.lastText === messageText) return;

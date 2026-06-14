@@ -2777,7 +2777,7 @@ describe("InProcessTunnelRuntime", () => {
   it("routes Telegram group /to@bot prompts and outputs through private-pairing authorization", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();
-    config.progressIntervalMs = 1;
+    config.progressIntervalMs = 1_000;
     const store = new TunnelStateStore(config.stateDir);
     const runtime = new InProcessTunnelRuntime(config, store);
     (runtime as any).setupCache = { botId: 123456, botUsername: "mini_builder_bot", botDisplayName: "Mini Builder", validatedAt: new Date().toISOString() };
@@ -2961,7 +2961,7 @@ describe("InProcessTunnelRuntime", () => {
   it("edits Telegram live progress in place when supported", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();
-    config.progressIntervalMs = 1;
+    config.progressIntervalMs = 1_000;
     const store = new TunnelStateStore(config.stateDir);
     const runtime = new InProcessTunnelRuntime(config, store);
     const binding: TelegramBindingMetadata = {
@@ -3051,6 +3051,52 @@ describe("InProcessTunnelRuntime", () => {
 
     await vi.waitFor(() => expect(sends).toHaveLength(2));
     expect(sends[1]).toContain("Editing files");
+  });
+
+  it("clears Telegram progress state when queued progress becomes non-deliverable", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1_000;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress-filtered-empty:/tmp/session-progress-filtered-empty.jsonl",
+      sessionId: "session-progress-filtered-empty",
+      sessionFile: "/tmp/session-progress-filtered-empty.jsonl",
+      sessionLabel: "session-progress-filtered-empty.jsonl",
+      chatId: 1013,
+      userId: 33,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "normal",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sends: string[] = [];
+    (runtime as any).api = {
+      sendEditablePlainText: async (_chatId: number, text: string) => {
+        sends.push(text);
+        return 88;
+      },
+      editPlainText: async () => undefined,
+      sendPlainText: async () => undefined,
+    };
+
+    route.notification.progressEvent = createProgressActivity({ id: "filtered-empty-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(sends).toHaveLength(1));
+
+    route.notification.progressEvent = createProgressActivity({ id: "filtered-empty-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    (runtime as any).syncProgressDelivery(route);
+    expect((runtime as any).progressStates.size).toBe(1);
+    binding.progressMode = "quiet";
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await vi.waitFor(() => expect((runtime as any).progressStates.size).toBe(0));
+    expect(sends).toHaveLength(1);
   });
 
   it("swallows Telegram progress send failures because progress is best-effort", async () => {
