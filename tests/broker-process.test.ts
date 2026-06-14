@@ -990,17 +990,34 @@ describe("telegram broker process", () => {
         },
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "tool-2", kind: "tool", text: "Tool completed", detail: "read", at: Date.now() + 1 } },
+          binding,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
     } finally {
       client.close();
     }
 
-    const texts = parseOutbox(await readFile(outboxPath, "utf8"))
-      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
-      .map((entry) => entry.text);
-    expect(texts).toHaveLength(1);
-    expect(texts[0]).toContain("Tool completed");
-    expect(texts[0]).not.toContain("Pi progress");
-    expect(texts[0]).not.toContain("Processed tool result");
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const sends = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
+    const edits = outbox.filter((entry): entry is TestOutboxEditMessage => entry.method === "editMessageText");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toContain("Tool completed");
+    expect(sends[0]?.text).not.toContain("Pi progress");
+    expect(sends[0]?.text).not.toContain("Processed tool result");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toMatchObject({ chatId: 123, messageId: 10_000, text: expect.stringContaining("read") });
   });
 
   it("clears broker progress state when queued progress becomes non-deliverable", async () => {

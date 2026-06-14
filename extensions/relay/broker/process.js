@@ -317,8 +317,10 @@ async function appendBrokerTestTelegramOutbox(event) {
   return appendTestTelegramOutbox(event, { outboxPath: testTelegramOutboxPath, recordDiagnostic });
 }
 
+let brokerTestTelegramMessageId = 10_000;
+
 async function sendTelegramMessage(chatId, text, options) {
-  if (await appendBrokerTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return;
+  if (await appendBrokerTestTelegramOutbox({ method: 'sendMessage', chatId, text, options })) return { message_id: brokerTestTelegramMessageId++ };
   return api.sendMessage(chatId, text, options);
 }
 
