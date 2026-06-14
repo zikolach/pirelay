@@ -1512,18 +1512,27 @@ export class DiscordRuntime {
     if (!text || !this.adapter) return;
     state.lastSentAt = Date.now();
     const address = bindingAddress(binding);
+    const adapter: {
+      sendText: DiscordChannelAdapter["sendText"];
+      sendLiveProgress?: DiscordChannelAdapter["sendLiveProgress"];
+      updateLiveProgress?: DiscordChannelAdapter["updateLiveProgress"];
+    } = this.adapter;
+    const sendLiveProgress = adapter.sendLiveProgress
+      ? async (nextText: string) => {
+        const ref = await adapter.sendLiveProgress?.(address, nextText);
+        return ref?.messageId;
+      }
+      : undefined;
+    const updateLiveProgress = state.liveMessageRef && adapter.updateLiveProgress
+      ? (ref: string, nextText: string) => adapter.updateLiveProgress?.(address, { messageId: ref }, nextText) ?? Promise.reject(new Error("Discord live progress updates are unavailable."))
+      : undefined;
     await deliverLiveProgress(
       state,
       text,
       {
-        sendLiveProgress: async (nextText) => {
-          const ref = await this.adapter!.sendLiveProgress?.(address, nextText);
-          return ref?.messageId;
-        },
-        updateLiveProgress: state.liveMessageRef
-          ? (ref, nextText) => this.adapter!.updateLiveProgress(address, { messageId: ref }, nextText)
-          : undefined,
-        sendProgressSnapshot: (nextText) => this.adapter!.sendText(address, nextText),
+        sendLiveProgress,
+        updateLiveProgress,
+        sendProgressSnapshot: (nextText) => adapter.sendText(address, nextText),
       },
     );
   }

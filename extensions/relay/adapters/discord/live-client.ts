@@ -327,14 +327,14 @@ function discordButtonStyle(style: DiscordButtonComponent["style"]): ButtonStyle
 }
 
 interface SendableDiscordTextChannel {
-  send(options: MessageCreateOptions): Promise<DiscordMessageLikeLike>;
+  send(options: MessageCreateOptions): Promise<DiscordSentMessageLike>;
   sendTyping(): Promise<unknown>;
   messages?: {
     fetch(messageId: string): Promise<DiscordEditableMessageLike>;
   };
 }
 
-interface DiscordMessageLikeLike {
+interface DiscordSentMessageLike {
   id?: string;
 }
 
