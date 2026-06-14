@@ -1,5 +1,15 @@
 import { appendFileSync } from "node:fs";
-import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackReactionPayload, SlackUploadFilePayload } from "./adapter.js";
+import type {
+  SlackApiOperations,
+  SlackAuthTestResult,
+  SlackEnvelope,
+  SlackPostEphemeralPayload,
+  SlackPostMessagePayload,
+  SlackPostMessageResult,
+  SlackReactionPayload,
+  SlackUpdateMessagePayload,
+  SlackUploadFilePayload,
+} from "./adapter.js";
 import { redactSecrets } from "../../config/setup.js";
 import type { SlackRelayConfig } from "../../core/types.js";
 
@@ -87,8 +97,14 @@ export class SlackLiveOperations implements SlackApiOperations {
     };
   }
 
-  async postMessage(payload: SlackPostMessagePayload): Promise<void> {
-    await this.callSlackApi("chat.postMessage", this.botToken, { channel: payload.channel, text: payload.text, thread_ts: payload.threadTs, blocks: payload.blocks ? slackBlocks(payload.blocks) : undefined });
+  async postMessage(payload: SlackPostMessagePayload): Promise<SlackPostMessageResult> {
+    const response = await this.callSlackApi("chat.postMessage", this.botToken, { channel: payload.channel, text: payload.text, thread_ts: payload.threadTs, blocks: payload.blocks ? slackBlocks(payload.blocks) : undefined });
+    const ts = stringField(response, "ts");
+    return ts ? { ts } : {};
+  }
+
+  async updateMessage(payload: SlackUpdateMessagePayload): Promise<void> {
+    await this.callSlackApi("chat.update", this.botToken, { channel: payload.channel, ts: payload.ts, text: payload.text, blocks: payload.blocks ? slackBlocks(payload.blocks) : undefined });
   }
 
   async uploadFile(payload: SlackUploadFilePayload): Promise<void> {

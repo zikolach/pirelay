@@ -183,6 +183,32 @@ describe("discord live client helpers", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("returns a message id when sending Discord messages", async () => {
+    const send = vi.fn(async (_options: unknown) => ({ id: "m-99", channelId: "c1" }));
+    const client = mockDiscordClient();
+    vi.mocked(client.channels.fetch).mockResolvedValue({ send, sendTyping: vi.fn(async () => undefined), messages: { fetch: vi.fn() } } as never);
+    const operations = new DiscordLiveOperations({ token: "discord-token", client });
+
+    const result = await operations.sendMessage({ channelId: "c1", content: "hello" });
+
+    expect(result).toEqual({ messageId: "m-99" });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ content: "hello", allowedMentions: { parse: [] } }));
+  });
+
+  it("updates Discord messages by fetching and editing", async () => {
+    const edit = vi.fn(async () => undefined);
+    const fetch = vi.fn(async () => ({ edit }));
+    const send = vi.fn(async () => ({ id: "m-100", channelId: "c1" }));
+    const client = mockDiscordClient();
+    vi.mocked(client.channels.fetch).mockResolvedValue({ send, sendTyping: vi.fn(async () => undefined), messages: { fetch } } as never);
+    const operations = new DiscordLiveOperations({ token: "discord-token", client });
+
+    await operations.editMessage({ channelId: "c1", messageId: "m-100", content: "updated" });
+
+    expect(fetch).toHaveBeenCalledWith("m-100");
+    expect(edit).toHaveBeenCalledWith({ content: "updated", allowedMentions: { parse: [] } });
+  });
+
   it("detects placeholders only in placeholder-style token forms", () => {
     expect(discordSubcommandTakesArgs("/status")).toBe(false);
     expect(discordSubcommandTakesArgs("/send <path>")).toBe(true);

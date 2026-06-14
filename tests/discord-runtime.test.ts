@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordGatewayEvent, DiscordMentionPayload, DiscordSendFilePayload, DiscordSendMessagePayload } from "../extensions/relay/adapters/discord/adapter.js";
+import type { DiscordApiOperations, DiscordAttachmentPayload, DiscordEditMessagePayload, DiscordGatewayEvent, DiscordMentionPayload, DiscordSendFilePayload, DiscordSendMessagePayload, DiscordSendMessageResult } from "../extensions/relay/adapters/discord/adapter.js";
 import { createDiscordRuntime, DiscordRuntime, getOrCreateDiscordRuntime } from "../extensions/relay/adapters/discord/runtime.js";
 import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
 import { TunnelStateStore } from "../extensions/relay/state/tunnel-store.js";
@@ -15,9 +15,15 @@ const ONE_BY_ONE_GIF = Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAAB
 class FakeDiscordOperations implements DiscordApiOperations {
   handler?: (event: DiscordGatewayEvent) => Promise<void>;
   readonly messages: DiscordSendMessagePayload[] = [];
+  readonly edits: DiscordEditMessagePayload[] = [];
   readonly files: DiscordSendFilePayload[] = [];
   readonly typing: string[] = [];
   readonly answers: Array<{ interactionId: string; text?: string; alert?: boolean }> = [];
+  readonly messageIds: string[] = [];
+  messageIdPrefix = "111";
+  messageIndex = 0;
+  onSendMessage?: (payload: DiscordSendMessagePayload) => Promise<DiscordSendMessageResult>;
+  onEditMessage?: (payload: DiscordEditMessagePayload) => Promise<void>;
   downloadBytes = new Uint8Array([1, 2, 3]);
   readonly downloadUrls: string[] = [];
 
@@ -32,8 +38,21 @@ class FakeDiscordOperations implements DiscordApiOperations {
     this.handler = undefined;
   }
 
-  async sendMessage(payload: DiscordSendMessagePayload): Promise<void> {
+  async sendMessage(payload: DiscordSendMessagePayload): Promise<DiscordSendMessageResult> {
     this.messages.push(payload);
+    const id = `${this.messageIdPrefix}.${++this.messageIndex}`;
+    this.messageIds.push(id);
+    if (this.onSendMessage) {
+      await this.onSendMessage(payload);
+    }
+    return { messageId: id };
+  }
+
+  async editMessage(payload: DiscordEditMessagePayload): Promise<void> {
+    this.edits.push(payload);
+    if (this.onEditMessage) {
+      await this.onEditMessage(payload);
+    }
   }
 
   async sendFile(payload: DiscordSendFilePayload): Promise<void> {
@@ -206,7 +225,7 @@ describe("DiscordRuntime", () => {
       sessionLabel: session.sessionLabel,
       boundAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
-      metadata: { progressMode: "normal" },
+      metadata: { progressMode: "normal", },
     });
 
     await runtime.start();
@@ -221,6 +240,116 @@ describe("DiscordRuntime", () => {
     expect(ops.messages[0]?.content).toContain("Running tests");
     expect(ops.messages[0]?.content).not.toContain("Pi progress");
     expect(ops.messages[0]?.content).not.toContain("Drafting response");
+  });
+
+  it("reuses a Discord live progress message when updates are supported", async () => {
+    const cfg = await config();
+    cfg.progressIntervalMs = 1;
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route().route;
+    session.notification.lastStatus = "running";
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "default",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    });
+
+    await runtime.start();
+    session.notification.progressEvent = { id: "discord-live-progress-1", kind: "tool", text: "Compile", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
+
+    const firstMessageId = ops.messageIds.at(-1);
+    session.notification.progressEvent = { id: "discord-live-progress-2", kind: "tool", text: "Compile tests", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.waitFor(() => expect(ops.edits).toHaveLength(1));
+
+    expect(ops.messages).toHaveLength(1);
+    expect(ops.edits[0]).toMatchObject({ channelId: "dm1", messageId: firstMessageId, content: expect.stringContaining("Compile tests") });
+  });
+
+  it("falls back to a new Discord progress snapshot when edit updates fail", async () => {
+    const cfg = await config();
+    cfg.progressIntervalMs = 1;
+    const ops = new FakeDiscordOperations();
+    ops.onEditMessage = async () => {
+      throw new Error("edit failed");
+    };
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route().route;
+    session.notification.lastStatus = "running";
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "default",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    });
+
+    await runtime.start();
+    session.notification.progressEvent = { id: "discord-fallback-progress-1", kind: "tool", text: "Compile", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
+
+    session.notification.progressEvent = { id: "discord-fallback-progress-2", kind: "tool", text: "Packaging", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.waitFor(() => expect(ops.messages.length).toBe(2));
+
+    expect(ops.edits).toHaveLength(1);
+    expect(ops.messages.at(-1)?.content).toContain("Packaging");
+  });
+
+  it("does not edit a stale Discord live progress message after binding is revoked", async () => {
+    vi.useFakeTimers();
+    const cfg = await config();
+    cfg.progressIntervalMs = 50;
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route().route;
+    session.notification.lastStatus = "running";
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "default",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    });
+
+    await runtime.start();
+    session.notification.progressEvent = { id: "discord-progress-before-revoke", kind: "tool", text: "Compiling", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
+
+    session.notification.progressEvent = { id: "discord-progress-after-revoke", kind: "tool", text: "Should not edit", at: Date.now() + 1 };
+    await runtime.registerRoute(session);
+    await store.revokeChannelBinding("discord", session.sessionKey);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(ops.messages).toHaveLength(1);
+    expect(ops.edits).toHaveLength(0);
+    await vi.waitFor(() => expect((runtime as unknown as { progressStates: Map<string, unknown> }).progressStates.size).toBe(0));
   });
 
   it("clears Discord progress state when pending progress becomes suppressed", async () => {
@@ -261,7 +390,7 @@ describe("DiscordRuntime", () => {
       metadata: { progressMode: "quiet" },
     });
     await vi.runOnlyPendingTimersAsync();
-    await vi.waitFor(() => expect((runtime as any).progressStates.size).toBe(0));
+    await vi.waitFor(() => expect((runtime as unknown as { progressStates: Map<string, unknown> }).progressStates.size).toBe(0));
     expect(ops.messages).toHaveLength(0);
   });
 

@@ -57,6 +57,39 @@ describe("DiscordChannelAdapter", () => {
     expect(event!.conversation.kind).toBe("group");
   });
 
+  it("captures Discord live progress refs and updates them by message id", async () => {
+    const sendMessage = vi.fn(async () => ({ messageId: "456" }));
+    const editMessage = vi.fn(async () => undefined);
+    const sendFile = vi.fn(async (_payload: unknown) => undefined);
+    const sendTyping = vi.fn(async (_channelId: string) => undefined);
+    const answerInteraction = vi.fn(async (_interactionId: string, _interactionToken: string | undefined, _options?: unknown) => undefined);
+    const downloadFile = vi.fn(async (_url: string) => new Uint8Array([9]));
+    const adapter = new DiscordChannelAdapter(config, { sendMessage, sendFile, sendTyping, answerInteraction, downloadFile, editMessage });
+    const address = { channel: "discord", conversationId: "dm1", userId: "u1" } as const;
+
+    const ref = await adapter.sendLiveProgress(address, "Compiling");
+    await expect(adapter.updateLiveProgress(address, { messageId: ref?.messageId ?? "" }, "Still compiling" )).resolves.toBeUndefined();
+
+    expect(ref).toEqual({ messageId: "456" });
+    expect(sendMessage).toHaveBeenCalledWith({ channelId: "dm1", content: "Compiling" });
+    expect(editMessage).toHaveBeenCalledWith({ channelId: "dm1", messageId: "456", content: "Still compiling" });
+
+    const noOpAdapter = new DiscordChannelAdapter(config, { sendMessage: async () => undefined, sendFile, sendTyping, answerInteraction, downloadFile });
+    expect(await noOpAdapter.sendLiveProgress(address, "x")).toBeUndefined();
+  });
+
+  it("throws a consistent error when Discord message updates are unavailable", async () => {
+    const sendMessage = vi.fn(async (_payload: unknown) => undefined);
+    const sendFile = vi.fn(async (_payload: unknown) => undefined);
+    const sendTyping = vi.fn(async (_channelId: string) => undefined);
+    const answerInteraction = vi.fn(async (_interactionId: string, _interactionToken: string | undefined, _options?: unknown) => undefined);
+    const downloadFile = vi.fn(async (_url: string) => new Uint8Array([9]));
+    const adapter = new DiscordChannelAdapter(config, { sendMessage, sendFile, sendTyping, answerInteraction, downloadFile });
+    const address = { channel: "discord", conversationId: "dm1", userId: "u1" } as const;
+
+    await expect(adapter.updateLiveProgress(address, { messageId: "456" }, "Still compiling")).rejects.toThrow("Discord message updates are not supported by this adapter configuration.");
+  });
+
   it("chunks text, maps buttons, and sends files through injected operations", async () => {
     const sendMessage = vi.fn(async (_payload: unknown) => undefined);
     const sendFile = vi.fn(async (_payload: unknown) => undefined);

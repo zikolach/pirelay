@@ -10,6 +10,7 @@ import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegatio
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
+import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
@@ -82,7 +83,7 @@ export class SlackRuntime {
   private readonly seenEventKeys = new Map<string, number>();
   private readonly consumedResponseUrls = new Map<string, number>();
   private readonly thinkingReactions = new Map<string, { channel: string; timestamp: string; name: string }>();
-  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly progressStates = new Map<string, LiveProgressDeliveryState>();
   private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private botIdentity?: SlackAuthTestResult;
   private started = false;
@@ -1541,7 +1542,30 @@ export class SlackRuntime {
     const text = formatProgressUpdate(pending, this.config, { header: false });
     if (!text || !this.adapter) return;
     state.lastSentAt = Date.now();
-    await this.adapter.sendText(bindingAddress(binding), text);
+    const address = bindingAddress(binding);
+    const adapter: {
+      sendText: SlackChannelAdapter["sendText"];
+      sendLiveProgress?: SlackChannelAdapter["sendLiveProgress"];
+      updateLiveProgress?: SlackChannelAdapter["updateLiveProgress"];
+    } = this.adapter;
+    const sendLiveProgress = adapter.sendLiveProgress
+      ? async (nextText: string) => {
+        const ref = await adapter.sendLiveProgress?.(address, nextText);
+        return ref?.messageId;
+      }
+      : undefined;
+    const updateLiveProgress = state.liveMessageRef && adapter.updateLiveProgress
+      ? (ref: string, nextText: string) => adapter.updateLiveProgress?.(address, { messageId: ref }, nextText) ?? Promise.reject(new Error("Slack live progress updates are unavailable."))
+      : undefined;
+    await deliverLiveProgress(
+      state,
+      text,
+      {
+        sendLiveProgress,
+        updateLiveProgress,
+        sendProgressSnapshot: (nextText) => adapter.sendText(address, nextText),
+      },
+    );
   }
 
   private async startThinkingReaction(route: SessionRoute, message: ChannelInboundMessage): Promise<void> {

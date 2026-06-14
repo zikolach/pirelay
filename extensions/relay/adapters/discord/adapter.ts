@@ -8,6 +8,7 @@ import type {
   ChannelInboundFile,
   ChannelInboundHandler,
   ChannelInboundMessage,
+  ChannelLiveProgressRef,
   ChannelOutboundFile,
   ChannelOutboundPayload,
   ChannelRouteAddress,
@@ -21,11 +22,22 @@ import { DEFAULT_CONVERTIBLE_INBOUND_IMAGE_MIME_TYPES, acceptedInboundImageForma
 export interface DiscordApiOperations {
   connect?(handler: (event: DiscordGatewayEvent) => Promise<void>): Promise<void>;
   disconnect?(): Promise<void>;
-  sendMessage(payload: DiscordSendMessagePayload): Promise<void>;
+  sendMessage(payload: DiscordSendMessagePayload): Promise<DiscordSendMessageResult | void>;
+  editMessage?: (payload: DiscordEditMessagePayload) => Promise<void>;
   sendFile(payload: DiscordSendFilePayload): Promise<void>;
   sendTyping(channelId: string): Promise<void>;
   answerInteraction(interactionId: string, interactionToken: string | undefined, options?: { text?: string; alert?: boolean }): Promise<void>;
   downloadFile?(url: string): Promise<Uint8Array>;
+}
+
+export interface DiscordSendMessageResult {
+  messageId?: string;
+}
+
+export interface DiscordEditMessagePayload {
+  channelId: string;
+  messageId: string;
+  content: string;
 }
 
 export interface DiscordGatewayEvent {
@@ -164,6 +176,20 @@ export class DiscordChannelAdapter implements ChannelAdapter {
   async sendImage(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {
     assertCanSendOutboundFile(this, file, "image");
     await this.sendDocument(address, file, options);
+  }
+
+  async sendLiveProgress(address: ChannelRouteAddress, text: string): Promise<ChannelLiveProgressRef | undefined> {
+    const result = await this.api.sendMessage({ channelId: address.conversationId, content: escapeDiscordPlainText(text) });
+    return result && typeof result === "object" && typeof result.messageId === "string" && result.messageId.length > 0
+      ? { messageId: result.messageId }
+      : undefined;
+  }
+
+  async updateLiveProgress(address: ChannelRouteAddress, ref: ChannelLiveProgressRef, text: string): Promise<void> {
+    if (!this.api.editMessage) {
+      throw new Error("Discord message updates are not supported by this adapter configuration.");
+    }
+    await this.api.editMessage({ channelId: address.conversationId, messageId: ref.messageId, content: escapeDiscordPlainText(text) });
   }
 
   async sendActivity(address: ChannelRouteAddress, _activity: "typing" | "uploading" | "recording" = "typing"): Promise<void> {

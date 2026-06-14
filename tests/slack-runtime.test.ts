@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackReactionPayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
+import type { SlackApiOperations, SlackAuthTestResult, SlackEnvelope, SlackPostEphemeralPayload, SlackPostMessagePayload, SlackReactionPayload, SlackPostMessageResult, SlackUpdateMessagePayload, SlackUploadFilePayload } from "../extensions/relay/adapters/slack/adapter.js";
 import { SlackLiveOperations } from "../extensions/relay/adapters/slack/live-client.js";
 import { SlackRuntime } from "../extensions/relay/adapters/slack/runtime.js";
 import { routeUnavailableError } from "../extensions/relay/core/route-actions.js";
@@ -51,9 +51,14 @@ class FakeWebSocket {
 class FakeSlackOperations implements SlackApiOperations {
   handler?: (event: SlackEnvelope) => Promise<void>;
   readonly posts: SlackPostMessagePayload[] = [];
+  readonly updates: SlackUpdateMessagePayload[] = [];
   readonly ephemeral: SlackPostEphemeralPayload[] = [];
   readonly responses: Array<{ url: string; text: string }> = [];
   responseError?: Error;
+  updateMessageError?: Error;
+  readonly postMessageTsPrefix = "100";
+  postMessageIndex = 0;
+  onUpdateMessage?: (payload: SlackUpdateMessagePayload) => Promise<void>;
   addReaction?: (payload: SlackReactionPayload) => Promise<void>;
   removeReaction?: (payload: SlackReactionPayload) => Promise<void>;
 
@@ -69,8 +74,20 @@ class FakeSlackOperations implements SlackApiOperations {
     return { teamId: "T1", userId: "U_BOT", botId: "B1", appId: "A1" };
   }
 
-  async postMessage(payload: SlackPostMessagePayload): Promise<void> {
+  async postMessage(payload: SlackPostMessagePayload): Promise<SlackPostMessageResult> {
     this.posts.push(payload);
+    this.postMessageIndex += 1;
+    return { ts: `${this.postMessageTsPrefix}.${this.postMessageIndex}` };
+  }
+
+  async updateMessage(payload: SlackUpdateMessagePayload): Promise<void> {
+    this.updates.push(payload);
+    if (this.updateMessageError) {
+      throw this.updateMessageError;
+    }
+    if (this.onUpdateMessage) {
+      await this.onUpdateMessage(payload);
+    }
   }
 
   readonly uploads: SlackUploadFilePayload[] = [];
@@ -791,6 +808,115 @@ describe("SlackRuntime foundations", () => {
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Running tests") });
     expect(operations.posts.at(-1)?.text).not.toContain("Pi progress");
+  });
+
+  it("reuses a Slack live progress message when updates are supported", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "verbose", threadTs: "parent-progress" },
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-live-1", kind: "tool", text: "Compiling", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
+
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress" });
+    testRoute.notification.progressEvent = { id: "progress-live-2", kind: "tool", text: "Running tests", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.updates.length > 0);
+
+    expect(operations.posts).toHaveLength(1);
+    expect(operations.updates).toHaveLength(1);
+    expect(operations.updates[0]).toMatchObject({ channel: "D1", ts: "100.1", text: expect.stringContaining("Running tests") });
+  });
+
+  it("falls back to a new Slack progress snapshot when edit updates fail", async () => {
+    const operations = new FakeSlackOperations();
+    operations.onUpdateMessage = async () => {
+      throw new Error("edit failed");
+    };
+    const runtimeConfig = await config();
+    runtimeConfig.verboseProgressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({
+      channel: "slack",
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "verbose", threadTs: "parent-progress" },
+    });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-failed-update-1", kind: "tool", text: "Compiling", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
+    testRoute.notification.progressEvent = { id: "progress-failed-update-2", kind: "tool", text: "Packaging", at: Date.now() + 1 };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length === 2);
+
+    expect(operations.posts).toHaveLength(2);
+    expect(operations.posts.at(-1)?.text).toContain("Packaging");
+    expect(operations.updates).toHaveLength(1);
+  });
+
+  it("does not edit a stale Slack live progress message after binding moves", async () => {
+    vi.useFakeTimers();
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.progressIntervalMs = 50;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const baseBinding = {
+      channel: "slack" as const,
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    };
+    await store.upsertChannelBinding(baseBinding);
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-before-move", kind: "tool", text: "Compiling", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(operations.posts).toHaveLength(1));
+
+    testRoute.notification.progressEvent = { id: "progress-after-move", kind: "tool", text: "Should not edit", at: Date.now() + 1 };
+    await runtime.registerRoute(testRoute);
+    await store.upsertChannelBinding({ ...baseBinding, conversationId: "D2" });
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(operations.posts).toHaveLength(1);
+    expect(operations.updates).toHaveLength(0);
+    await vi.waitFor(() => expect((runtime as unknown as { progressStates: Map<string, unknown> }).progressStates.size).toBe(0));
   });
 
   it("uploads latest, explicit images, and requester-scoped Slack files", async () => {

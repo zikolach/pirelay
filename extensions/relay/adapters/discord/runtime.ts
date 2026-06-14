@@ -10,6 +10,7 @@ import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegatio
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
 import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
+import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
@@ -73,7 +74,7 @@ export class DiscordRuntime {
   private readonly activeSessionByConversationUser = new Map<string, string>();
   private readonly recentBindingBySessionKey = new Map<string, ChannelPersistedBindingRecord>();
   private readonly typingStates = new Map<string, { address: ChannelRouteAddress; timer?: ReturnType<typeof setTimeout> }>();
-  private readonly progressStates = new Map<string, { lastEventId?: string; pending: ProgressActivityEntry[]; lastSentAt?: number; timer?: ReturnType<typeof setTimeout> }>();
+  private readonly progressStates = new Map<string, LiveProgressDeliveryState>();
   private readonly invalidPairingAttempts = new Map<string, { count: number; resetAt: number }>();
   private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
   private started = false;
@@ -1508,9 +1509,32 @@ export class DiscordRuntime {
     }
     if (!this.adapter) return;
     const text = formatProgressUpdate(pending, this.config, { header: false });
-    if (!text) return;
+    if (!text || !this.adapter) return;
     state.lastSentAt = Date.now();
-    await this.adapter.sendText(bindingAddress(binding), text);
+    const address = bindingAddress(binding);
+    const adapter: {
+      sendText: DiscordChannelAdapter["sendText"];
+      sendLiveProgress?: DiscordChannelAdapter["sendLiveProgress"];
+      updateLiveProgress?: DiscordChannelAdapter["updateLiveProgress"];
+    } = this.adapter;
+    const sendLiveProgress = adapter.sendLiveProgress
+      ? async (nextText: string) => {
+        const ref = await adapter.sendLiveProgress?.(address, nextText);
+        return ref?.messageId;
+      }
+      : undefined;
+    const updateLiveProgress = state.liveMessageRef && adapter.updateLiveProgress
+      ? (ref: string, nextText: string) => adapter.updateLiveProgress?.(address, { messageId: ref }, nextText) ?? Promise.reject(new Error("Discord live progress updates are unavailable."))
+      : undefined;
+    await deliverLiveProgress(
+      state,
+      text,
+      {
+        sendLiveProgress,
+        updateLiveProgress,
+        sendProgressSnapshot: (nextText) => adapter.sendText(address, nextText),
+      },
+    );
   }
 
   private startTypingActivity(route: SessionRoute, address: ChannelRouteAddress): void {
