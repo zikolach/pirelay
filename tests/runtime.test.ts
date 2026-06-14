@@ -3099,6 +3099,49 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends).toHaveLength(1);
   });
 
+  it("falls back to plain Telegram progress when editable send fails", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress-editable-send-fallback:/tmp/session-progress-editable-send-fallback.jsonl",
+      sessionId: "session-progress-editable-send-fallback",
+      sessionFile: "/tmp/session-progress-editable-send-fallback.jsonl",
+      sessionLabel: "session-progress-editable-send-fallback.jsonl",
+      chatId: 1014,
+      userId: 34,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "normal",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    const plainSends: string[] = [];
+    (runtime as any).api = {
+      sendEditablePlainText: async () => {
+        throw new Error("editable send failed");
+      },
+      editPlainText: async () => undefined,
+      sendPlainText: async (_chatId: number, text: string) => {
+        plainSends.push(text);
+      },
+    };
+
+    route.notification.progressEvent = createProgressActivity({ id: "editable-send-fallback-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+    await vi.runOnlyPendingTimersAsync();
+
+    await vi.waitFor(() => expect(plainSends).toHaveLength(1));
+    expect(plainSends[0]).toContain("Running tests");
+    const state = (runtime as any).progressStates.get((runtime as any).progressKey(route));
+    expect(state?.liveMessageId).toBeUndefined();
+    expect(state?.lastText).toContain("Running tests");
+  });
+
   it("swallows Telegram progress send failures because progress is best-effort", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();

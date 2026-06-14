@@ -101,8 +101,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       await this.sendText(address, text);
       return undefined;
     }
-    const messageId = await this.api.sendEditablePlainText(telegramChatId(address), text);
-    return { messageId: String(messageId) };
+    try {
+      const messageId = await this.api.sendEditablePlainText(telegramChatId(address), text);
+      return { messageId: String(messageId) };
+    } catch {
+      await this.sendText(address, text);
+      return undefined;
+    }
   }
 
   async updateLiveProgress(address: ChannelRouteAddress, ref: ChannelLiveProgressRef, text: string): Promise<void> {

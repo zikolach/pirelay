@@ -113,6 +113,23 @@ describe("telegram channel adapter", () => {
     expect(sent).toEqual(["text:hello", "doc:out.md:3:cap", "doc:base64.bin:3:", "activity:typing", "activity:upload_document", "activity:record_video", "answer:cb-1:done:alert"]);
   });
 
+  it("falls back to sending plain live progress when editable send fails", async () => {
+    const sent: string[] = [];
+    const api: TelegramApiOperations = {
+      getUpdates: vi.fn(async () => []),
+      sendPlainTextWithKeyboard: vi.fn(async (_chatId, text) => { sent.push(text); }),
+      sendEditablePlainText: vi.fn(async () => { throw new Error("editable send failed"); }),
+      sendDocumentData: vi.fn(async () => undefined),
+      answerCallbackQuery: vi.fn(async () => undefined),
+      sendChatAction: vi.fn(async () => undefined),
+    };
+    const adapter = new TelegramChannelAdapter(config(), api);
+
+    await expect(adapter.sendLiveProgress({ channel: "telegram", conversationId: "30", userId: "40" }, "plain fallback")).resolves.toBeUndefined();
+
+    expect(sent).toEqual(["plain fallback"]);
+  });
+
   it("falls back to sending new live progress when editing is unavailable or fails", async () => {
     const sent: string[] = [];
     const edited: string[] = [];

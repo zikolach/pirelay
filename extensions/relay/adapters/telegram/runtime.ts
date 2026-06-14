@@ -731,12 +731,16 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         state.liveMessageId = undefined;
       }
     }
-    try {
-      if (editableApi.sendEditablePlainText) {
+    if (editableApi.sendEditablePlainText) {
+      try {
         state.liveMessageId = await editableApi.sendEditablePlainText(chatId, messageText);
         state.lastText = messageText;
         return;
+      } catch {
+        state.liveMessageId = undefined;
       }
+    }
+    try {
       await this.api.sendPlainText(chatId, messageText);
       state.lastText = messageText;
     } catch {

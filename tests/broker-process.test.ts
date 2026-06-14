@@ -1020,6 +1020,71 @@ describe("telegram broker process", () => {
     expect(edits[0]).toMatchObject({ chatId: 123, messageId: 10_000, text: expect.stringContaining("read") });
   });
 
+  it("falls back to plain broker progress when editable send fails", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "prb-pef-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-progress-editable-fallback:memory",
+      sessionId: "broker-progress-editable-fallback",
+      sessionLabel: "Broker Progress Editable Fallback",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      progressMode: "normal",
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: { botId: 1, botUsername: "dummy_bot", botDisplayName: "Dummy", validatedAt: new Date(0).toISOString() },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1, progressIntervalMs: 1 }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+        PI_RELAY_BROKER_TEST_FAIL_EDITABLE_PROGRESS_SEND_ONCE: "1",
+      },
+    });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-editable-fallback-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "tool-1", kind: "tool", text: "Fallback progress", at: Date.now() } },
+          binding,
+        },
+      });
+      await waitForFileToContain(outboxPath, "Fallback progress");
+    } finally {
+      client.close();
+    }
+
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const sends = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
+    const edits = outbox.filter((entry): entry is TestOutboxEditMessage => entry.method === "editMessageText");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toContain("Fallback progress");
+    expect(edits).toHaveLength(0);
+  });
+
   it("clears broker progress state when queued progress becomes non-deliverable", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-progress-filtered-"));
     tempDirs.push(stateDir);

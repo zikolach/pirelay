@@ -149,6 +149,7 @@ const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOST
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
 const testTelegramOutboxPath = testTelegramOutboxPathFromEnv(process.env);
 const testIngressSecret = process.env.PI_RELAY_BROKER_TEST_INGRESS_SECRET;
+let testFailNextEditableProgressSend = process.env.PI_RELAY_BROKER_TEST_FAIL_EDITABLE_PROGRESS_SEND_ONCE === '1';
 const diagnosticsLogger = createCommunicationDiagnosticsLogger(diagnosticsConfig);
 function recordDiagnostic(event) {
   if (!diagnosticsLogger.config?.enabled) return;
@@ -349,6 +350,10 @@ async function sendPreparedPlainText(chatId, text, keyboard) {
 }
 
 async function sendEditablePlainText(chatId, text) {
+  if (testFailNextEditableProgressSend) {
+    testFailNextEditableProgressSend = false;
+    throw new Error('Simulated editable progress send failure.');
+  }
   const chunk = chunkText(text)[0] || '';
   const prepared = prepareTelegramChunkForSend(chunk);
   const options = prepared.parseMode ? { parse_mode: prepared.parseMode } : undefined;
@@ -1279,6 +1284,13 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   }
   try {
     state.liveMessageId = await sendEditablePlainText(chatId, messageText);
+    state.lastText = messageText;
+    return;
+  } catch {
+    state.liveMessageId = undefined;
+  }
+  try {
+    await sendPlainText(chatId, messageText);
     state.lastText = messageText;
   } catch {
     state.liveMessageId = undefined;
