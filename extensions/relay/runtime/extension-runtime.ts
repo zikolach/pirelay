@@ -638,6 +638,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return images;
   }
 
+  function toolLifecycleSemanticKey(prefix: string, toolCallId: unknown): string {
+    const stableId = typeof toolCallId === "string" && toolCallId.trim() ? toolCallId.trim() : `missing-${Date.now()}-${progressSequence + 1}`;
+    return `${prefix}:${stableId}`;
+  }
+
   function recordProgress(kind: "lifecycle" | "tool" | "assistant" | "status" | "compaction", text: string, detail?: string, options: { delivery?: "milestone" | "volatile"; semanticKey?: string } = {}): void {
     if (!currentRoute) return;
     const config = configCache;
@@ -2167,11 +2172,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     recordDiagnostic({ component: "runtime", event: "tool_execution_end", outcome: event.isError ? "error" : "ok", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), isError: Boolean(event.isError) } });
     if (event.isError) {
       currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
-      recordProgress("tool", "Tool failed", event.toolName);
+      recordProgress("tool", "Tool failed", event.toolName, { delivery: "milestone", semanticKey: toolLifecycleSemanticKey("tool-failed", event.toolCallId) });
       publishRouteStateSoon();
       return;
     }
-    recordProgress("tool", "Tool completed", event.toolName, { delivery: "milestone", semanticKey: `tool-completed:${event.toolCallId}` });
+    recordProgress("tool", "Tool completed", event.toolName, { delivery: "milestone", semanticKey: toolLifecycleSemanticKey("tool-completed", event.toolCallId) });
     publishRouteStateSoon();
   });
 

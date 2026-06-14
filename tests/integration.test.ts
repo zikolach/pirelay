@@ -2907,6 +2907,14 @@ describe("PiRelay integration behavior", () => {
       delivery: "milestone",
       semanticKey: "tool-completed:tool-1",
     });
+
+    await pi.emit("tool_execution_end", { toolName: "read", result: {}, isError: false }, context);
+    const missingIdKey = route.notification.progressEvent?.semanticKey;
+    expect(missingIdKey).toMatch(/^tool-completed:missing-/);
+    expect(missingIdKey).not.toContain("undefined");
+    await pi.emit("tool_execution_end", { toolName: "read", result: {}, isError: false }, context);
+    expect(route.notification.progressEvent?.semanticKey).toMatch(/^tool-completed:missing-/);
+    expect(route.notification.progressEvent?.semanticKey).not.toBe(missingIdKey);
   });
 
   it("does not use stream-only drafts as final-output fallback", async () => {
