@@ -921,6 +921,243 @@ describe("telegram broker process", () => {
     expect(texts).toEqual(["Remote skill invocation is disabled.", "Remote skill invocation is disabled."]);
   });
 
+  it("delivers compact broker progress and suppresses volatile normal-mode bookkeeping", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-progress-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-progress:memory",
+      sessionId: "broker-progress",
+      sessionLabel: "Broker Progress",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      progressMode: "normal",
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: { botId: 1, botUsername: "dummy_bot", botDisplayName: "Dummy", validatedAt: new Date(0).toISOString() },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1, progressIntervalMs: 1 }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      },
+    });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "volatile", kind: "tool", text: "Processed tool result", delivery: "volatile", at: Date.now() } },
+          binding,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(await readFile(outboxPath, "utf8").catch(() => "")).toBe("");
+
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "tool", kind: "tool", text: "Tool completed", detail: "bash", at: Date.now() } },
+          binding,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "tool-2", kind: "tool", text: "Tool completed", detail: "read", at: Date.now() + 1 } },
+          binding,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      client.close();
+    }
+
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const sends = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
+    const edits = outbox.filter((entry): entry is TestOutboxEditMessage => entry.method === "editMessageText");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toContain("Tool completed");
+    expect(sends[0]?.text).not.toContain("Pi progress");
+    expect(sends[0]?.text).not.toContain("Processed tool result");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toMatchObject({ chatId: 123, messageId: 10_000, text: expect.stringContaining("read") });
+  });
+
+  it("falls back to plain broker progress when editable send fails", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "prb-pef-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-progress-editable-fallback:memory",
+      sessionId: "broker-progress-editable-fallback",
+      sessionLabel: "Broker Progress Editable Fallback",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      progressMode: "normal",
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: { botId: 1, botUsername: "dummy_bot", botDisplayName: "Dummy", validatedAt: new Date(0).toISOString() },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1, progressIntervalMs: 1 }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+        PI_RELAY_BROKER_TEST_FAIL_EDITABLE_PROGRESS_SEND_ONCE: "1",
+      },
+    });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    try {
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-editable-fallback-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id: "tool-1", kind: "tool", text: "Fallback progress", at: Date.now() } },
+          binding,
+        },
+      });
+      await waitForFileToContain(outboxPath, "Fallback progress");
+    } finally {
+      client.close();
+    }
+
+    const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
+    const sends = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
+    const edits = outbox.filter((entry): entry is TestOutboxEditMessage => entry.method === "editMessageText");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.text).toContain("Fallback progress");
+    expect(edits).toHaveLength(0);
+  });
+
+  it("clears broker progress state when queued progress becomes non-deliverable", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-progress-filtered-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const binding = {
+      sessionKey: "broker-progress-filtered:memory",
+      sessionId: "broker-progress-filtered",
+      sessionLabel: "Broker Progress Filtered",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      progressMode: "normal",
+      status: "active",
+    };
+    const writeState = async (progressMode: "normal" | "quiet") => {
+      await writeFile(join(stateDir, "state.json"), JSON.stringify({
+        setup: { botId: 1, botUsername: "dummy_bot", botDisplayName: "Dummy", validatedAt: new Date(0).toISOString() },
+        pendingPairings: {},
+        bindings: { [binding.sessionKey]: { ...binding, progressMode } },
+        channelBindings: {},
+      }));
+    };
+    await writeState("normal");
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1, progressIntervalMs: 500 }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+      },
+    });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const client = await openBrokerClient(socketPath);
+    const registerProgress = async (id: string, text: string) => {
+      await client.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "progress-filtered-client",
+        route: {
+          sessionKey: binding.sessionKey,
+          sessionId: binding.sessionId,
+          sessionLabel: binding.sessionLabel,
+          online: true,
+          busy: true,
+          notification: { lastStatus: "running", progressEvent: { id, kind: "tool", text, at: Date.now() } },
+          binding: { ...binding, progressMode: "normal" },
+        },
+      });
+    };
+    try {
+      await registerProgress("tool-1", "Initial progress");
+      await waitForFileToContain(outboxPath, "Initial progress");
+      await registerProgress("tool-2", "Suppressed progress");
+      await writeState("quiet");
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      const afterSuppressed = parseOutbox(await readFile(outboxPath, "utf8"))
+        .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
+      expect(afterSuppressed.map((entry) => entry.text).join("\n")).not.toContain("Suppressed progress");
+
+      await writeState("normal");
+      await registerProgress("tool-3", "Resumed progress");
+      await waitForFileToContain(outboxPath, "Resumed progress", 250);
+    } finally {
+      client.close();
+    }
+  });
+
   it("rejects pending broker client requests when the socket closes cleanly", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -1047,7 +1284,15 @@ interface TestOutboxDocument {
   options?: unknown;
 }
 
-type TestOutboxEntry = TestOutboxMessage | TestOutboxDocument;
+interface TestOutboxEditMessage {
+  method: "editMessageText";
+  chatId: number;
+  messageId: number;
+  text: string;
+  options?: unknown;
+}
+
+type TestOutboxEntry = TestOutboxMessage | TestOutboxDocument | TestOutboxEditMessage;
 
 function parseOutbox(raw: string): TestOutboxEntry[] {
   return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as TestOutboxEntry);
@@ -1103,6 +1348,17 @@ function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
       handleKillError(error);
     }
   });
+}
+
+async function waitForFileToContain(path: string, expected: string, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let latest = "";
+  while (Date.now() < deadline) {
+    latest = await readFile(path, "utf8").catch(() => "");
+    if (latest.includes(expected)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  expect(latest).toContain(expected);
 }
 
 function isAlreadyExitedError(error: unknown): boolean {

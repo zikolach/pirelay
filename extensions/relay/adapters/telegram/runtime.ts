@@ -87,7 +87,7 @@ import {
   progressIntervalMsFor,
   progressModeFor,
   recentActivityLimit,
-  shouldSendNonTerminalProgress,
+  shouldSendProgressActivity,
 } from "../../notifications/progress.js";
 import {
   buildImagePromptContent,
@@ -106,6 +106,15 @@ const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
+
+type TelegramProgressDeliveryState = {
+  lastEventId?: string;
+  pending: NonNullable<SessionRoute["notification"]["recentActivity"]>;
+  timer?: ReturnType<typeof setTimeout>;
+  lastSentAt?: number;
+  liveMessageId?: number;
+  lastText?: string;
+};
 const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;
 
 interface TelegramGroupCommandTarget {
@@ -174,7 +183,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly pendingSkillInputs = new Map<string, PendingSkillInput>();
   private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number }>();
+  private readonly progressStates = new Map<string, TelegramProgressDeliveryState>();
   private readonly activeSessionByChatUser = new Map<string, string>();
   private readonly sharedRoomOutputDestinations = new Map<string, SharedRoomOutputDestination>();
   private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
@@ -671,12 +680,13 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const event = route.notification.progressEvent;
     const binding = this.outputBindingForRoute(route);
     const key = this.progressKey(route);
-    if (!key || !event || !binding || binding.paused || route.notification.lastStatus !== "running") {
+    const deliverableEvent = event && (route.notification.lastStatus === "running" || event.kind === "compaction");
+    if (!key || !event || !deliverableEvent || !binding || binding.paused) {
       if (route.notification.lastStatus && isTerminalStatus(route.notification.lastStatus)) this.clearProgressState(route);
       return;
     }
     const mode = progressModeFor(binding, this.config);
-    if (!shouldSendNonTerminalProgress(mode)) return;
+    if (!shouldSendProgressActivity(mode, event)) return;
     let state = this.progressStates.get(key);
     if (!state) {
       state = { pending: [] };
@@ -698,18 +708,58 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     const state = this.progressStates.get(key);
     if (!state) return;
     state.timer = undefined;
+    state.lastSentAt = Date.now();
     const route = this.routes.get(sessionKey);
     const binding = route ? await this.activeOutputBindingForRoute(route) : undefined;
-    if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused || route.notification.lastStatus !== "running") {
+    if (!route || !binding || binding.chatId !== chatId || (userId !== undefined && binding.userId !== userId) || binding.paused) {
       if (route) this.clearProgressState(route);
       else this.progressStates.delete(key);
       return;
     }
-    const pending = state.pending.splice(0);
-    const text = formatProgressUpdate(pending, this.config);
-    if (!text) return;
+    const mode = progressModeFor(binding, this.config);
+    const pending = state.pending.splice(0).filter((entry) => (route.notification.lastStatus === "running" || entry.kind === "compaction") && shouldSendProgressActivity(mode, entry));
+    if (pending.length === 0) {
+      this.clearProgressState(route);
+      return;
+    }
+    const text = formatProgressUpdate(pending, this.config, { header: false });
+    if (!text) {
+      this.clearProgressState(route);
+      return;
+    }
     state.lastSentAt = Date.now();
-    await this.api.sendPlainText(chatId, `${this.sourcePrefixForRoute(route)}${text}`);
+    const messageText = `${this.sourcePrefixForRoute(route)}${text}`;
+    await this.deliverProgressSnapshot(chatId, state, messageText);
+  }
+
+  private async deliverProgressSnapshot(chatId: number, state: TelegramProgressDeliveryState, messageText: string): Promise<void> {
+    // Live progress is best-effort: prefer edit-in-place, then editable send, then a plain snapshot.
+    if (state.lastText === messageText) return;
+    const editableApi = this.api as TelegramApiClient & { sendEditablePlainText?: (chatId: number, text: string) => Promise<number>; editPlainText?: (chatId: number, messageId: number, text: string) => Promise<void> };
+    if (state.liveMessageId && editableApi.editPlainText) {
+      try {
+        await editableApi.editPlainText(chatId, state.liveMessageId, messageText);
+        state.lastText = messageText;
+        return;
+      } catch {
+        state.liveMessageId = undefined;
+      }
+    }
+    if (editableApi.sendEditablePlainText) {
+      try {
+        state.liveMessageId = await editableApi.sendEditablePlainText(chatId, messageText);
+        state.lastText = messageText;
+        return;
+      } catch {
+        state.liveMessageId = undefined;
+      }
+    }
+    try {
+      await this.api.sendPlainText(chatId, messageText);
+      state.lastText = messageText;
+    } catch {
+      state.liveMessageId = undefined;
+    }
   }
 
   private async acquireLock(): Promise<void> {

@@ -789,8 +789,8 @@ describe("SlackRuntime foundations", () => {
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
-    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Pi progress") });
-    expect(operations.posts.at(-1)?.text).toContain("Running tests");
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Running tests") });
+    expect(operations.posts.at(-1)?.text).not.toContain("Pi progress");
   });
 
   it("uploads latest, explicit images, and requester-scoped Slack files", async () => {
@@ -866,6 +866,53 @@ describe("SlackRuntime foundations", () => {
     await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "quiet" } });
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
+    await runtime.registerRoute(testRoute);
+
+    expect(operations.posts).toHaveLength(0);
+  });
+
+  it("keeps queued Slack progress when a suppressed assistant update arrives", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.progressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "normal" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+    await runtime.start();
+
+    testRoute.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Running tests", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    testRoute.notification.progressEvent = { id: "assistant-progress", kind: "assistant", text: "Drafting response", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length === 1);
+
+    expect(operations.posts).toHaveLength(1);
+    expect(operations.posts[0]?.text).toContain("Running tests");
+    expect(operations.posts[0]?.text).not.toContain("Pi progress");
+    expect(operations.posts[0]?.text).not.toContain("Drafting response");
+  });
+
+  it("delivers Slack compaction progress in completion-only mode but not quiet", async () => {
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.progressIntervalMs = 1;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "completed";
+    testRoute.notification.progressEvent = { id: "compact-start", kind: "compaction", text: "Context compaction started", at: Date.now() };
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "completionOnly" } });
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    await runtime.registerRoute(testRoute);
+    await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
+
+    expect(operations.posts.at(-1)?.text).toContain("Context compaction started");
+
+    operations.posts.length = 0;
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "D1", userId: "U_DRIVER", sessionKey: testRoute.sessionKey, sessionId: testRoute.sessionId, sessionLabel: testRoute.sessionLabel, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(), metadata: { progressMode: "quiet" } });
+    testRoute.notification.progressEvent = { id: "compact-done", kind: "compaction", text: "Context compaction completed", at: Date.now() };
     await runtime.registerRoute(testRoute);
 
     expect(operations.posts).toHaveLength(0);

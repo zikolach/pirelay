@@ -152,7 +152,7 @@ The system SHALL expose common PiRelay controls through every messenger adapter 
 The system SHALL expose the canonical PiRelay remote command set through every first-class messenger adapter with equivalent behavior, using text commands, slash commands, buttons, menus, or documented fallbacks according to platform capabilities.
 
 #### Scenario: Canonical commands are supported on every live adapter
-- **WHEN** a live Telegram, Discord, Slack, or future messenger adapter receives `/help`, `/status`, `/sessions`, `/use`, `/to`, `/alias`, `/forget`, `/progress`, `/recent`, `/summary`, `/full`, `/images`, `/send-image`, `/steer`, `/followup`, `/abort`, `/compact`, `/pause`, `/resume`, or `/disconnect` from an authorized user
+- **WHEN** a live Telegram, Discord, Slack, or future messenger adapter receives `/help`, `/status`, `/sessions`, `/use`, `/to`, `/alias`, `/forget`, `/progress`, `/recent`, `/summary`, `/full`, `/skills`, `/skill`, `/images`, `/send-image`, `/steer`, `/followup`, `/abort`, `/compact`, `/pause`, `/resume`, or `/disconnect` from an authorized user
 - **THEN** the adapter routes the command through shared relay semantics and returns the same success, usage, ambiguity, offline, unauthorized, unsupported-capability, or error response class as the other live adapters
 
 #### Scenario: Unsupported-command help does not catch implemented commands
@@ -172,7 +172,7 @@ The system SHALL expose the canonical PiRelay remote command set through every f
 - **THEN** every registered command is implemented by the runtime and every implemented canonical command has a registered slash command, interaction equivalent, or documented text fallback
 
 #### Scenario: Discord text-prefix commands avoid slash interception
-- **WHEN** an authorized Discord DM user sends `relay status`, `relay sessions`, `relay full`, `relay abort`, or another canonical command using the `relay <command>` text-prefix form
+- **WHEN** an authorized Discord DM user sends `relay status`, `relay sessions`, `relay full`, `relay skills`, `relay skill`, `relay abort`, or another canonical command using the `relay <command>` text-prefix form
 - **THEN** PiRelay handles the command as an ordinary Discord message without depending on Discord application-command routing or top-level slash-command selection
 
 #### Scenario: Discord bare slash aliases are best-effort
@@ -199,6 +199,13 @@ The system SHALL deliver safe progress, terminal notifications, latest output re
 #### Scenario: Prompt source receives assistant completion
 - **WHEN** an authorized Telegram, Discord, Slack, or future messenger user sends a prompt that is accepted and the Pi turn completes with a final assistant message
 - **THEN** the originating messenger conversation receives the assistant completion summary or excerpt without requiring a separate local command or Telegram-only notification path
+
+#### Scenario: Completion uses completed assistant text when final event omits it
+- **WHEN** a paired Pi turn emits non-empty assistant text through a completed assistant `message_end` event
+- **AND** the subsequent `agent_end` payload does not contain non-empty assistant text
+- **THEN** PiRelay treats the turn as completed using the completed assistant text from the same active turn
+- **AND** it does not send “finished without a final assistant response” for that turn
+- **AND** it does not use stream-only drafts, user messages, tool results, hidden prompts, or transcript content as fallback final output
 
 #### Scenario: Failure notification is sent
 - **WHEN** a paired Pi turn fails or finishes without a final assistant response
@@ -473,14 +480,19 @@ The system SHALL expose latest-image retrieval and explicit safe image delivery 
 ### Requirement: Messenger final output follows shared mode-aware policy
 The system SHALL apply the same terminal assistant-output delivery policy across Telegram, Discord, Slack, and future live messengers, with only platform-specific rendering and capability fallbacks differing.
 
-#### Scenario: Quiet binding receives concise completion
+#### Scenario: Quiet binding receives terminal output without progress noise
 - **WHEN** a Pi turn completes for a messenger binding whose progress mode is quiet
-- **THEN** PiRelay sends a concise completion message or summary
-- **AND** it offers `/full`, an equivalent command, or a downloadable Markdown action where supported for retrieving the full output
+- **THEN** PiRelay suppresses non-terminal progress updates for that binding
+- **AND** it delivers the terminal assistant output using the same safe full-output chunk-or-document policy as other terminal-notification modes
+- **AND** quiet mode does not by itself cause short final assistant output to be summarized, excerpted, or whitespace-collapsed
 
 #### Scenario: Normal binding receives full final output
 - **WHEN** a Pi turn completes for a messenger binding whose progress mode is normal
 - **THEN** PiRelay sends the latest assistant output as paragraph-aware message chunks when it fits safe platform limits
+- **AND** it preserves user-visible paragraph breaks, bullets, code-ish lines, and validation-result blocks in the delivered assistant output
+- **AND** for Telegram, it renders supported Markdown constructs with Telegram-safe chat formatting when the rendered message fits the configured safe chunk limit
+- **AND** Telegram falls back to plain text when no Markdown formatting is needed or the rendered markup would exceed safe chunk limits
+- **AND** Telegram offers a Markdown download action when the source output contains Markdown tables that are rendered with chat-safe fallbacks
 - **AND** it uses a document fallback when chunking would be excessive and the adapter supports documents
 
 #### Scenario: Verbose binding receives progress and full final output
@@ -492,6 +504,20 @@ The system SHALL apply the same terminal assistant-output delivery policy across
 - **WHEN** a Pi turn completes for a messenger binding whose progress mode is completion-only
 - **THEN** PiRelay suppresses non-terminal progress updates
 - **AND** sends the latest assistant output using the same chunk-or-document rules as normal mode
+
+#### Scenario: Progress mode does not determine final-output length
+- **WHEN** a completed assistant output would fit within the messenger's configured safe text chunk policy after redaction and formatting
+- **THEN** PiRelay sends that output losslessly as chat text for every progress mode that emits terminal notifications
+- **AND** it does not replace the output with a whitespace-collapsed deterministic summary only because the binding uses quiet mode or only to reduce a comparable-size message
+
+#### Scenario: Shortened output offers full retrieval
+- **WHEN** PiRelay sends a terminal notification whose visible assistant text is summarized, excerpted, truncated, reformatted, or otherwise not equal to the latest full assistant output
+- **THEN** the notification includes a supported `/full` hint, button, equivalent command, or document/download action for retrieving the full output
+
+#### Scenario: Broker and in-process terminal output are equivalent
+- **WHEN** the same Telegram completion is delivered through the in-process runtime and the broker-owned runtime
+- **THEN** both paths apply the same progress-mode, chunking, formatting-preservation, summary/excerpt, and full-output retrieval policy
+- **AND** neither path silently downgrades a small readable output to a collapsed summary while the other sends it in full
 
 #### Scenario: Full output is never silently truncated
 - **WHEN** a final assistant output exceeds platform text limits and document delivery is unavailable
@@ -805,4 +831,99 @@ PiRelay SHALL associate approval requester context only with accepted remote mes
 - **WHEN** a remote-owned turn reaches a matching approval-gated operation after its requester context or binding becomes stale, revoked, paused, missing, or state-unavailable
 - **THEN** PiRelay fails closed for that remote operation
 - **AND** it does not downgrade the operation to local approval bypass
+
+### Requirement: Coalesced live progress delivery
+The system SHALL deliver Pi session progress to messengers as coalesced live state rather than as a direct stream of raw Pi events.
+
+#### Scenario: Repeated live status is not duplicated
+- **WHEN** Pi emits repeated assistant stream updates, repeated safe model status text, or otherwise equivalent progress activities for the same running turn
+- **THEN** the messenger receives at most one current live-progress representation for that equivalent status within the configured delivery window
+- **AND** the system does not post a new chat message for every repeated raw Pi event
+
+#### Scenario: Superseded live status is coalesced
+- **WHEN** multiple volatile progress updates occur before the messenger delivery window elapses
+- **THEN** the system delivers the latest coalesced safe status, plus any stable milestones that remain relevant
+- **AND** superseded volatile snapshots are not delivered as separate messenger messages
+
+#### Scenario: Editable messengers update live status in place
+- **WHEN** a messenger adapter supports updating a previously sent message and a paired binding is eligible to receive progress
+- **THEN** the system uses a single live progress message for the active turn where practical
+- **AND** later live progress updates edit that message instead of appending duplicate chat messages
+- **AND** final completion, failure, abort, and full-output messages remain separate terminal notifications
+
+#### Scenario: Non-editable messengers receive coalesced snapshots
+- **WHEN** a messenger adapter does not support updating a previously sent progress message or an update attempt fails
+- **THEN** the system falls back to sending coalesced progress snapshots at the configured cadence
+- **AND** it still avoids sending duplicate raw stream-event messages
+
+#### Scenario: Normal progress mode is low-noise
+- **WHEN** a binding uses normal progress mode during a running Pi turn
+- **THEN** the messenger receives stable milestones and coalesced live status only
+- **AND** generic assistant streaming snapshots, repeated drafting text, and overlapping tool-result bookkeeping messages are not delivered as standalone progress messages
+
+#### Scenario: Verbose progress mode remains bounded
+- **WHEN** a binding uses verbose progress mode during a running Pi turn
+- **THEN** the messenger MAY receive more detailed progress than normal mode
+- **BUT** repeated equivalent updates MUST still be deduplicated or coalesced
+- **AND** delivery MUST respect the configured verbose progress interval and platform message limits
+
+#### Scenario: Completion-only and quiet progress modes remain respected
+- **WHEN** a binding uses completion-only progress mode
+- **THEN** the messenger receives terminal final output and explicitly allowed lifecycle notices such as compaction progress
+- **AND** it does not receive ordinary live progress snapshots
+- **WHEN** a binding uses quiet progress mode
+- **THEN** the messenger does not receive live progress snapshots or compaction progress notifications
+
+#### Scenario: Tool lifecycle progress is human-level in normal mode
+- **WHEN** Pi emits overlapping tool lifecycle events such as tool execution completion and tool-result message completion for the same tool call
+- **THEN** normal progress mode does not deliver both as separate technical messages
+- **AND** the system either collapses them into one safe human-readable milestone or omits successful short-lived tool chatter
+
+#### Scenario: Live progress remains secret-safe
+- **WHEN** the system formats or updates live progress for any messenger
+- **THEN** it excludes hidden thinking content, chain-of-thought, hidden prompts, raw transcripts, pairing codes, bot tokens, raw chat or channel identifiers, and full compaction summaries
+- **AND** only sanitized safe progress text may be stored or delivered
+
+#### Scenario: Authorization still gates progress delivery
+- **WHEN** a binding is paused, revoked, stale, unauthorized, or no longer authoritative for a route
+- **THEN** the system does not send, edit, or finalize live progress messages for that binding
+- **AND** any pending live progress state for that destination is cleared or ignored safely
+
+### Requirement: Compaction progress notifications follow binding progress mode
+The system SHALL notify eligible paired messenger bindings when a Pi session compaction starts and when it successfully completes, and SHALL suppress those notifications only for bindings whose progress mode is quiet.
+
+#### Scenario: Compaction start is delivered in non-quiet modes
+- **WHEN** a paired Pi session emits `session_before_compact`
+- **AND** a Telegram, Discord, Slack, or future messenger binding for that session has progress mode normal, verbose, or completion-only
+- **THEN** PiRelay sends or schedules a safe compaction-start progress notification for that binding
+
+#### Scenario: Compaction start is suppressed in quiet mode
+- **WHEN** a paired Pi session emits `session_before_compact`
+- **AND** a messenger binding for that session has progress mode quiet
+- **THEN** PiRelay does not send a compaction-start progress notification to that binding
+
+#### Scenario: Compaction completion is delivered in non-quiet modes
+- **WHEN** a paired Pi session emits `session_compact` after successfully appending a compaction entry
+- **AND** a Telegram, Discord, Slack, or future messenger binding for that session has progress mode normal, verbose, or completion-only
+- **THEN** PiRelay sends or schedules a safe compaction-completed progress notification for that binding
+
+#### Scenario: Compaction completion is suppressed in quiet mode
+- **WHEN** a paired Pi session emits `session_compact` after successfully appending a compaction entry
+- **AND** a messenger binding for that session has progress mode quiet
+- **THEN** PiRelay does not send a compaction-completed progress notification to that binding
+
+#### Scenario: Compaction notifications are safe
+- **WHEN** PiRelay formats a compaction start or completion notification
+- **THEN** the notification omits bot tokens, pairing codes, hidden prompts, tool internals, raw chat ids, raw channel ids, workspace ids, full transcripts, and compaction summary contents
+- **AND** it does not expose whether compaction was triggered manually, by threshold, or by overflow unless Pi has provided that information through a safe extension event
+
+#### Scenario: Compaction notification failures are nonfatal
+- **WHEN** PiRelay cannot deliver a compaction start or completion notification to an eligible binding
+- **THEN** compaction handling continues without failing, cancelling, or corrupting the Pi session
+- **AND** PiRelay records or reports only secret-safe diagnostics
+
+#### Scenario: Revoked or unauthorized bindings receive no compaction notifications
+- **WHEN** a compaction start or completion notification is about to be delivered
+- **THEN** PiRelay verifies the destination remains an active authorized binding according to existing binding authority and adapter delivery rules
+- **AND** it does not send the notification to revoked, paused, unauthorized, missing, or stale destinations
 
