@@ -724,13 +724,17 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         state.liveMessageId = undefined;
       }
     }
-    if (editableApi.sendEditablePlainText) {
-      state.liveMessageId = await editableApi.sendEditablePlainText(chatId, messageText);
+    try {
+      if (editableApi.sendEditablePlainText) {
+        state.liveMessageId = await editableApi.sendEditablePlainText(chatId, messageText);
+        state.lastText = messageText;
+        return;
+      }
+      await this.api.sendPlainText(chatId, messageText);
       state.lastText = messageText;
-      return;
+    } catch {
+      state.liveMessageId = undefined;
     }
-    await this.api.sendPlainText(chatId, messageText);
-    state.lastText = messageText;
   }
 
   private async acquireLock(): Promise<void> {

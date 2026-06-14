@@ -91,6 +91,15 @@ describe("progress helpers", () => {
     expect(progressSemanticKey(toolA)).toBe(progressSemanticKey(toolB));
   });
 
+  it("keeps the newest volatile progress even when entries are out of order", () => {
+    const newer = createProgressActivity({ id: "newer", kind: "assistant", text: "Model update", detail: "new draft", at: 20, delivery: "volatile" }, config)!;
+    const older = createProgressActivity({ id: "older", kind: "assistant", text: "Model update", detail: "old draft", at: 10, delivery: "volatile" }, config)!;
+    const coalesced = coalesceLiveProgressEntries([newer, older]);
+
+    expect(coalesced).toHaveLength(1);
+    expect(coalesced[0]?.detail).toBe("new draft");
+  });
+
   it("sanitizes live progress before coalescing or formatting", () => {
     const entry = createProgressActivity({ id: "secret", kind: "assistant", text: "Model update", detail: "SECRET_TOKEN chat 12345", semanticKey: "assistant:SECRET_TOKEN chat 12345", delivery: "volatile" }, config)!;
     const update = formatProgressUpdate([entry], config, { header: false });

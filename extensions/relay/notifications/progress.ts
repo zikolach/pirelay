@@ -133,7 +133,9 @@ export function coalesceLiveProgressEntries(entries: ProgressActivityEntry[]): P
   for (const entry of entries) {
     const delivery = progressActivityDelivery(entry);
     if (delivery === "volatile") {
-      volatileByKind.set(`${entry.kind}:${normalizeProgressKey(entry.text)}`, { ...entry });
+      const key = `${entry.kind}:${normalizeProgressKey(entry.text)}`;
+      const existing = volatileByKind.get(key);
+      if (!existing || entry.at >= existing.at) volatileByKind.set(key, { ...entry });
       continue;
     }
     const key = progressSemanticKey(entry);

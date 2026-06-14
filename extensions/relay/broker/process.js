@@ -1268,8 +1268,12 @@ async function flushProgress(sessionKey, chatId, userId, key) {
       state.liveMessageId = undefined;
     }
   }
-  state.liveMessageId = await sendEditablePlainText(chatId, messageText);
-  state.lastText = messageText;
+  try {
+    state.liveMessageId = await sendEditablePlainText(chatId, messageText);
+    state.lastText = messageText;
+  } catch {
+    state.liveMessageId = undefined;
+  }
 }
 
 async function pairingHashForCode(nonce) {

@@ -3053,6 +3053,45 @@ describe("InProcessTunnelRuntime", () => {
     expect(sends[1]).toContain("Editing files");
   });
 
+  it("swallows Telegram progress send failures because progress is best-effort", async () => {
+    vi.useFakeTimers();
+    const config = await createRuntimeConfig();
+    config.progressIntervalMs = 1;
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-progress-send-failure:/tmp/session-progress-send-failure.jsonl",
+      sessionId: "session-progress-send-failure",
+      sessionFile: "/tmp/session-progress-send-failure.jsonl",
+      sessionLabel: "session-progress-send-failure.jsonl",
+      chatId: 1012,
+      userId: 32,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      progressMode: "normal",
+    };
+    const { route } = createRoute(binding, false);
+    route.notification.lastStatus = "running";
+    (runtime as any).routes.set(route.sessionKey, route);
+    (runtime as any).api = {
+      sendEditablePlainText: async () => {
+        throw new Error("telegram unavailable");
+      },
+      editPlainText: async () => undefined,
+      sendPlainText: async () => {
+        throw new Error("telegram unavailable");
+      },
+    };
+
+    route.notification.progressEvent = createProgressActivity({ id: "send-failure-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    (runtime as any).syncProgressDelivery(route);
+
+    await vi.runOnlyPendingTimersAsync();
+    const state = (runtime as any).progressStates.get((runtime as any).progressKey(route));
+    expect(state?.liveMessageId).toBeUndefined();
+  });
+
   it("reserves progress interval while async progress flush is in flight", async () => {
     vi.useFakeTimers();
     const config = await createRuntimeConfig();
