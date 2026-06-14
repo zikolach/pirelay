@@ -881,6 +881,44 @@ describe("SlackRuntime foundations", () => {
     expect(operations.updates).toHaveLength(1);
   });
 
+  it("does not edit a stale Slack live progress message after binding moves", async () => {
+    vi.useFakeTimers();
+    const operations = new FakeSlackOperations();
+    const runtimeConfig = await config();
+    runtimeConfig.progressIntervalMs = 50;
+    const testRoute = route();
+    testRoute.notification.lastStatus = "running";
+    const store = new TunnelStateStore(runtimeConfig.stateDir);
+    const baseBinding = {
+      channel: "slack" as const,
+      instanceId: "default",
+      conversationId: "D1",
+      userId: "U_DRIVER",
+      sessionKey: testRoute.sessionKey,
+      sessionId: testRoute.sessionId,
+      sessionLabel: testRoute.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    };
+    await store.upsertChannelBinding(baseBinding);
+    const runtime = new SlackRuntime(runtimeConfig, { operations });
+
+    testRoute.notification.progressEvent = { id: "progress-before-move", kind: "tool", text: "Compiling", at: Date.now() };
+    await runtime.registerRoute(testRoute);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(operations.posts).toHaveLength(1));
+
+    testRoute.notification.progressEvent = { id: "progress-after-move", kind: "tool", text: "Should not edit", at: Date.now() + 1 };
+    await runtime.registerRoute(testRoute);
+    await store.upsertChannelBinding({ ...baseBinding, conversationId: "D2" });
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(operations.posts).toHaveLength(1);
+    expect(operations.updates).toHaveLength(0);
+    await vi.waitFor(() => expect((runtime as unknown as { progressStates: Map<string, unknown> }).progressStates.size).toBe(0));
+  });
+
   it("uploads latest, explicit images, and requester-scoped Slack files", async () => {
     const operations = new FakeSlackOperations();
     const runtimeConfig = await config();

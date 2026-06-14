@@ -314,6 +314,44 @@ describe("DiscordRuntime", () => {
     expect(ops.messages.at(-1)?.content).toContain("Packaging");
   });
 
+  it("does not edit a stale Discord live progress message after binding is revoked", async () => {
+    vi.useFakeTimers();
+    const cfg = await config();
+    cfg.progressIntervalMs = 50;
+    const ops = new FakeDiscordOperations();
+    const runtime = new DiscordRuntime(cfg, { operations: ops });
+    const session = route().route;
+    session.notification.lastStatus = "running";
+    const store = new TunnelStateStore(cfg.stateDir);
+    await store.upsertChannelBinding({
+      channel: "discord",
+      instanceId: "default",
+      conversationId: "dm1",
+      userId: "u1",
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      sessionLabel: session.sessionLabel,
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      metadata: { progressMode: "normal" },
+    });
+
+    await runtime.start();
+    session.notification.progressEvent = { id: "discord-progress-before-revoke", kind: "tool", text: "Compiling", at: Date.now() };
+    await runtime.registerRoute(session);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
+
+    session.notification.progressEvent = { id: "discord-progress-after-revoke", kind: "tool", text: "Should not edit", at: Date.now() + 1 };
+    await runtime.registerRoute(session);
+    await store.revokeChannelBinding("discord", session.sessionKey);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(ops.messages).toHaveLength(1);
+    expect(ops.edits).toHaveLength(0);
+    await vi.waitFor(() => expect((runtime as unknown as { progressStates: Map<string, unknown> }).progressStates.size).toBe(0));
+  });
+
   it("clears Discord progress state when pending progress becomes suppressed", async () => {
     vi.useFakeTimers();
     const cfg = await config();

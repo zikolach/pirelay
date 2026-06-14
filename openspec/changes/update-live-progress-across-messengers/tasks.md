@@ -26,7 +26,7 @@
 
 - [x] 4.1 Verify Telegram direct behavior still passes through the shared fallback invariant or remains behaviorally equivalent with dedicated tests.
 - [x] 4.2 Verify Telegram broker remains behaviorally equivalent, including editable-send failure fallback and edit-path outbox tests.
-- [ ] 4.3 Verify Slack, Discord, Telegram direct, and Telegram broker all preserve authorization, paused/revoked/moved binding authority, destination scoping, and stale route checks before sending/updating progress.
+- [x] 4.3 Verify Slack, Discord, Telegram direct, and Telegram broker all preserve authorization, paused/revoked/moved binding authority, destination scoping, and stale route checks before sending/updating progress.
 - [x] 4.4 Verify ordinary progress remains suppressed in completion-only and quiet modes, while eligible compaction progress follows the live progress policy.
 - [x] 4.5 Add or update README/help text to explain that supported messengers update a live progress card instead of posting repeated progress messages.
 
