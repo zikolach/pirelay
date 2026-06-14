@@ -106,6 +106,15 @@ const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
+
+type TelegramProgressDeliveryState = {
+  lastEventId?: string;
+  pending: NonNullable<SessionRoute["notification"]["recentActivity"]>;
+  timer?: ReturnType<typeof setTimeout>;
+  lastSentAt?: number;
+  liveMessageId?: number;
+  lastText?: string;
+};
 const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;
 
 interface TelegramGroupCommandTarget {
@@ -174,7 +183,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
   private readonly pendingSkillInputs = new Map<string, PendingSkillInput>();
   private readonly pendingAnswerAmbiguities = new Map<string, PendingAnswerAmbiguityState>();
   private readonly activityIndicators = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly progressStates = new Map<string, { lastEventId?: string; pending: NonNullable<SessionRoute["notification"]["recentActivity"]>; timer?: ReturnType<typeof setTimeout>; lastSentAt?: number; liveMessageId?: number; lastText?: string }>();
+  private readonly progressStates = new Map<string, TelegramProgressDeliveryState>();
   private readonly activeSessionByChatUser = new Map<string, string>();
   private readonly sharedRoomOutputDestinations = new Map<string, SharedRoomOutputDestination>();
   private readonly activeDelegationTaskBySessionKey = new Map<string, string>();
@@ -720,6 +729,11 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
     state.lastSentAt = Date.now();
     const messageText = `${this.sourcePrefixForRoute(route)}${text}`;
+    await this.deliverProgressSnapshot(chatId, state, messageText);
+  }
+
+  private async deliverProgressSnapshot(chatId: number, state: TelegramProgressDeliveryState, messageText: string): Promise<void> {
+    // Live progress is best-effort: prefer edit-in-place, then editable send, then a plain snapshot.
     if (state.lastText === messageText) return;
     const editableApi = this.api as TelegramApiClient & { sendEditablePlainText?: (chatId: number, text: string) => Promise<number>; editPlainText?: (chatId: number, messageId: number, text: string) => Promise<void> };
     if (state.liveMessageId && editableApi.editPlainText) {

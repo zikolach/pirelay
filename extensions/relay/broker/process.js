@@ -1272,6 +1272,11 @@ async function flushProgress(sessionKey, chatId, userId, key) {
   }
   state.lastSentAt = Date.now();
   const messageText = `${sourcePrefixForRoute(route)}${text}`;
+  await deliverProgressSnapshot(chatId, state, messageText);
+}
+
+async function deliverProgressSnapshot(chatId, state, messageText) {
+  // Live progress is best-effort: prefer edit-in-place, then editable send, then a plain snapshot.
   if (state.lastText === messageText) return;
   if (state.liveMessageId) {
     try {
