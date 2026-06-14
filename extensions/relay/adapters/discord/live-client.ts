@@ -20,9 +20,11 @@ import type {
   DiscordButtonComponent,
   DiscordGatewayEvent,
   DiscordInteractionPayload,
+  DiscordEditMessagePayload,
   DiscordMessagePayload,
   DiscordSendFilePayload,
   DiscordSendMessagePayload,
+  DiscordSendMessageResult,
 } from "./adapter.js";
 import { redactSecrets } from "../../config/setup.js";
 import type { DiscordRelayConfig } from "../../core/types.js";
@@ -119,12 +121,23 @@ export class DiscordLiveOperations implements DiscordApiOperations {
     this.client.destroy();
   }
 
-  async sendMessage(payload: DiscordSendMessagePayload): Promise<void> {
+  async sendMessage(payload: DiscordSendMessagePayload): Promise<DiscordSendMessageResult> {
     const channel = await this.fetchTextChannel(payload.channelId);
     const options: MessageCreateOptions = { content: payload.content || " ", allowedMentions: { parse: [] } };
     const components = discordActionRows(payload.components ?? []);
     if (components.length > 0) options.components = components;
-    await channel.send(options);
+    const message = await channel.send(options);
+    return message?.id ? { messageId: message.id } : {};
+  }
+
+  async editMessage(payload: DiscordEditMessagePayload): Promise<void> {
+    const channel = await this.fetchTextChannel(payload.channelId);
+    const fetchableMessages = channel.messages;
+    if (!fetchableMessages?.fetch) {
+      throw new Error(`Discord channel ${payload.channelId} does not support message fetching for edits.`);
+    }
+    const message = await fetchableMessages.fetch(payload.messageId);
+    await message.edit({ content: payload.content || " ", allowedMentions: { parse: [] } });
   }
 
   async sendFile(payload: DiscordSendFilePayload): Promise<void> {
@@ -314,8 +327,19 @@ function discordButtonStyle(style: DiscordButtonComponent["style"]): ButtonStyle
 }
 
 interface SendableDiscordTextChannel {
-  send(options: MessageCreateOptions): Promise<unknown>;
+  send(options: MessageCreateOptions): Promise<DiscordMessageLikeLike>;
   sendTyping(): Promise<unknown>;
+  messages?: {
+    fetch(messageId: string): Promise<DiscordEditableMessageLike>;
+  };
+}
+
+interface DiscordMessageLikeLike {
+  id?: string;
+}
+
+interface DiscordEditableMessageLike {
+  edit(options: { content: string; allowedMentions: { parse: [] } }): Promise<unknown>;
 }
 
 interface DiscordApplicationCommandManagerLike {

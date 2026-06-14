@@ -9,6 +9,7 @@ import type {
   ChannelInboundFile,
   ChannelInboundHandler,
   ChannelInboundMessage,
+  ChannelLiveProgressRef,
   ChannelOutboundFile,
   ChannelOutboundPayload,
   ChannelRouteAddress,
@@ -23,13 +24,25 @@ export interface SlackApiOperations {
   startSocketMode?(handler: (event: SlackEnvelope) => Promise<void>): Promise<void>;
   stopSocketMode?(): Promise<void>;
   authTest?(): Promise<SlackAuthTestResult>;
-  postMessage(payload: SlackPostMessagePayload): Promise<void>;
+  postMessage(payload: SlackPostMessagePayload): Promise<SlackPostMessageResult | void>;
+  updateMessage?(payload: SlackUpdateMessagePayload): Promise<void>;
   uploadFile(payload: SlackUploadFilePayload): Promise<void>;
   addReaction?(payload: SlackReactionPayload): Promise<void>;
   removeReaction?(payload: SlackReactionPayload): Promise<void>;
   postEphemeral(payload: SlackPostEphemeralPayload): Promise<void>;
   postResponse?(responseUrl: string, payload: { text: string; replaceOriginal?: boolean; ephemeral?: boolean }): Promise<void>;
   downloadFile?(url: string): Promise<Uint8Array>;
+}
+
+export interface SlackPostMessageResult {
+  ts?: string;
+}
+
+export interface SlackUpdateMessagePayload {
+  channel: string;
+  ts: string;
+  text: string;
+  blocks?: SlackBlock[];
 }
 
 export interface SlackReactionPayload {
@@ -215,6 +228,18 @@ export class SlackChannelAdapter implements ChannelAdapter {
       threadTs: slackThreadTs(address),
     });
     if (options?.buttons) await this.sendButtonPrompt(address, options.buttons);
+  }
+
+  async sendLiveProgress(address: ChannelRouteAddress, text: string): Promise<ChannelLiveProgressRef | undefined> {
+    const result = await this.api.postMessage({ channel: address.conversationId, text, threadTs: slackThreadTs(address) });
+    return typeof result === "object" && result?.ts ? { messageId: result.ts } : undefined;
+  }
+
+  async updateLiveProgress(address: ChannelRouteAddress, ref: ChannelLiveProgressRef, text: string): Promise<void> {
+    if (!this.api.updateMessage) {
+      throw new Error("Slack message updates are not supported by this adapter configuration.");
+    }
+    await this.api.updateMessage({ channel: address.conversationId, ts: ref.messageId, text });
   }
 
   async sendImage(address: ChannelRouteAddress, file: ChannelOutboundFile, options?: { caption?: string; buttons?: ChannelButtonLayout }): Promise<void> {

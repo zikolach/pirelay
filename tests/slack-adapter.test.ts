@@ -229,6 +229,27 @@ describe("SlackChannelAdapter", () => {
     expect(slackPairingCommand("abc")).toBe("relay pair abc");
   });
 
+  it("captures Slack live progress refs and updates by message id", async () => {
+    const postMessage = vi.fn(async () => ({ ts: "123.45" }));
+    const updateMessage = vi.fn(async (_payload: unknown) => undefined);
+    const adapter = new SlackChannelAdapter(config, { postMessage, updateMessage, uploadFile: async () => undefined, postEphemeral: async () => undefined });
+    const address = { channel: "slack", conversationId: "D1", userId: "U1" } as const;
+
+    const ref = await adapter.sendLiveProgress(address, "Running tests");
+    await expect(adapter.updateLiveProgress(address, { messageId: ref?.messageId ?? "" }, "Still running" )).resolves.toBeUndefined();
+
+    expect(ref).toEqual({ messageId: "123.45" });
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", text: "Running tests" }));
+    expect(updateMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: "D1", ts: "123.45", text: "Still running" }));
+  });
+
+  it("throws a consistent error when Slack message updates are unavailable", async () => {
+    const adapter = new SlackChannelAdapter(config, { postMessage: async () => undefined, uploadFile: async () => undefined, postEphemeral: async () => undefined });
+    const address = { channel: "slack", conversationId: "D1", userId: "U1" } as const;
+
+    await expect(adapter.updateLiveProgress(address, { messageId: "123.4" }, "New status")).rejects.toThrow("Slack message updates are not supported by this adapter configuration.");
+  });
+
   it("normalizes Slack shared-room mentions", () => {
     expect(slackMentionedUserIds("hi <@U123> and <@U456>")).toEqual(["U123", "U456"]);
     expect(slackMessageSharedRoomAddressing("hi <@U123>", "U123")).toEqual({ kind: "local" });

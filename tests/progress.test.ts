@@ -14,6 +14,8 @@ import {
   shouldSendNonTerminalProgress,
   shouldSendProgressActivity,
 } from "../extensions/relay/notifications/progress.js";
+import { deliverLiveProgress } from "../extensions/relay/notifications/progress-delivery.js";
+import type { LiveProgressDeliveryState } from "../extensions/relay/notifications/progress-delivery.js";
 import type { SessionNotificationState, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars" | "progressIntervalMs" | "verboseProgressIntervalMs" | "progressMode"> = {
@@ -118,5 +120,122 @@ describe("progress helpers", () => {
     expect(notification.recentActivity).toEqual([second]);
     expect(formatRecentActivity(notification.recentActivity, { now: 2_000 })).toContain("Completed");
     expect(formatRecentActivity(undefined)).toContain("No recent activity");
+  });
+});
+
+describe("deliverLiveProgress helper", () => {
+  it("suppresses unchanged progress snapshots", async () => {
+    const updates: string[] = [];
+    const edits: string[] = [];
+    const snapshots: string[] = [];
+    const state: LiveProgressDeliveryState = { pending: [] };
+    state.lastText = "Already sent";
+
+    await deliverLiveProgress(state, "Already sent", {
+      sendLiveProgress: async (text) => {
+        updates.push(text);
+        return "x";
+      },
+      updateLiveProgress: async (ref, text) => {
+        edits.push(`${ref}:${text}`);
+      },
+      sendProgressSnapshot: async (text) => {
+        snapshots.push(text);
+      },
+    });
+
+    expect(updates).toHaveLength(0);
+    expect(edits).toHaveLength(0);
+    expect(snapshots).toHaveLength(0);
+  });
+
+  it("updates a live message when supported", async () => {
+    const updates: string[] = [];
+    const state: LiveProgressDeliveryState = { pending: [], liveMessageRef: "msg-1", lastText: undefined };
+
+    await deliverLiveProgress(state, "Running tests", {
+      sendLiveProgress: async (text) => {
+        updates.push(`send:${text}`);
+        return "msg-2";
+      },
+      updateLiveProgress: async (ref, text) => {
+        updates.push(`update:${ref}:${text}`);
+      },
+      sendProgressSnapshot: async (text) => {
+        updates.push(`snapshot:${text}`);
+      },
+    });
+
+    expect(updates).toEqual(["update:msg-1:Running tests"]);
+    expect(state.liveMessageRef).toBe("msg-1");
+    expect(state.lastText).toBe("Running tests");
+  });
+
+  it("falls back to new live progress when live edit fails", async () => {
+    const updates: string[] = [];
+    const state: LiveProgressDeliveryState = { pending: [], liveMessageRef: "msg-1", lastText: undefined };
+
+    await deliverLiveProgress(state, "Still running", {
+      sendLiveProgress: async (text) => {
+        updates.push(`send:${text}`);
+        return "msg-2";
+      },
+      updateLiveProgress: async () => {
+        updates.push("update-failed");
+        throw new Error("edit failed");
+      },
+      sendProgressSnapshot: async (text) => {
+        updates.push(`snapshot:${text}`);
+      },
+    });
+
+    expect(updates[0]).toBe("update-failed");
+    expect(updates[1]).toBe("send:Still running");
+    expect(state.liveMessageRef).toBe("msg-2");
+    expect(state.lastText).toBe("Still running");
+    expect(updates).toHaveLength(2);
+  });
+
+  it("falls back to plain snapshot when live path fails", async () => {
+    const updates: string[] = [];
+    const state: LiveProgressDeliveryState = { pending: [] };
+
+    await deliverLiveProgress(state, "Fallback snapshot", {
+      sendLiveProgress: async () => {
+        updates.push("send-live");
+        throw new Error("live blocked");
+      },
+      sendProgressSnapshot: async (text) => {
+        updates.push(`snapshot:${text}`);
+      },
+    });
+
+    expect(updates).toEqual(["send-live", "snapshot:Fallback snapshot"]);
+    expect(state.lastText).toBe("Fallback snapshot");
+    expect(state.liveMessageRef).toBeUndefined();
+  });
+
+  it("clears stale live refs and swallows snapshot failures", async () => {
+    const updates: string[] = [];
+    const state: LiveProgressDeliveryState = { pending: [], liveMessageRef: "stale", lastText: "old" };
+
+    await deliverLiveProgress(state, "Still running", {
+      updateLiveProgress: async () => {
+        updates.push("update");
+        throw new Error("stale update");
+      },
+      sendLiveProgress: async () => {
+        updates.push("send-live");
+        throw new Error("send blocked");
+      },
+      sendProgressSnapshot: async (text) => {
+        updates.push(`snapshot:${text}`);
+        throw new Error("snapshot blocked");
+      },
+    });
+
+    expect(updates).toEqual(["update", "send-live", "snapshot:Still running"]);
+    expect(state.liveMessageRef).toBeUndefined();
+    expect(state.lastText).toBe("old");
   });
 });
