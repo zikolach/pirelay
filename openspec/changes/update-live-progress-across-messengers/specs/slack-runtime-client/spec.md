@@ -10,7 +10,7 @@ The Slack live client SHALL expose bot-message references and update operations 
 
 #### Scenario: Slack updates progress message
 - **WHEN** PiRelay has a Slack live progress reference for a bot-owned message and progress text changes
-- **THEN** the Slack live client calls Slack message update APIs such as `chat.update` for the expected channel and timestamp
+- **THEN** the Slack live client calls Slack `chat.update` for the expected channel and timestamp
 - **AND** it preserves equivalent safe text content even if richer formatting is later added
 
 #### Scenario: Slack update failure is recoverable
