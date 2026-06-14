@@ -51,13 +51,11 @@ export class ToolProgressAccumulator {
   private readonly records = new Map<string, ToolProgressRecord>();
   private readonly missingIdBySemanticKey = new Map<string, string>();
   private missingSequence = 0;
-  private revision = 0;
 
   reset(): void {
     this.records.clear();
     this.missingIdBySemanticKey.clear();
     this.missingSequence = 0;
-    this.revision = 0;
   }
 
   has(toolCallId: unknown): boolean {
@@ -81,7 +79,6 @@ export class ToolProgressAccumulator {
     };
     this.records.set(toolCallId, record);
     this.pruneRecords();
-    this.revision += 1;
     return record;
   }
 
@@ -104,7 +101,6 @@ export class ToolProgressAccumulator {
     };
     this.records.set(toolCallId, record);
     this.pruneRecords();
-    this.revision += 1;
     return record;
   }
 
