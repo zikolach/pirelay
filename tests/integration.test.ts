@@ -2902,19 +2902,111 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("tool_execution_end", { toolCallId: "tool-1", toolName: "bash", result: {}, isError: false }, context);
     expect(route.notification.progressEvent).toMatchObject({
       kind: "tool",
-      text: "Tool completed",
-      detail: "bash",
+      text: "Tool progress",
+      detail: expect.stringContaining("✓ bash"),
       delivery: "milestone",
-      semanticKey: "tool-completed:tool-1",
+      semanticKey: "tool-progress",
     });
 
     await pi.emit("tool_execution_end", { toolName: "read", result: {}, isError: false }, context);
     const missingIdKey = route.notification.progressEvent?.semanticKey;
-    expect(missingIdKey).toMatch(/^tool-completed:missing-/);
+    expect(missingIdKey).toBe("tool-progress");
     expect(missingIdKey).not.toContain("undefined");
     await pi.emit("tool_execution_end", { toolName: "read", result: {}, isError: false }, context);
-    expect(route.notification.progressEvent?.semanticKey).toMatch(/^tool-completed:missing-/);
-    expect(route.notification.progressEvent?.semanticKey).not.toBe(missingIdKey);
+    expect(route.notification.progressEvent?.semanticKey).toBe("tool-progress");
+    expect(route.notification.progressEvent?.semanticKey).toBe(missingIdKey);
+    expect(route.notification.progressEvent?.detail).toContain("read×2");
+  });
+
+  it("records safe aggregated tool progress for built-in tool lifecycle events", async () => {
+    const config = await createRuntimeConfig("pi-tool-progress-summary-");
+    await writeFile(config.configPath!, JSON.stringify({
+      botToken: config.botToken,
+      stateDir: config.stateDir,
+      redactionPatterns: ["SECRET_[A-Z]+", "123456789"],
+      recentActivityLimit: 30,
+    }));
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("tool-progress-summary");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+    await pi.emit("agent_start", {}, context);
+
+    await pi.emit("tool_call", { toolName: "bash", toolCallId: "bash-1", input: { command: "npm test\necho SECRET_TOKEN", output: "raw output" } }, context);
+    expect(route.notification.progressEvent).toMatchObject({ text: "Tool progress", detail: expect.stringContaining("▶ bash: npm test") });
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_TOKEN");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("raw output");
+
+    await pi.emit("tool_execution_end", { toolName: "bash", toolCallId: "bash-1", result: "SECRET_RESULT", isError: false }, context);
+    expect(route.notification.progressEvent?.detail).toContain("✓ bash: npm test");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_RESULT");
+
+    await pi.emit("tool_call", { toolName: "read", toolCallId: "read-1", input: { path: "extensions/relay/runtime/extension-runtime.ts", content: "SECRET_FILE" } }, context);
+    await pi.emit("tool_call", { toolName: "edit", toolCallId: "edit-1", input: { path: "tests/integration.test.ts", oldText: "SECRET_OLD", newText: "SECRET_NEW" } }, context);
+    await pi.emit("tool_call", { toolName: "write", toolCallId: "write-1", input: { path: "README.md", content: "SECRET_CONTENT" } }, context);
+    await pi.emit("tool_call", { toolName: "rg", toolCallId: "rg-1", input: { pattern: "SECRET_PATTERN", path: "extensions" } }, context);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await pi.emit("tool_call", { toolName: "find", toolCallId: "find-1", input: { path: "src", chatId: "123456789" } }, context);
+    expect(route.notification.progressEvent?.detail).toContain("find: src");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await pi.emit("tool_call", { toolName: "ls", toolCallId: "ls-1", input: { dir: "docs", transcript: "raw transcript" } }, context);
+    expect(route.notification.progressEvent?.detail).toContain("ls: docs");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await pi.emit("tool_call", { toolName: "customTool", toolCallId: "custom-1", input: { prompt: "SECRET_PROMPT", destinationId: "123456789" } }, context);
+    expect(route.notification.progressEvent?.detail).toContain("customtool");
+    await pi.emit("tool_execution_end", { toolName: "rg", toolCallId: "rg-1", isError: true, result: "SECRET_ERROR" }, context);
+    await pi.emit("tool_execution_end", { toolName: "read", isError: false, result: "missing id 1" }, context);
+    await pi.emit("tool_execution_end", { toolName: "read", isError: false, result: "missing id 2" }, context);
+
+    const serialized = JSON.stringify(route.notification.recentActivity);
+    expect(serialized).toContain("edit: tests/integration.test.ts");
+    expect(serialized).toContain("write: README.md");
+    expect(serialized).toContain("rg: [redacted] in extensions");
+    expect(serialized).toContain("customtool");
+    expect(route.notification.progressEvent?.detail).toContain("read×");
+    expect(serialized).not.toContain("SECRET_TOKEN");
+    expect(serialized).not.toContain("SECRET_FILE");
+    expect(serialized).not.toContain("SECRET_CONTENT");
+    expect(serialized).not.toContain("SECRET_PROMPT");
+    expect(serialized).not.toContain("SECRET_ERROR");
+    expect(serialized).not.toContain("123456789");
+    expect(serialized).not.toContain("raw transcript");
+
+    await pi.emit("agent_end", { messages: [] }, context);
+    expect(route.notification.lastStatus).toBe("failed");
+    const terminalProgress = { ...route.notification.progressEvent };
+    await pi.emit("tool_execution_end", { toolName: "bash", toolCallId: "late-tool", result: "late output", isError: false }, context);
+    expect(route.notification.progressEvent).toEqual(terminalProgress);
   });
 
   it("does not use stream-only drafts as final-output fallback", async () => {

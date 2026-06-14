@@ -16,6 +16,7 @@ import {
 } from "../extensions/relay/notifications/progress.js";
 import { deliverLiveProgress } from "../extensions/relay/notifications/progress-delivery.js";
 import type { LiveProgressDeliveryState } from "../extensions/relay/notifications/progress-delivery.js";
+import { createToolProgressAccumulator, formatToolProgressCard, summarizeToolProgress, toolProgressRows } from "../extensions/relay/notifications/tool-progress.js";
 import type { SessionNotificationState, TelegramBindingMetadata, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
 
 const config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars" | "progressIntervalMs" | "verboseProgressIntervalMs" | "progressMode"> = {
@@ -93,6 +94,16 @@ describe("progress helpers", () => {
     expect(progressSemanticKey(toolA)).toBe(progressSemanticKey(toolB));
   });
 
+  it("coalesces repeated tool-progress cards to the latest bounded card", () => {
+    const first = createProgressActivity({ id: "tool-card-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: 1 }, config)!;
+    const second = createProgressActivity({ id: "tool-card-2", kind: "tool", text: "Tool progress", detail: "✓ bash: npm test · ▶ edit: tests/progress.test.ts", semanticKey: "tool-progress", at: 2 }, config)!;
+    const coalesced = coalesceLiveProgressEntries([first, second]);
+
+    expect(coalesced).toHaveLength(1);
+    expect(coalesced[0]?.text).toBe("Tool progress");
+    expect(coalesced[0]?.detail).toContain("edit: tests/progress.test.ts");
+  });
+
   it("keeps the newest volatile progress even when entries are out of order", () => {
     const newer = createProgressActivity({ id: "newer", kind: "assistant", text: "Model update", detail: "new draft", at: 20, delivery: "volatile" }, config)!;
     const older = createProgressActivity({ id: "older", kind: "assistant", text: "Model update", detail: "old draft", at: 10, delivery: "volatile" }, config)!;
@@ -120,6 +131,73 @@ describe("progress helpers", () => {
     expect(notification.recentActivity).toEqual([second]);
     expect(formatRecentActivity(notification.recentActivity, { now: 2_000 })).toContain("Completed");
     expect(formatRecentActivity(undefined)).toContain("No recent activity");
+  });
+});
+
+describe("tool progress helpers", () => {
+  it("summarizes allowlisted tool intent without leaking unallowlisted payloads", () => {
+    const safeConfig = { ...config, redactionPatterns: ["SECRET_[A-Z]+", "123456789"] };
+
+    expect(summarizeToolProgress("bash", { command: "npm test\necho SECRET_TOKEN", output: "do not show" }, safeConfig)?.label).toBe("bash: npm test");
+    expect(summarizeToolProgress("read", { path: "extensions/relay/runtime/extension-runtime.ts", content: "SECRET_FILE" }, safeConfig)?.label).toContain("read: extensions/relay/runtime/extension");
+    expect(summarizeToolProgress("edit", { path: "tests/integration.test.ts", oldText: "SECRET_OLD", newText: "SECRET_NEW" }, safeConfig)?.label).toBe("edit: tests/integration.test.ts");
+    expect(summarizeToolProgress("write", { path: "README.md", content: "SECRET_CONTENT" }, safeConfig)?.label).toBe("write: README.md");
+    expect(summarizeToolProgress("rg", { pattern: "botToken=SECRET_VALUE", path: "extensions" }, safeConfig)?.label).toBe("rg: botToken=[redacted] in extensions");
+    expect(summarizeToolProgress("find", { path: "123456789", transcript: "raw transcript" }, safeConfig)?.label).toBe("find: [redacted]");
+    expect(summarizeToolProgress("ls", { dir: "src", chatId: "123456789" }, safeConfig)?.label).toBe("ls: src");
+  });
+
+  it("keeps unknown tools conservative", () => {
+    const label = summarizeToolProgress("custom_secret_tool", { prompt: "SECRET_PROMPT", chatId: "123456789", args: ["raw"] }, { ...config, redactionPatterns: ["SECRET_[A-Z]+", "123456789"] });
+
+    expect(label).toMatchObject({ toolName: "custom_secret_tool", label: "custom_secret_tool" });
+    expect(JSON.stringify(label)).not.toContain("SECRET_PROMPT");
+    expect(JSON.stringify(label)).not.toContain("123456789");
+    expect(JSON.stringify(label)).not.toContain("raw");
+  });
+
+  it("aggregates active, completed, failed, repeated, and truncated tool progress", () => {
+    const accumulator = createToolProgressAccumulator();
+    const safeConfig = { ...config, maxProgressMessageChars: 160 };
+
+    accumulator.start({ toolName: "bash", toolCallId: "bash-1", input: { command: "npm test" }, at: 1 }, safeConfig);
+    accumulator.finish({ toolName: "bash", toolCallId: "bash-1", failed: false, at: 2 }, safeConfig);
+    accumulator.start({ toolName: "bash", toolCallId: "bash-2", input: { command: "npm run typecheck" }, at: 3 }, safeConfig);
+    accumulator.start({ toolName: "read", toolCallId: "read-1", input: { path: "extensions/relay/notifications/progress.ts" }, at: 4 }, safeConfig);
+    accumulator.finish({ toolName: "read", toolCallId: "read-1", failed: true, at: 5 }, safeConfig);
+
+    const snapshot = accumulator.snapshot();
+    const rows = toolProgressRows(snapshot);
+    const card = formatToolProgressCard(snapshot, safeConfig);
+    const activity = accumulator.activity({ id: "tools", at: 6 }, safeConfig);
+
+    expect(rows.map((row) => row.text).join("\n")).toContain("▶ bash: npm run typecheck");
+    expect(rows.map((row) => row.text).join("\n")).toContain("✕ read: extensions/relay/notifications/progress.ts");
+    expect(rows.at(-1)?.text).toContain("bash×2");
+    expect(card).toContain("bash");
+    expect(card!.length).toBeLessThanOrEqual(160);
+    expect(activity).toMatchObject({ kind: "tool", text: "Tool progress", delivery: "milestone" });
+  });
+
+  it("reuses missing tool-call identity by safe semantic label", () => {
+    const accumulator = createToolProgressAccumulator();
+    accumulator.start({ toolName: "read", input: { path: "README.md" }, at: 1 }, config);
+    accumulator.finish({ toolName: "read", input: { path: "README.md" }, failed: false, at: 2 }, config);
+
+    expect(accumulator.snapshot().records).toHaveLength(1);
+    expect(formatToolProgressCard(accumulator.snapshot(), config)).toContain("✓ read: README.md");
+  });
+
+  it("bounds retained current-turn tool records", () => {
+    const accumulator = createToolProgressAccumulator();
+    for (let index = 0; index < 55; index += 1) {
+      accumulator.start({ toolName: "read", toolCallId: `read-${index}`, input: { path: `file-${index}.ts` }, at: index }, config);
+    }
+
+    const snapshot = accumulator.snapshot();
+    expect(snapshot.records).toHaveLength(50);
+    expect(snapshot.records[0]?.label).toContain("file-5.ts");
+    expect(snapshot.records.at(-1)?.label).toContain("file-54.ts");
   });
 });
 

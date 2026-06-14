@@ -14,6 +14,7 @@ import { extractStructuredAnswerMetadata } from "../core/guided-answer.js";
 import type { DiscordRuntime } from "../adapters/discord/runtime.js";
 import type { SlackRuntime } from "../adapters/slack/runtime.js";
 import { appendRecentActivity, COMPACTION_PROGRESS_COMPLETED_TEXT, COMPACTION_PROGRESS_STARTED_TEXT, createProgressActivity, recentActivityLimit } from "../notifications/progress.js";
+import { createToolProgressAccumulator, type ToolProgressEventInput } from "../notifications/tool-progress.js";
 import { authorityOutcomeAllowsDelivery, resolveChannelBindingAuthority, resolveTelegramBindingAuthority } from "../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../notifications/lifecycle.js";
 import { formatRelayStatusLine, type RelayStatusLineBindingState, type RelayStatusLineChannel } from "./status-line.js";
@@ -188,6 +189,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let latestTurnImages: LatestTurnImage[] = [];
   let latestTurnImageFileCandidates: LatestTurnImageFileCandidate[] = [];
   let progressSequence = 0;
+  const toolProgress = createToolProgressAccumulator();
   let diagnosticsLogger: CommunicationDiagnosticsLogger | undefined;
   const pendingApprovalResolvers = new Map<string, (result: ApprovalDecisionResult) => void>();
 
@@ -386,6 +388,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   async function stopAndClearRuntimes(ctx: ExtensionContext, options: { restartBrokerProcess?: boolean } = {}): Promise<{ telegramStopped: boolean; discordStopped: string[]; slackStopped: string[]; brokerRestarted: boolean }> {
+    toolProgress.reset();
     let telegramStopped = false;
     let brokerRestarted = false;
     const discordStopped: string[] = [];
@@ -587,6 +590,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     activeTurnCompletedAssistantText = undefined;
     latestTurnImages = [];
     latestTurnImageFileCandidates = [];
+    toolProgress.reset();
   }
 
   function appendAudit(message: string, route?: SessionRoute): void {
@@ -638,11 +642,6 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return images;
   }
 
-  function toolLifecycleSemanticKey(prefix: string, toolCallId: unknown): string {
-    const stableId = typeof toolCallId === "string" && toolCallId.trim() ? toolCallId.trim() : `missing-${Date.now()}-${progressSequence + 1}`;
-    return `${prefix}:${stableId}`;
-  }
-
   function recordProgress(kind: "lifecycle" | "tool" | "assistant" | "status" | "compaction", text: string, detail?: string, options: { delivery?: "milestone" | "volatile"; semanticKey?: string } = {}): void {
     if (!currentRoute) return;
     const config = configCache;
@@ -658,6 +657,23 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.notification.progressEvent = entry;
     appendRecentActivity(currentRoute.notification, entry, recentActivityLimit(config ?? {}));
     currentRoute.lastActivityAt = Date.now();
+  }
+
+  function recordToolProgressActivity(input: ToolProgressEventInput & { state: "active" | "completed" | "failed" }): void {
+    if (!currentRoute) return;
+    const config = configCache ?? { redactionPatterns: [], maxProgressMessageChars: undefined };
+    if (input.state === "active") toolProgress.start(input, config);
+    else toolProgress.finish({ ...input, failed: input.state === "failed" }, config);
+    const entry = toolProgress.activity({ id: `${Date.now()}-${++progressSequence}`, at: input.at }, config);
+    if (!entry) return;
+    currentRoute.notification.progressEvent = entry;
+    appendRecentActivity(currentRoute.notification, entry, recentActivityLimit(configCache ?? {}));
+    currentRoute.lastActivityAt = Date.now();
+  }
+
+  function optionalToolEventInput(event: unknown): unknown {
+    if (!event || typeof event !== "object" || !("input" in event)) return undefined;
+    return (event as { input?: unknown }).input;
   }
 
   function persistBinding(binding: TelegramBindingMetadata | null, revoked = false, route?: SessionRoute): void {
@@ -1994,6 +2010,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     latestContext = ctx;
+    toolProgress.reset();
     closeConnectQrScreen = undefined;
     if (currentRoute) await notifyRelayLifecycle(ctx, "offline", currentRoute);
     if (currentRoute && configCache) {
@@ -2106,10 +2123,22 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       activeTurnImages.push(...extractImageContent(event.message.content));
       const toolText = extractTextContent(event.message.content as never);
       if (toolText) activeTurnImagePathTexts.push(toolText);
-      if (currentRoute.notification.lastStatus === "running") {
+      if (currentRoute.notification.lastStatus === "running" && !toolProgress.has(event.message.toolCallId)) {
         recordProgress("tool", "Processed tool result", undefined, { delivery: "volatile", semanticKey: `tool-result:${event.message.toolCallId ?? "unknown"}` });
         publishRouteStateSoon();
       }
+    }
+  });
+
+  pi.on("tool_execution_start", async (event, ctx) => {
+    latestContext = ctx;
+    if (!currentRoute) return;
+    currentRoute.actions.context = ctx;
+    const input = optionalToolEventInput(event);
+    recordDiagnostic({ component: "runtime", event: "tool_execution_start", outcome: "received", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), hasInput: input !== undefined } });
+    if (currentRoute.notification.lastStatus === "running") {
+      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input, state: "active" });
+      publishRouteStateSoon();
     }
   });
 
@@ -2117,21 +2146,33 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     latestContext = ctx;
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
+    const recordAllowedProgress = () => {
+      if (currentRoute?.notification.lastStatus !== "running") return;
+      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: event.input, state: "active" });
+      publishRouteStateSoon();
+    };
     recordDiagnostic({ component: "runtime", event: "tool_call", outcome: "received", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), hasInput: event.input !== undefined } });
     const config = configCache ?? (await ensureConfig(ctx, false).catch(() => undefined));
     if (!config) return;
     const resolved = approvalConfig(config);
     const operation = classifyApprovalOperation({ toolName: String(event.toolName ?? ""), toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined, input: event.input }, resolved);
-    if (!operation) return;
+    if (!operation) {
+      recordAllowedProgress();
+      return;
+    }
     const requester = currentRoute.remoteRequester;
     if (!requester) {
       if (currentRoute.remoteRequesterActiveTurn) {
         await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, summary: operation.summary, detail: "No active remote requester for approval target." });
         return { block: true, reason: "Approval required, but no active remote requester is available." };
       }
+      recordAllowedProgress();
       return;
     }
-    if (!currentRoute.remoteRequesterActiveTurn) return;
+    if (!currentRoute.remoteRequesterActiveTurn) {
+      recordAllowedProgress();
+      return;
+    }
     const active = await approvalRequesterBindingIsActive(currentRoute, requester, new TunnelStateStore(config.stateDir));
     if (!active) {
       await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, detail: "Approval requester binding is inactive." });
@@ -2142,6 +2183,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const store = new TunnelStateStore(config.stateDir);
       await store.markApprovalGrantUsed(grant.grantId);
       await appendApprovalAudit(config, { kind: "grant-used", grantId: grant.grantId, sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, expiresAt: grant.expiresAt });
+      recordAllowedProgress();
       return;
     }
     const request = createApprovalRequest({ route: currentRoute, requester, operation, timeoutMs: resolved.timeoutMs });
@@ -2163,6 +2205,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       }
       return { block: true, reason: decision.message };
     }
+    recordAllowedProgress();
   });
 
   pi.on("tool_execution_end", async (event, ctx) => {
@@ -2170,13 +2213,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) return;
     currentRoute.actions.context = ctx;
     recordDiagnostic({ component: "runtime", event: "tool_execution_end", outcome: event.isError ? "error" : "ok", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), isError: Boolean(event.isError) } });
+    if (currentRoute.notification.lastStatus !== "running") return;
     if (event.isError) {
       currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
-      recordProgress("tool", "Tool failed", event.toolName, { delivery: "milestone", semanticKey: toolLifecycleSemanticKey("tool-failed", event.toolCallId) });
+      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: optionalToolEventInput(event), state: "failed" });
       publishRouteStateSoon();
       return;
     }
-    recordProgress("tool", "Tool completed", event.toolName, { delivery: "milestone", semanticKey: toolLifecycleSemanticKey("tool-completed", event.toolCallId) });
+    recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: optionalToolEventInput(event), state: "completed" });
     publishRouteStateSoon();
   });
 
@@ -2254,6 +2298,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       details: { ...extraction.diagnostics, selectedStatus: status, finalTextSource, usedMessageLifecycleFallback: finalTextSource === "message-end-fallback", abortRequested: Boolean(currentRoute.notification.abortRequested), hadPriorFailure: Boolean(currentRoute.notification.lastFailure) },
     });
     recordProgress("lifecycle", status === "completed" ? "Pi task completed" : status === "aborted" ? "Pi task aborted" : "Pi task failed");
+    toolProgress.reset();
     if (status === "failed" && !currentRoute.notification.lastFailure) {
       currentRoute.notification.lastFailure = "The agent finished without a final assistant response.";
     }

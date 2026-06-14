@@ -804,11 +804,12 @@ describe("SlackRuntime foundations", () => {
     });
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
-    testRoute.notification.progressEvent = { id: "progress-1", kind: "tool", text: "Running tests", at: Date.now() };
+    testRoute.notification.progressEvent = { id: "progress-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
-    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Running tests") });
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Tool progress") });
+    expect(operations.posts.at(-1)?.text).toContain("npm test");
     expect(operations.posts.at(-1)?.text).not.toContain("Pi progress");
   });
 
@@ -833,18 +834,18 @@ describe("SlackRuntime foundations", () => {
     });
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
-    testRoute.notification.progressEvent = { id: "progress-live-1", kind: "tool", text: "Compiling", at: Date.now() };
+    testRoute.notification.progressEvent = { id: "progress-live-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress" });
-    testRoute.notification.progressEvent = { id: "progress-live-2", kind: "tool", text: "Running tests", at: Date.now() };
+    testRoute.notification.progressEvent = { id: "progress-live-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/slack-runtime.test.ts", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.updates.length > 0);
 
     expect(operations.posts).toHaveLength(1);
     expect(operations.updates).toHaveLength(1);
-    expect(operations.updates[0]).toMatchObject({ channel: "D1", ts: "100.1", text: expect.stringContaining("Running tests") });
+    expect(operations.updates[0]).toMatchObject({ channel: "D1", ts: "100.1", text: expect.stringContaining("edit: tests/slack-runtime.test.ts") });
   });
 
   it("falls back to a new Slack progress snapshot when edit updates fail", async () => {
