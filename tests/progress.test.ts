@@ -179,6 +179,20 @@ describe("tool progress helpers", () => {
     expect(activity).toMatchObject({ kind: "tool", text: "Tool progress", delivery: "milestone" });
   });
 
+  it("keeps completed rows when active rows are capped", () => {
+    const accumulator = createToolProgressAccumulator();
+    const safeConfig = { ...config, maxProgressMessageChars: 200 };
+
+    accumulator.start({ toolName: "bash", toolCallId: "bash-1", input: { command: "one" }, at: 1 }, safeConfig);
+    accumulator.start({ toolName: "read", toolCallId: "read-1", input: { path: "alpha" }, at: 2 }, safeConfig);
+    accumulator.start({ toolName: "edit", toolCallId: "edit-1", input: { path: "beta" }, at: 3 }, safeConfig);
+    accumulator.start({ toolName: "find", toolCallId: "find-1", input: { path: "gamma" }, at: 4 }, safeConfig);
+    accumulator.finish({ toolName: "ls", toolCallId: "ls-1", at: 5 }, safeConfig);
+
+    const rows = toolProgressRows(accumulator.snapshot());
+    expect(rows.some((row) => row.text.startsWith("✓ ls:") || row.text.startsWith("✓ ls"))).toBe(true);
+  });
+
   it("reuses missing tool-call identity by safe semantic label", () => {
     const accumulator = createToolProgressAccumulator();
     accumulator.start({ toolName: "read", input: { path: "README.md" }, at: 1 }, config);

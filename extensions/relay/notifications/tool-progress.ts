@@ -202,13 +202,16 @@ export function formatToolProgressCard(snapshot: ToolProgressAccumulatorSnapshot
 }
 
 export function toolProgressRows(snapshot: ToolProgressAccumulatorSnapshot): ToolProgressFormattedRow[] {
-  const active = snapshot.records.filter((record) => record.state === "active").sort((left, right) => right.updatedAt - left.updatedAt);
-  const failed = snapshot.records.filter((record) => record.state === "failed").sort((left, right) => right.updatedAt - left.updatedAt);
-  const completed = snapshot.records.filter((record) => record.state === "completed").sort((left, right) => right.updatedAt - left.updatedAt);
+  const activeRecords = snapshot.records.filter((record) => record.state === "active").sort((left, right) => right.updatedAt - left.updatedAt);
+  const failedRecords = snapshot.records.filter((record) => record.state === "failed").sort((left, right) => right.updatedAt - left.updatedAt);
+  const completedRecords = snapshot.records.filter((record) => record.state === "completed").sort((left, right) => right.updatedAt - left.updatedAt);
+  const activeRows = activeRecords.slice(0, 3);
+  const failedRows = failedRecords.slice(0, 2);
+  const completedRows = completedRecords.slice(0, Math.max(0, 4 - activeRows.length - failedRows.length));
   const rows: ToolProgressFormattedRow[] = [
-    ...active.slice(0, 3).map((record) => ({ state: record.state, text: `▶ ${record.label}`, at: record.updatedAt } satisfies ToolProgressFormattedRow)),
-    ...failed.slice(0, 2).map((record) => ({ state: record.state, text: `✕ ${record.label}`, at: record.updatedAt } satisfies ToolProgressFormattedRow)),
-    ...completed.slice(0, Math.max(0, 4 - active.length - failed.length)).map((record) => ({ state: record.state, text: `✓ ${record.label}`, at: record.updatedAt } satisfies ToolProgressFormattedRow)),
+    ...activeRows.map((record) => ({ state: record.state, text: `▶ ${record.label}`, at: record.updatedAt } satisfies ToolProgressFormattedRow)),
+    ...failedRows.map((record) => ({ state: record.state, text: `✕ ${record.label}`, at: record.updatedAt } satisfies ToolProgressFormattedRow)),
+    ...completedRows.map((record) => ({ state: record.state, text: `✓ ${record.label}`, at: record.updatedAt } satisfies ToolProgressFormattedRow)),
   ];
   const aggregate = snapshot.aggregates.filter((entry) => entry.count > 1);
   if (aggregate.length > 0) {

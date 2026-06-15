@@ -659,15 +659,14 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     currentRoute.lastActivityAt = Date.now();
   }
 
-  function recordToolProgressActivity(input: ToolProgressEventInput & { state: "active" | "completed" | "failed" }): void {
+  function recordToolProgressActivity(input: ToolProgressEventInput & { state: "active" | "completed" | "failed" }, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars" | "recentActivityLimit">): void {
     if (!currentRoute) return;
-    const config = configCache ?? { redactionPatterns: [], maxProgressMessageChars: undefined };
     if (input.state === "active") toolProgress.start(input, config);
     else toolProgress.finish({ ...input, failed: input.state === "failed" }, config);
     const entry = toolProgress.activity({ id: `${Date.now()}-${++progressSequence}`, at: input.at }, config);
     if (!entry) return;
     currentRoute.notification.progressEvent = entry;
-    appendRecentActivity(currentRoute.notification, entry, recentActivityLimit(configCache ?? {}));
+    appendRecentActivity(currentRoute.notification, entry, recentActivityLimit(config));
     currentRoute.lastActivityAt = Date.now();
   }
 
@@ -2133,22 +2132,25 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   pi.on("tool_execution_start", async (event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
+    const currentSessionKey = currentRoute.sessionKey;
     currentRoute.actions.context = ctx;
     const input = optionalToolEventInput(event);
+    const config = configCache ?? (await ensureConfig(ctx, false).catch(() => undefined));
+    if (!config) return;
+    if (!currentRoute || currentRoute.sessionKey !== currentSessionKey || currentRoute.notification.lastStatus !== "running") return;
     recordDiagnostic({ component: "runtime", event: "tool_execution_start", outcome: "received", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), hasInput: input !== undefined } });
-    if (currentRoute.notification.lastStatus === "running") {
-      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input, state: "active" });
-      publishRouteStateSoon();
-    }
+    recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input, state: "active" }, config);
+    publishRouteStateSoon();
   });
 
   pi.on("tool_call", async (event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
+    const currentSessionKey = currentRoute.sessionKey;
     currentRoute.actions.context = ctx;
-    const recordAllowedProgress = () => {
-      if (currentRoute?.notification.lastStatus !== "running") return;
-      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: event.input, state: "active" });
+    const recordAllowedProgress = (configToUse: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">) => {
+      if (!currentRoute || currentRoute.sessionKey !== currentSessionKey || currentRoute.notification.lastStatus !== "running") return;
+      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: event.input, state: "active" }, configToUse);
       publishRouteStateSoon();
     };
     recordDiagnostic({ component: "runtime", event: "tool_call", outcome: "received", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), hasInput: event.input !== undefined } });
@@ -2157,7 +2159,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const resolved = approvalConfig(config);
     const operation = classifyApprovalOperation({ toolName: String(event.toolName ?? ""), toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined, input: event.input }, resolved);
     if (!operation) {
-      recordAllowedProgress();
+      recordAllowedProgress(config);
       return;
     }
     const requester = currentRoute.remoteRequester;
@@ -2166,11 +2168,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, summary: operation.summary, detail: "No active remote requester for approval target." });
         return { block: true, reason: "Approval required, but no active remote requester is available." };
       }
-      recordAllowedProgress();
+      recordAllowedProgress(config);
       return;
     }
     if (!currentRoute.remoteRequesterActiveTurn) {
-      recordAllowedProgress();
+      recordAllowedProgress(config);
       return;
     }
     const active = await approvalRequesterBindingIsActive(currentRoute, requester, new TunnelStateStore(config.stateDir));
@@ -2183,7 +2185,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const store = new TunnelStateStore(config.stateDir);
       await store.markApprovalGrantUsed(grant.grantId);
       await appendApprovalAudit(config, { kind: "grant-used", grantId: grant.grantId, sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, expiresAt: grant.expiresAt });
-      recordAllowedProgress();
+      recordAllowedProgress(config);
       return;
     }
     const request = createApprovalRequest({ route: currentRoute, requester, operation, timeoutMs: resolved.timeoutMs });
@@ -2205,25 +2207,27 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       }
       return { block: true, reason: decision.message };
     }
-    recordAllowedProgress();
+    recordAllowedProgress(config);
   });
 
   pi.on("tool_execution_end", async (event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
+    const currentSessionKey = currentRoute.sessionKey;
     currentRoute.actions.context = ctx;
+    const config = configCache ?? (await ensureConfig(ctx, false).catch(() => undefined));
+    if (!config) return;
     recordDiagnostic({ component: "runtime", event: "tool_execution_end", outcome: event.isError ? "error" : "ok", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), isError: Boolean(event.isError) } });
-    if (currentRoute.notification.lastStatus !== "running") return;
+    if (!currentRoute || currentRoute.sessionKey !== currentSessionKey || currentRoute.notification.lastStatus !== "running") return;
     if (event.isError) {
       currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
-      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: optionalToolEventInput(event), state: "failed" });
+      recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: optionalToolEventInput(event), state: "failed" }, config);
       publishRouteStateSoon();
       return;
     }
-    recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: optionalToolEventInput(event), state: "completed" });
+    recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: optionalToolEventInput(event), state: "completed" }, config);
     publishRouteStateSoon();
   });
-
   pi.on("agent_end", async (event, ctx) => {
     latestContext = ctx;
     if (!currentRoute) return;
