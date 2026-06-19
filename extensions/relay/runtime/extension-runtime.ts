@@ -2148,7 +2148,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) return;
     const currentSessionKey = currentRoute.sessionKey;
     currentRoute.actions.context = ctx;
-    const recordAllowedProgress = (configToUse: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">) => {
+    const recordAllowedProgress = (configToUse: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars" | "recentActivityLimit">) => {
       if (!currentRoute || currentRoute.sessionKey !== currentSessionKey || currentRoute.notification.lastStatus !== "running") return;
       recordToolProgressActivity({ toolName: event.toolName, toolCallId: event.toolCallId, input: event.input, state: "active" }, configToUse);
       publishRouteStateSoon();
