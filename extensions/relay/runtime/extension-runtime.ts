@@ -2216,7 +2216,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const currentSessionKey = currentRoute.sessionKey;
     currentRoute.actions.context = ctx;
     const config = configCache ?? (await ensureConfig(ctx, false).catch(() => undefined));
-    if (!config) return;
+    if (!config) {
+      if (currentRoute && currentRoute.sessionKey === currentSessionKey && currentRoute.notification.lastStatus === "running" && event.isError) {
+        currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
+        publishRouteStateSoon();
+      }
+      return;
+    }
     recordDiagnostic({ component: "runtime", event: "tool_execution_end", outcome: event.isError ? "error" : "ok", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), isError: Boolean(event.isError) } });
     if (!currentRoute || currentRoute.sessionKey !== currentSessionKey || currentRoute.notification.lastStatus !== "running") return;
     if (event.isError) {
