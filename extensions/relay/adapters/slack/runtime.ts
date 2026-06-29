@@ -46,6 +46,7 @@ const SLACK_HELP_TEXT = buildHelpText({
 });
 const SLACK_THINKING_REACTION = "thinking_face";
 const SLACK_RESPONSE_URL_TTL_MS = 30 * 60 * 1000;
+const SLACK_SESSION_LIST_FOOTER = "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, or relay sessions all to show hidden stale sessions.";
 
 function sessionsIncludeSuperseded(args: string): boolean {
   const normalized = args.trim().toLowerCase();
@@ -966,7 +967,7 @@ export class SlackRuntime {
         return;
       }
       case "sessions":
-        await this.sendText(message, formatSessionList(await this.sessionEntriesForMessage(message, { includeSuperseded: sessionsIncludeSuperseded(command.args) }), await this.activeSelectionForMessage(message)));
+        await this.sendText(message, formatSessionList(await this.sessionEntriesForMessage(message, { includeSuperseded: sessionsIncludeSuperseded(command.args) }), await this.activeSelectionForMessage(message), { footer: SLACK_SESSION_LIST_FOOTER }));
         return;
       case "use": {
         const entries = await this.sessionEntriesForMessage(message);

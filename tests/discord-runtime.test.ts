@@ -1718,7 +1718,7 @@ describe("DiscordRuntime", () => {
       busy: false,
       paused: false,
       lastActivityAt: first.lastActivityAt,
-    }], first.sessionKey);
+    }], first.sessionKey, { footer: "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, relay forget <session> to remove an offline session, or relay sessions all to show hidden stale sessions." });
     expect(ops.messages.at(-1)?.content).toBe(expected);
     expect(ops.messages.at(-1)?.content).toMatch(/[🔵🟢🟠🟣🟡🔴⚪⚫]/u);
     expect(ops.messages.at(-1)?.content).toContain("— active");

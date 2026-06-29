@@ -158,7 +158,7 @@ export function annotateSupersededSessionEntries(entries: SessionListEntry[]): S
     if (entry.online || !entry.workspaceKey) return entry;
     const onlineSiblings = onlineByWorkspace.get(entry.workspaceKey) ?? [];
     if (onlineSiblings.length === 0) return entry;
-    const superseded = onlineSiblings.some((online) => !entry.lastActivityAt || !online.lastActivityAt || online.lastActivityAt >= entry.lastActivityAt);
+    const superseded = onlineSiblings.some((online) => online.lastActivityAt !== undefined && (!entry.lastActivityAt || online.lastActivityAt >= entry.lastActivityAt));
     return superseded ? { ...entry, superseded: true } : entry;
   });
 }
@@ -168,7 +168,13 @@ export function visibleSessionEntries(entries: SessionListEntry[], options: { in
   return options.includeSuperseded ? annotated : annotated.filter((entry) => !entry.superseded);
 }
 
-export function formatSessionList(entries: SessionListEntry[], activeSessionKey?: string): string {
+export interface SessionListFormatOptions {
+  footer?: string;
+}
+
+const DEFAULT_SESSION_LIST_FOOTER = "Use /use <number|alias|label> to switch, /to <session> <prompt> for a one-shot prompt, /alias <name> to rename the active session, /forget <session> to remove an offline session, or /sessions all to show hidden stale sessions.";
+
+export function formatSessionList(entries: SessionListEntry[], activeSessionKey?: string, options: SessionListFormatOptions = {}): string {
   if (entries.length === 0) {
     return [
       "Pi sessions",
@@ -191,7 +197,8 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
     const alias = entry.alias?.trim() ? ` (${entry.sessionLabel})` : "";
     lines.push(`${index + 1}. ${markers.get(sessionMarkerIdentity(entry)) ?? sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)}${alias} — ${state}${activity}${paused}${model}${lastActivity}${active}`);
   });
-  lines.push("", "Use /use <number|alias|label> to switch, /to <session> <prompt> for a one-shot prompt, /alias <name> to rename the active session, /forget <session> to remove an offline session, or /sessions all to show hidden stale sessions.");
+  const footer = options.footer ?? DEFAULT_SESSION_LIST_FOOTER;
+  if (footer) lines.push("", footer);
   return lines.join("\n");
 }
 

@@ -72,6 +72,14 @@ describe("telegram utils", () => {
     expect(visibleSessionEntries(entries).map((entry) => entry.sessionKey)).toEqual([entries[1]!.sessionKey, entries[2]!.sessionKey, entries[3]!.sessionKey]);
     expect(visibleSessionEntries(entries, { includeSuperseded: true })).toHaveLength(4);
     expect(formatSessionList(annotated)).toContain("offline — superseded");
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: 1 },
+      { ...entries[1]!, lastActivityAt: undefined },
+    ])).toHaveLength(2);
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: undefined },
+      entries[1]!,
+    ])).toHaveLength(1);
   });
 
   it("uses aliases in session lists and selectors", () => {
@@ -80,6 +88,7 @@ describe("telegram utils", () => {
     ];
     const list = formatSessionList(entries, entries[0]!.sessionKey);
     expect(list).toContain("phone (long local label) — online — idle — gpt-test");
+    expect(formatSessionList(entries, undefined, { footer: "Use relay sessions all." })).toContain("Use relay sessions all.");
     expect(resolveSessionSelector(entries, "phone")).toMatchObject({ kind: "matched", index: 0 });
   });
 

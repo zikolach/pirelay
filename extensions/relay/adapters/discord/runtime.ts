@@ -44,6 +44,7 @@ function sessionsIncludeSuperseded(args: string | undefined): boolean {
   return normalized === "all" || normalized === "--all";
 }
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
+const DISCORD_SESSION_LIST_FOOTER = "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, relay forget <session> to remove an offline session, or relay sessions all to show hidden stale sessions.";
 const DISCORD_TYPING_REFRESH_MS = 7_000;
 const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
 const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
@@ -1298,7 +1299,7 @@ export class DiscordRuntime {
   }
 
   private formatSessionListForMessage(message: ChannelInboundMessage, entries: SessionListEntry[], activeSessionKey: string | undefined): string {
-    const list = formatSessionList(entries, activeSessionKey);
+    const list = formatSessionList(entries, activeSessionKey, { footer: DISCORD_SESSION_LIST_FOOTER });
     if (!this.isSharedRoomMessage(message)) return list;
     const machine = this.sharedRoomMachineIdentity();
     const aliasText = machine.aliases.length > 0 ? `\nAliases: ${machine.aliases.join(", ")}` : "";
