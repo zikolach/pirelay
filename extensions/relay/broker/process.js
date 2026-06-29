@@ -107,6 +107,7 @@ const formatSessionList = requiredFunction(sessionMultiplexingModule, './session
 const resolveSessionSelector = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionSelector');
 const resolveSessionTargetArgs = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionTargetArgs');
 const sessionSourcePrefixForRoute = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionSourcePrefixForRoute');
+const visibleSessionEntries = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'visibleSessionEntries');
 const commandIntentFromPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'commandIntentFromPipeline');
 const runTelegramIngressPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'runTelegramIngressPipeline');
 const telegramActionFromPipelineResult = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'telegramActionFromPipelineResult');
@@ -674,6 +675,7 @@ function bindingToSessionEntry(binding) {
     online: false,
     busy: false,
     paused: Boolean(binding.paused),
+    lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
   };
 }
 
@@ -736,15 +738,16 @@ async function stripRevokedBindingFromRoute(route) {
   return authorityOutcomeAllowsDelivery(outcome) ? { ...route, binding: outcome.binding } : { ...route, binding: undefined };
 }
 
-async function getSessionEntriesForChat(chatId, userId) {
+async function getSessionEntriesForChat(chatId, userId, options = {}) {
   const state = await loadState();
   const live = await getActiveLiveRoutesForChat(chatId, userId, state);
   const persisted = await getPersistedBindingsForChat(chatId, userId, state) ?? [];
   const seen = new Set(live.map((route) => route.sessionKey));
-  return [
+  const entries = [
     ...live.map(routeToSessionEntry),
     ...persisted.filter((binding) => !seen.has(binding.sessionKey)).map(bindingToSessionEntry),
   ];
+  return visibleSessionEntries(entries, { includeSuperseded: Boolean(options.includeSuperseded) });
 }
 
 function sourcePrefixForRoute(route) {
@@ -1434,8 +1437,13 @@ async function handlePairStart(message, nonce) {
   await sendPlainText(message.chat.id, `Connected to Pi session ${route.sessionLabel}. Send text prompts directly, or use /help for tunnel commands.`);
 }
 
-async function handleSessionsCommand(message) {
-  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+function sessionsIncludeSuperseded(args) {
+  const normalized = String(args || '').trim().toLowerCase();
+  return normalized === 'all' || normalized === '--all';
+}
+
+async function handleSessionsCommand(message, args = '') {
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: sessionsIncludeSuperseded(args) });
   await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))), buildSessionListDashboardKeyboard(entries));
 }
 
@@ -1488,7 +1496,7 @@ async function handleForgetCommand(message, args) {
     return;
   }
 
-  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: true });
   const result = resolveSessionSelector(entries, selector);
   switch (result.kind) {
     case 'empty':
@@ -1871,7 +1879,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     return;
   }
   if (command === 'sessions') {
-    await handleSessionsCommand(message);
+    await handleSessionsCommand(message, args);
     return;
   }
   if (command === 'use') {
@@ -2309,6 +2317,10 @@ async function handleDashboardAction(callback, route, action) {
       await answerCallbackQuery(callback.callbackQueryId, 'Compaction requested.');
       await sendPlainText(callback.chat.id, 'Compaction requested.');
       return;
+    case 'forget':
+      await answerCallbackQuery(callback.callbackQueryId, 'Session is online.');
+      await sendPlainText(callback.chat.id, `Pi session ${route.binding.alias || route.sessionLabel} is online. Use /disconnect to revoke the active session.`);
+      return;
     default:
       await answerCallbackQuery(callback.callbackQueryId, 'Unknown dashboard action.');
   }
@@ -2351,7 +2363,7 @@ async function processCallback(callback) {
   const live = await getActiveLiveRoutesForChat(callback.chat.id, callback.user.id);
   let route;
   if (action.kind === 'dashboard' && action.sessionRef !== 'current') {
-    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id);
+    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id, { includeSuperseded: true });
     const entry = isIndexedSessionDashboardRef(action.sessionRef)
       ? entries[Number(action.sessionRef.slice(1)) - 1]
       : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
@@ -2362,6 +2374,13 @@ async function processCallback(callback) {
     }
     route = entry.online ? routes.get(entry.sessionKey) : undefined;
     if (!route) {
+      if (action.action === 'forget') {
+        const revoked = await revokeBindingForChat(entry.sessionKey, callback.chat.id, callback.user.id);
+        if (revoked && activeSessionByChatId.get(String(callback.chat.id)) === entry.sessionKey) activeSessionByChatId.delete(String(callback.chat.id));
+        await answerCallbackQuery(callback.callbackQueryId, revoked ? 'Offline session forgotten.' : 'No matching offline session.');
+        await sendPlainText(callback.chat.id, revoked ? `Forgot offline Pi session ${entry.alias || entry.sessionLabel}.` : 'No matching offline session found. Use /sessions for the latest list.');
+        return;
+      }
       await answerCallbackQuery(callback.callbackQueryId, 'Pi session is offline.');
       await sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
       return;

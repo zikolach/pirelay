@@ -40,8 +40,8 @@ Discord and Slack still document text prefixes first because native slash comman
 - closes the local pairing QR/dialog automatically when pairing completes
 - shows local pairing completion notifications consistently across messengers
 - restores non-secret binding metadata when a Pi session resumes with `pi --continue`
-- supports multiple concurrently registered Pi sessions through a local broker
-- exposes session selection commands when more than one session is paired to the same chat
+- supports multiple concurrently registered Pi sessions through one local broker per `{stateDir, bot token, brokerNamespace}` scope
+- exposes session selection commands when more than one session is paired to the same chat and hides superseded same-workspace offline sessions by default
 
 ### Remote prompting and control
 
@@ -336,7 +336,7 @@ PiRelay can track multiple live Pi sessions through a local broker. Pair session
 /relay connect slack release
 ```
 
-Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions.
+Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions. Older offline pairings from the same machine/workspace are treated as superseded when a newer online session exists; use `/sessions all` or `relay sessions all` when you need to inspect or clean up those hidden stale entries, then `/forget <session>`.
 
 If the same bot/app is configured on multiple machines, use one ingress owner plus broker federation so other machines register routes instead of polling the same messenger concurrently.
 
@@ -454,13 +454,17 @@ If you continue the same Pi session and PiRelay uses the same state directory, y
 
 ### You changed code but behavior looks stale
 
-Restart the running Pi session/extension process. If a detached broker is still running, stop it before retesting:
+Restart the running Pi session/extension process. PiRelay normally supervises one local broker per `{stateDir, bot token, brokerNamespace}` scope and same-scope Pi sessions reconnect/register routes with that broker. If you are testing broker startup changes and need a hard reset, stop the detached broker before retesting:
 
 ```bash
 pkill -f 'extensions/relay/broker/process.js'
 ```
 
 Then restart Pi or reload the package from the updated checkout.
+
+### `/sessions` shows stale or offline duplicates
+
+When a newer online session exists for the same machine/workspace, PiRelay hides older offline same-workspace pairings from the default session list. Use `/sessions all` (or `relay sessions all` on Discord/Slack) to reveal hidden stale entries for diagnostics and cleanup, then `/forget <session>` to remove an offline pairing. PiRelay does not delete transcript files or automatically revoke live bindings when it hides superseded entries.
 
 ## Architecture overview
 

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
+import { annotateSupersededSessionEntries, formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, visibleSessionEntries, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
 
 const tempDirs: string[] = [];
 
@@ -55,6 +55,23 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector(entries, "abcdef")).toMatchObject({ kind: "matched", index: 0 });
     expect(resolveSessionSelector(entries, "missing")).toMatchObject({ kind: "no-match" });
     expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("hides older offline sessions from the same workspace by default", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "old:/sessions/--Users-user-Projects-pirelay--/old.jsonl", sessionId: "old11111", sessionLabel: "pirelay", sessionFile: "/sessions/--Users-user-Projects-pirelay--/old.jsonl", online: false, lastActivityAt: 1 },
+      { sessionKey: "new:/sessions/--Users-user-Projects-pirelay--/new.jsonl", sessionId: "new22222", sessionLabel: "pirelay", sessionFile: "/sessions/--Users-user-Projects-pirelay--/new.jsonl", online: true, busy: false, lastActivityAt: 2 },
+      { sessionKey: "other:/sessions/--Users-user-Projects-sigma--/old.jsonl", sessionId: "other333", sessionLabel: "sigma", sessionFile: "/sessions/--Users-user-Projects-sigma--/old.jsonl", online: false, lastActivityAt: 1 },
+      { sessionKey: "unknown", sessionId: "unknown", sessionLabel: "pirelay", online: false },
+    ];
+
+    const annotated = annotateSupersededSessionEntries(entries);
+    expect(annotated[0]?.superseded).toBe(true);
+    expect(annotated[2]?.superseded).toBeUndefined();
+    expect(annotated[3]?.superseded).toBeUndefined();
+    expect(visibleSessionEntries(entries).map((entry) => entry.sessionKey)).toEqual([entries[1]!.sessionKey, entries[2]!.sessionKey, entries[3]!.sessionKey]);
+    expect(visibleSessionEntries(entries, { includeSuperseded: true })).toHaveLength(4);
+    expect(formatSessionList(annotated)).toContain("offline — superseded");
   });
 
   it("uses aliases in session lists and selectors", () => {

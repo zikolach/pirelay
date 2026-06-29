@@ -9,6 +9,8 @@ export interface SessionListEntry {
   paused?: boolean;
   modelId?: string;
   lastActivityAt?: number;
+  workspaceKey?: string;
+  superseded?: boolean;
 }
 
 export type SessionSelectorResult =
@@ -134,6 +136,38 @@ export function duplicateSessionLabels(entries: SessionListEntry[]): Set<string>
   return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([label]) => label));
 }
 
+export function sessionWorkspaceKey(entry: Pick<SessionListEntry, "sessionFile" | "workspaceKey">): string | undefined {
+  if (entry.workspaceKey?.trim()) return entry.workspaceKey.trim();
+  const normalized = entry.sessionFile?.replace(/\\/g, "/");
+  if (!normalized) return undefined;
+  const parts = normalized.split("/").filter(Boolean);
+  const parent = parts.length >= 2 ? parts[parts.length - 2] : undefined;
+  return parent && /^--.+--$/.test(parent) ? parent : undefined;
+}
+
+export function annotateSupersededSessionEntries(entries: SessionListEntry[]): SessionListEntry[] {
+  const annotated = entries.map((entry) => ({ ...entry, workspaceKey: sessionWorkspaceKey(entry) }));
+  const onlineByWorkspace = new Map<string, SessionListEntry[]>();
+  for (const entry of annotated) {
+    if (!entry.online || !entry.workspaceKey) continue;
+    const current = onlineByWorkspace.get(entry.workspaceKey) ?? [];
+    current.push(entry);
+    onlineByWorkspace.set(entry.workspaceKey, current);
+  }
+  return annotated.map((entry) => {
+    if (entry.online || !entry.workspaceKey) return entry;
+    const onlineSiblings = onlineByWorkspace.get(entry.workspaceKey) ?? [];
+    if (onlineSiblings.length === 0) return entry;
+    const superseded = onlineSiblings.some((online) => !entry.lastActivityAt || !online.lastActivityAt || online.lastActivityAt >= entry.lastActivityAt);
+    return superseded ? { ...entry, superseded: true } : entry;
+  });
+}
+
+export function visibleSessionEntries(entries: SessionListEntry[], options: { includeSuperseded?: boolean } = {}): SessionListEntry[] {
+  const annotated = annotateSupersededSessionEntries(entries);
+  return options.includeSuperseded ? annotated : annotated.filter((entry) => !entry.superseded);
+}
+
 export function formatSessionList(entries: SessionListEntry[], activeSessionKey?: string): string {
   if (entries.length === 0) {
     return [
@@ -149,7 +183,7 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
   const lines = ["Pi sessions", ""];
   entries.forEach((entry, index) => {
     const active = entry.sessionKey === activeSessionKey ? " — active" : "";
-    const state = entry.online ? "online" : "offline";
+    const state = entry.online ? "online" : entry.superseded ? "offline — superseded" : "offline";
     const activity = entry.online ? ` — ${entry.busy ? "busy" : "idle"}` : "";
     const paused = entry.paused ? " — paused" : "";
     const model = entry.modelId ? ` — ${entry.modelId}` : "";
@@ -157,7 +191,7 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
     const alias = entry.alias?.trim() ? ` (${entry.sessionLabel})` : "";
     lines.push(`${index + 1}. ${markers.get(sessionMarkerIdentity(entry)) ?? sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)}${alias} — ${state}${activity}${paused}${model}${lastActivity}${active}`);
   });
-  lines.push("", "Use /use <number|alias|label> to switch, /to <session> <prompt> for a one-shot prompt, /alias <name> to rename the active session, or /forget <session> to remove an offline session.");
+  lines.push("", "Use /use <number|alias|label> to switch, /to <session> <prompt> for a one-shot prompt, /alias <name> to rename the active session, /forget <session> to remove an offline session, or /sessions all to show hidden stale sessions.");
   return lines.join("\n");
 }
 

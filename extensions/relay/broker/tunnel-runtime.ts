@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState }
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
-import { normalizeBrokerNamespace } from "./supervisor.js";
+import { brokerScopeControlPaths, ensureScopedBroker, normalizeBrokerNamespace } from "./supervisor.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const BROKER_CHANNEL = "telegram" as const;
@@ -69,9 +69,12 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   constructor(private readonly config: TelegramTunnelConfig) {
     this.brokerNamespace = normalizeBrokerNamespace(config.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE);
     const tokenHash = sha256(config.botToken).slice(0, 16);
-    const brokerName = this.brokerNamespace ? `broker-${this.brokerNamespace}-${tokenHash}` : `broker-${tokenHash}`;
-    this.socketPath = resolve(config.stateDir, `${brokerName}.sock`);
-    this.pidPath = resolve(config.stateDir, `${brokerName}.pid`);
+    // Broker scope is intentionally machine-local and secret-safe:
+    // { stateDir, bot token hash, brokerNamespace }. Multiple Pi sessions
+    // in the same scope are clients of one supervised broker process.
+    const paths = brokerScopeControlPaths({ stateDir: config.stateDir, tokenHash, namespace: this.brokerNamespace });
+    this.socketPath = paths.socketPath;
+    this.pidPath = paths.pidPath;
   }
 
   get setup(): SetupCache | undefined {
@@ -154,11 +157,17 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
     this.connecting = (async () => {
       await ensureStateDir(this.config.stateDir);
-      try {
-        await this.connectSocket();
-      } catch {
-        await this.spawnBroker();
-        await this.waitForSocketReady();
+      if (!await this.tryConnectSocket()) {
+        const tokenHash = sha256(this.config.botToken).slice(0, 16);
+        await ensureScopedBroker({
+          stateDir: this.config.stateDir,
+          tokenHash,
+          namespace: this.brokerNamespace,
+          isAlive: (pid) => this.isProcessAlive(pid),
+          probeSocket: async () => this.probeSocket().then(() => true, () => false),
+          waitForSocketReady: async () => this.waitForSocketReady(),
+          startBroker: async () => this.spawnBroker(),
+        });
         await this.connectSocket();
       }
       await this.resyncRoutes();
@@ -168,6 +177,15 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       await this.connecting;
     } finally {
       this.connecting = undefined;
+    }
+  }
+
+  private async tryConnectSocket(): Promise<boolean> {
+    try {
+      await this.connectSocket();
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -496,7 +514,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }
   }
 
-  private async spawnBroker(): Promise<void> {
+  private async spawnBroker(): Promise<{ pid: number }> {
     const brokerPath = fileURLToPath(new URL("./process.js", import.meta.url));
     const child = spawn(process.execPath, [brokerPath], {
       detached: true,
@@ -511,7 +529,8 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       },
     });
     child.unref();
-    if (child.pid) await writeFile(this.pidPath, `${child.pid}\n`, { mode: 0o600 });
+    if (!child.pid) throw new Error("PiRelay broker process did not expose a pid.");
+    return { pid: child.pid };
   }
 
   private async waitForSocketReady(): Promise<void> {

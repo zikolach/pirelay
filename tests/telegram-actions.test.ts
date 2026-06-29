@@ -108,10 +108,12 @@ describe("telegram action callbacks", () => {
       { online: true, sessionKey: "one" },
       { online: false, sessionKey: "two" },
     ]);
-    expect(parseTelegramActionCallbackData(listKeyboard[1]![0]!.callbackData)).toEqual({ kind: "dashboard", sessionRef: sessionDashboardRef("two"), action: "use" });
+    expect(listKeyboard[0]).toEqual([{ text: "Use 1", callbackData: `dash:${sessionDashboardRef("one")}:use` }]);
+    expect(listKeyboard[1]).toEqual([{ text: "Forget 2", callbackData: `dash:${sessionDashboardRef("two")}:forget` }]);
+    expect(parseTelegramActionCallbackData(listKeyboard[1]![0]!.callbackData)).toEqual({ kind: "dashboard", sessionRef: sessionDashboardRef("two"), action: "forget" });
     expect(sessionDashboardRef("two")).toBe(sessionDashboardRef("two"));
     expect(sessionDashboardRef("two")).not.toBe("i2");
-    expect(`dash:${sessionDashboardRef("two")}:recent`.length).toBeLessThanOrEqual(64);
+    expect(`dash:${sessionDashboardRef("two")}:forget`.length).toBeLessThanOrEqual(64);
     expect(parseTelegramActionCallbackData("dash:current:unknown")).toBeUndefined();
   });
 
