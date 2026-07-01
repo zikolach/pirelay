@@ -43,6 +43,12 @@ function sessionsIncludeSuperseded(args: string | undefined): boolean {
   const normalized = String(args ?? "").trim().toLowerCase();
   return normalized === "all" || normalized === "--all";
 }
+
+function parsedLastActivityAt(value: string): number | undefined {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
 const DISCORD_SESSION_LIST_FOOTER = "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, relay forget <session> to remove an offline session, or relay sessions all to show hidden stale sessions.";
 const DISCORD_TYPING_REFRESH_MS = 7_000;
@@ -1292,7 +1298,7 @@ export class DiscordRuntime {
         online: false,
         busy: false,
         paused: Boolean(binding.paused),
-        lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+        lastActivityAt: parsedLastActivityAt(binding.lastSeenAt),
       });
     }
     return visibleSessionEntries([...byKey.values()], options);

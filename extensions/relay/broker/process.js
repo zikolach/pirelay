@@ -665,6 +665,11 @@ function routeToSessionEntry(route) {
   };
 }
 
+function parsedLastActivityAt(value) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 function bindingToSessionEntry(binding) {
   return {
     sessionKey: binding.sessionKey,
@@ -675,7 +680,7 @@ function bindingToSessionEntry(binding) {
     online: false,
     busy: false,
     paused: Boolean(binding.paused),
-    lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+    lastActivityAt: parsedLastActivityAt(binding.lastSeenAt),
   };
 }
 
@@ -1797,7 +1802,7 @@ function statusTextForRoute(route) {
     `Busy: ${isEffectivelyBusy(route) ? 'yes' : 'no'}`,
     `Model: ${route.modelId || 'unknown'}`,
     `Progress mode: ${displayProgressMode(route.binding?.progressMode || config.progressMode)}`,
-    `Last activity: ${route.lastActivityAt ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
+    `Last activity: ${route.lastActivityAt !== undefined && Number.isFinite(route.lastActivityAt) ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
     `Paused: ${route.binding?.paused ? 'yes' : 'no'}`,
   ].filter(Boolean).join('\n');
 }

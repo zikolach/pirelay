@@ -42,6 +42,10 @@ const BASE_SESSION_MARKERS = ["🔵", "🟢", "🟠", "🟣", "🟡", "🔴", "�
 const EXTRA_SESSION_MARKERS = ["🔷", "🟩", "🔶", "🟪", "🟨", "🟥", "⬜", "⬛"];
 const SESSION_MARKERS = [...BASE_SESSION_MARKERS, ...EXTRA_SESSION_MARKERS];
 
+function isFiniteNumber(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value);
+}
+
 function stableHash(value: string): number {
   let hash = 2166136261;
   for (const char of value) {
@@ -158,7 +162,11 @@ export function annotateSupersededSessionEntries(entries: SessionListEntry[]): S
     if (entry.online || !entry.workspaceKey) return entry;
     const onlineSiblings = onlineByWorkspace.get(entry.workspaceKey) ?? [];
     if (onlineSiblings.length === 0) return entry;
-    const superseded = onlineSiblings.some((online) => online.lastActivityAt !== undefined && (!entry.lastActivityAt || online.lastActivityAt >= entry.lastActivityAt));
+    const superseded = onlineSiblings.some((online) => {
+      const onlineActivity = online.lastActivityAt;
+      const offlineActivity = entry.lastActivityAt;
+      return isFiniteNumber(onlineActivity) && (!isFiniteNumber(offlineActivity) || onlineActivity >= offlineActivity);
+    });
     return superseded ? { ...entry, superseded: true } : entry;
   });
 }
@@ -193,7 +201,7 @@ export function formatSessionList(entries: SessionListEntry[], activeSessionKey?
     const activity = entry.online ? ` — ${entry.busy ? "busy" : "idle"}` : "";
     const paused = entry.paused ? " — paused" : "";
     const model = entry.modelId ? ` — ${entry.modelId}` : "";
-    const lastActivity = entry.lastActivityAt ? ` — ${new Date(entry.lastActivityAt).toLocaleString()}` : "";
+    const lastActivity = isFiniteNumber(entry.lastActivityAt) ? ` — ${new Date(entry.lastActivityAt).toLocaleString()}` : "";
     const alias = entry.alias?.trim() ? ` (${entry.sessionLabel})` : "";
     lines.push(`${index + 1}. ${markers.get(sessionMarkerIdentity(entry)) ?? sessionMarkerFor(entry)} ${disambiguatedSessionLabel(entry, duplicates)}${alias} — ${state}${activity}${paused}${model}${lastActivity}${active}`);
   });

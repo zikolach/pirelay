@@ -113,6 +113,11 @@ function sessionsIncludeSuperseded(args: string | undefined): boolean {
   return normalized === "all" || normalized === "--all";
 }
 
+function parsedLastActivityAt(value: string): number | undefined {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 type TelegramProgressDeliveryState = LiveProgressDeliveryState<string>;
 const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;
 
@@ -2431,7 +2436,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         online: false,
         busy: false,
         paused: Boolean(binding.paused),
-        lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+        lastActivityAt: parsedLastActivityAt(binding.lastSeenAt),
       });
     }
 

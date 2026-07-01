@@ -77,6 +77,14 @@ describe("telegram utils", () => {
       { ...entries[1]!, lastActivityAt: undefined },
     ])).toHaveLength(2);
     expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: 0 },
+      { ...entries[1]!, lastActivityAt: undefined },
+    ])).toHaveLength(2);
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: 0 },
+      { ...entries[1]!, lastActivityAt: 0 },
+    ])).toHaveLength(1);
+    expect(visibleSessionEntries([
       { ...entries[0]!, lastActivityAt: undefined },
       entries[1]!,
     ])).toHaveLength(1);
@@ -88,6 +96,8 @@ describe("telegram utils", () => {
     ];
     const list = formatSessionList(entries, entries[0]!.sessionKey);
     expect(list).toContain("phone (long local label) — online — idle — gpt-test");
+    expect(list).toContain(new Date(0).toLocaleString());
+    expect(formatSessionList([{ ...entries[0]!, lastActivityAt: Number.NaN }])).not.toContain("Invalid Date");
     expect(formatSessionList(entries, undefined, { footer: "Use relay sessions all." })).toContain("Use relay sessions all.");
     expect(resolveSessionSelector(entries, "phone")).toMatchObject({ kind: "matched", index: 0 });
   });
