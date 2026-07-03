@@ -127,7 +127,7 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
   const release = await lockfile.lock(paths.lockPath, {
     realpath: false,
     stale: 60_000,
-    retries: { retries: 50, minTimeout: 20, maxTimeout: 200 },
+    retries: { retries: 200, minTimeout: 50, maxTimeout: 500 },
   });
   try {
     if (await options.probeSocket(paths)) {
