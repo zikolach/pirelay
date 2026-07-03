@@ -120,7 +120,7 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
 
   if (await options.probeSocket(paths)) {
     const pid = await readBrokerPid(paths.pidPath);
-    return { status: "existing", paths, pid: pid ?? 0 };
+    if (pid) return { status: "existing", paths, pid };
   }
 
   const lockTargetPath = paths.lockPath.endsWith(".lock") ? paths.lockPath.slice(0, -".lock".length) : `${paths.lockPath}.target`;
@@ -133,7 +133,7 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
   try {
     if (await options.probeSocket(paths)) {
       const pid = await readBrokerPid(paths.pidPath);
-      return { status: "existing", paths, pid: pid ?? 0 };
+      if (pid) return { status: "existing", paths, pid };
     }
 
     const existingPid = await readBrokerPid(paths.pidPath);
