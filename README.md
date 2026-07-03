@@ -40,7 +40,7 @@ Discord and Slack still document text prefixes first because native slash comman
 - closes the local pairing QR/dialog automatically when pairing completes
 - shows local pairing completion notifications consistently across messengers
 - restores non-secret binding metadata when a Pi session resumes with `pi --continue`
-- supports multiple concurrently registered Pi sessions through one local broker per `{stateDir, bot token, brokerNamespace}` scope
+- supports multiple concurrently registered Pi sessions through one local broker per `{stateDir, bot token hash, brokerNamespace}` scope
 - exposes session selection commands when more than one session is paired to the same chat and hides superseded same-workspace offline sessions by default
 
 ### Remote prompting and control
@@ -454,7 +454,7 @@ If you continue the same Pi session and PiRelay uses the same state directory, y
 
 ### You changed code but behavior looks stale
 
-Restart the running Pi session/extension process. PiRelay normally supervises one local broker per `{stateDir, bot token, brokerNamespace}` scope and same-scope Pi sessions reconnect/register routes with that broker. If you are testing broker startup changes and need a hard reset, stop the detached broker before retesting:
+Restart the running Pi session/extension process. PiRelay normally supervises one local broker per `{stateDir, bot token hash, brokerNamespace}` scope and same-scope Pi sessions reconnect/register routes with that broker. If you are testing broker startup changes and need a hard reset, stop the detached broker before retesting:
 
 ```bash
 pkill -f 'extensions/relay/broker/process.js'

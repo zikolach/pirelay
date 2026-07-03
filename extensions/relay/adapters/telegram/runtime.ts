@@ -903,9 +903,14 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       const route = entry.online ? this.routes.get(entry.sessionKey) : undefined;
       if (!route) {
         if (action.kind === "dashboard" && action.action === "forget") {
-          await this.store.revokeBinding(entry.sessionKey);
+          const revoked = await this.store.revokeBinding(entry.sessionKey);
           const selectionKey = this.activeSessionKey(callback.chat.id, callback.user.id);
           if (this.activeSessionByChatUser.get(selectionKey) === entry.sessionKey) this.activeSessionByChatUser.delete(selectionKey);
+          if (!revoked) {
+            await this.api.answerCallbackQuery(callback.callbackQueryId, "No matching offline session.");
+            await this.api.sendPlainText(callback.chat.id, "No matching offline session found. Use /sessions for the latest list.");
+            return undefined;
+          }
           await this.api.answerCallbackQuery(callback.callbackQueryId, "Offline session forgotten.");
           await this.api.sendPlainText(callback.chat.id, `Forgot offline session ${entry.alias || entry.sessionLabel}.`);
           return undefined;
