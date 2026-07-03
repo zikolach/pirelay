@@ -173,9 +173,10 @@ export function summarizeToolProgress(
   input: unknown,
   config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">,
 ): ToolProgressLabel | undefined {
-  const tool = sanitizeToolName(toolName);
-  if (!tool) return undefined;
-  const rawDetail = summarizeToolIntent(tool, input);
+  const intentTool = sanitizeToolName(toolName);
+  const tool = safeToolName(toolName, config);
+  if (!intentTool || !tool) return undefined;
+  const rawDetail = summarizeToolIntent(intentTool, input);
   const labelText = rawDetail ? `${tool}: ${rawDetail}` : tool;
   const label = boundedToolLabel(labelText, config);
   if (!label) return undefined;
@@ -296,6 +297,11 @@ function sanitizeToolName(toolName: unknown): string | undefined {
   if (!raw) return undefined;
   const sanitized = raw.replace(/[^a-z0-9_.:-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
   return sanitized || "tool";
+}
+
+function safeToolName(toolName: unknown, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): string | undefined {
+  const redacted = sanitizeProgressText(String(toolName ?? ""), config);
+  return sanitizeToolName(redacted);
 }
 
 function boundedToolLabel(label: string, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): string {

@@ -156,6 +156,22 @@ describe("tool progress helpers", () => {
     expect(JSON.stringify(label)).not.toContain("raw");
   });
 
+  it("redacts aggregate tool names", () => {
+    const accumulator = createToolProgressAccumulator();
+    const safeConfig = { ...config, redactionPatterns: ["SECRET_[A-Z]+"] };
+
+    accumulator.start({ toolName: "SECRET_TOKEN", toolCallId: "secret-1", at: 1 }, safeConfig);
+    accumulator.start({ toolName: "SECRET_TOKEN", toolCallId: "secret-2", at: 2 }, safeConfig);
+
+    const snapshot = accumulator.snapshot();
+    const rows = toolProgressRows(snapshot);
+    const rendered = rows.map((row) => row.text).join("\n");
+    expect(snapshot.aggregates).toEqual([{ toolName: "redacted", count: 2 }]);
+    expect(rendered).toContain("redacted×2");
+    expect(rendered).not.toContain("SECRET_TOKEN");
+    expect(rendered).not.toContain("secret_token");
+  });
+
   it("aggregates active, completed, failed, repeated, and truncated tool progress", () => {
     const accumulator = createToolProgressAccumulator();
     const safeConfig = { ...config, maxProgressMessageChars: 160 };
