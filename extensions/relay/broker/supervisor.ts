@@ -96,7 +96,7 @@ export async function cleanupStaleBrokerControlFiles(paths: LocalBrokerControlPa
   await Promise.all([
     rm(paths.pidPath, { force: true }),
     rm(paths.socketPath, { force: true }),
-    rm(paths.lockPath, { force: true }),
+    rm(paths.lockPath, { force: true, recursive: true }),
   ]);
   return true;
 }
@@ -123,8 +123,9 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
     return { status: "existing", paths, pid: pid ?? 0 };
   }
 
-  await writeFile(paths.lockPath, "", { flag: "a", mode: 0o600 });
-  const release = await lockfile.lock(paths.lockPath, {
+  const lockTargetPath = paths.lockPath.endsWith(".lock") ? paths.lockPath.slice(0, -".lock".length) : `${paths.lockPath}.target`;
+  const release = await lockfile.lock(lockTargetPath, {
+    lockfilePath: paths.lockPath,
     realpath: false,
     stale: 60_000,
     retries: { retries: 200, minTimeout: 50, maxTimeout: 500 },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { brokerControlPaths, brokerScopeControlPaths, cleanupStaleBrokerControlFiles, ensureLocalBroker, ensureScopedBroker, normalizeBrokerNamespace, readBrokerPid } from "../../extensions/relay/broker/index.js";
@@ -94,8 +94,10 @@ describe("local broker supervisor", () => {
       ensureScopedBroker(options),
     ]);
 
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
     expect(starts).toBe(1);
-    expect(await readBrokerPid(brokerScopeControlPaths({ stateDir, tokenHash: "abc123" }).pidPath)).toBe(4444);
+    expect(await readBrokerPid(paths.pidPath)).toBe(4444);
+    await expect(stat(`${paths.lockPath}.lock`)).rejects.toThrow();
   });
 
   it("waits for a live scoped broker pid instead of spawning a competitor", async () => {
