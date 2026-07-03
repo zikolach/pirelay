@@ -336,7 +336,7 @@ PiRelay can track multiple live Pi sessions through a local broker. Pair session
 /relay connect slack release
 ```
 
-Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions. Older offline pairings from the same machine/workspace are treated as superseded when a newer online session exists; use `/sessions all` or `relay sessions all` when you need to inspect or clean up those hidden stale entries, then `/forget <session>`.
+Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions. Older offline pairings from the same machine/workspace are treated as superseded when a newer online session exists; use `/sessions all` or `relay sessions all` when you need to inspect or clean up those hidden stale entries, then run the messenger-appropriate forget command from the command table above.
 
 If the same bot/app is configured on multiple machines, use one ingress owner plus broker federation so other machines register routes instead of polling the same messenger concurrently.
 
@@ -464,7 +464,7 @@ Then restart Pi or reload the package from the updated checkout.
 
 ### `/sessions` shows stale or offline duplicates
 
-When a newer online session exists for the same machine/workspace, PiRelay hides older offline same-workspace pairings from the default session list. Use `/sessions all` (or `relay sessions all` on Discord/Slack) to reveal hidden stale entries for diagnostics and cleanup, then `/forget <session>` to remove an offline pairing. PiRelay does not delete transcript files or automatically revoke live bindings when it hides superseded entries.
+When a newer online session exists for the same machine/workspace, PiRelay hides older offline same-workspace pairings from the default session list. Use `/sessions all` (or `relay sessions all` on Discord/Slack) to reveal hidden stale entries for diagnostics and cleanup, then run the appropriate forget command for your messenger to remove an offline pairing. PiRelay does not delete transcript files or automatically revoke live bindings when it hides superseded entries.
 
 ## Architecture overview
 
