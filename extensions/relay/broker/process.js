@@ -2617,11 +2617,10 @@ function removeClient(socket) {
   if (!client) return;
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
-    if (existing) {
-      clearAnswerStateForRoute(existing);
-      clearActivityIndicator(existing);
-      clearProgressState(existing);
-    }
+    if (!existing || existing.socket !== socket) continue;
+    clearAnswerStateForRoute(existing);
+    clearActivityIndicator(existing);
+    clearProgressState(existing);
     routes.delete(sessionKey);
   }
   clients.delete(socket);
@@ -2654,6 +2653,9 @@ async function handleClientRequest(socket, message) {
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
         const previousRoute = routes.get(route.sessionKey);
+        if (previousRoute?.socket && previousRoute.socket !== socket) {
+          clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
+        }
         const nextRoute = { ...route, socket };
         if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
           clearActivityIndicator(previousRoute);
@@ -2680,13 +2682,14 @@ async function handleClientRequest(socket, message) {
         const client = clients.get(socket);
         client?.routes.delete(message.sessionKey);
         const existing = routes.get(message.sessionKey);
-        if (existing) {
+        const ownsRoute = existing?.socket === socket;
+        if (ownsRoute) {
           clearAnswerStateForRoute(existing);
           clearActivityIndicator(existing);
           clearProgressState(existing);
+          routes.delete(message.sessionKey);
         }
-        routes.delete(message.sessionKey);
-        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: existing ? 'removed' : 'missing', sessionKey: message.sessionKey });
+        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: ownsRoute ? 'removed' : existing ? 'stale-owner' : 'missing', sessionKey: message.sessionKey });
         respond(true, true);
         return;
       }

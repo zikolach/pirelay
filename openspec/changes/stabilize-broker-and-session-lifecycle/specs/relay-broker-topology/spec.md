@@ -40,6 +40,12 @@ Broker clients SHALL re-register every live local session route after connecting
 - **THEN** each client registers its own route with the same authoritative broker
 - **AND** the broker session list contains all online routes from those clients
 
+#### Scenario: A replacement client registers before the previous socket closes
+- **WHEN** a live session route is re-registered on a replacement client socket
+- **AND** the previous socket later unregisters or disconnects
+- **THEN** the broker retains the replacement socket's route registration
+- **AND** the session remains online in broker-backed session lists
+
 #### Scenario: Re-registration contains stale binding metadata
 - **WHEN** a reconnecting client re-registers a route whose binding metadata is stale relative to persisted binding authority
 - **THEN** the broker applies binding authority before delivery or persisted binding updates

@@ -14,6 +14,7 @@
 - [x] 2.3 Add tests for live pid/socket-not-ready behavior where the second runtime waits instead of spawning a competing broker.
 - [x] 2.4 Add tests that multiple clients reconnect to the same recovered broker and all routes appear online.
 - [x] 2.5 Verify stale route registrations still respect persisted binding authority and cannot resurrect revoked bindings.
+- [x] 2.6 Transfer route ownership on replacement registration and prevent stale sockets from unregistering or deleting the replacement route.
 
 ## 3. Workspace-aware Session Hygiene
 
