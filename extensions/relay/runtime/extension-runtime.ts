@@ -2168,7 +2168,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const toolText = extractTextContent(event.message.content as never);
       if (toolText) activeTurnImagePathTexts.push(toolText);
       const progressSuppressed = consumeToolProgressSuppression(event.message.toolCallId, event.message.toolName);
-      if (currentRoute.notification.lastStatus === "running" && !progressSuppressed && !toolProgress.has(event.message.toolCallId)) {
+      const hasLifecycleProgress = configCache
+        ? toolProgress.hasMatching({ toolName: event.message.toolName, toolCallId: event.message.toolCallId }, configCache)
+        : toolProgress.has(event.message.toolCallId);
+      if (currentRoute.notification.lastStatus === "running" && !progressSuppressed && !hasLifecycleProgress) {
         recordProgress("tool", "Processed tool result", undefined, { delivery: "volatile", semanticKey: `tool-result:${event.message.toolCallId ?? "unknown"}` });
         publishRouteStateSoon();
       }

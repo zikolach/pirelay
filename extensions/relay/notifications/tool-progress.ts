@@ -63,6 +63,13 @@ export class ToolProgressAccumulator {
     return this.records.has(toolCallId.trim());
   }
 
+  hasMatching(event: Pick<ToolProgressEventInput, "toolName" | "toolCallId">, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): boolean {
+    if (this.has(event.toolCallId)) return true;
+    const label = summarizeToolProgress(event.toolName, undefined, config);
+    if (!label) return false;
+    return [...this.records.values()].some((record) => record.toolName === label.toolName);
+  }
+
   discard(toolCallId: unknown): void {
     if (typeof toolCallId !== "string" || !toolCallId.trim()) return;
     this.discardStableId(toolCallId.trim());

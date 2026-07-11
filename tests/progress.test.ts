@@ -228,6 +228,8 @@ describe("tool progress helpers", () => {
     expect(accumulator.snapshot().records).toEqual([
       expect.objectContaining({ toolCallId: "missing-1", state: "completed", label: "bash: npm test" }),
     ]);
+    expect(accumulator.hasMatching({ toolName: "bash" }, config)).toBe(true);
+    expect(accumulator.hasMatching({ toolName: "read" }, config)).toBe(false);
     expect(formatToolProgressCard(accumulator.snapshot(), config)).toContain("✓ bash: npm test");
   });
 
