@@ -169,7 +169,8 @@ export class ToolProgressAccumulator {
   private stableToolCallId(toolCallId: unknown, label: ToolProgressLabel): string {
     if (typeof toolCallId === "string" && toolCallId.trim()) return toolCallId.trim();
     const semanticMatch = this.missingIdBySemanticKey.get(label.semanticKey);
-    if (semanticMatch) return semanticMatch;
+    if (semanticMatch && this.records.get(semanticMatch)?.state === "active") return semanticMatch;
+    if (semanticMatch) this.deleteMissingIdentity(semanticMatch);
     const activeMatch = this.activeMissingToolCallId(label.toolName);
     if (activeMatch) {
       this.missingIdBySemanticKey.set(label.semanticKey, activeMatch);

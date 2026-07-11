@@ -257,6 +257,18 @@ describe("tool progress helpers", () => {
     expect(accumulator.activity({ id: "empty" }, config)).toBeUndefined();
   });
 
+  it("does not reuse a stale completed missing-id semantic mapping", () => {
+    const accumulator = createToolProgressAccumulator();
+    accumulator.start({ toolName: "bash", input: { command: "npm test" }, at: 1 }, config);
+    accumulator.finish({ toolName: "bash", toolCallId: "missing-1", failed: false, at: 2 }, config);
+    accumulator.start({ toolName: "bash", input: { command: "npm test" }, at: 3 }, config);
+
+    expect(accumulator.snapshot().records).toEqual([
+      expect.objectContaining({ toolCallId: "missing-1", state: "completed" }),
+      expect.objectContaining({ toolCallId: "missing-2", state: "active" }),
+    ]);
+  });
+
   it("bounds retained current-turn tool records", () => {
     const accumulator = createToolProgressAccumulator();
     for (let index = 0; index < 55; index += 1) {
