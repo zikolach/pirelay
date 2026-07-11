@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added safe, bounded tool-call progress cards with active, completed, and failed lifecycle aggregation, approval-aware publication, allowlisted intent summaries, redaction, and robust missing-ID correlation. #80
+- Stabilized scoped broker startup, route ownership, and reconnect registration so stale sockets cannot remove replacement routes or make active sessions appear offline. #81
+- Improved session cleanup and selection across messengers by hiding superseded same-workspace sessions by default, adding `/sessions all`, and providing Telegram `Use` and `Forget` actions. #81
+
 ## 0.8.0 - 2026-06-14
 
 - Added cross-messenger live progress updates so supported Slack, Discord, and Telegram destinations update an existing progress message where possible instead of posting repeated snapshots. #78
