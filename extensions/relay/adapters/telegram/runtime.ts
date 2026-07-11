@@ -96,6 +96,7 @@ import {
   getTelegramUserLabel,
   isAllowedImageMimeType,
   modelSupportsImages,
+  parseIsoTimestampToMs,
   parseTelegramCommand,
   redactSecret,
   summarizeTextDeterministically,
@@ -111,11 +112,6 @@ const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
 function sessionsIncludeSuperseded(args: string | undefined): boolean {
   const normalized = String(args ?? "").trim().toLowerCase();
   return normalized === "all" || normalized === "--all";
-}
-
-function parsedLastActivityAt(value: string): number | undefined {
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 type TelegramProgressDeliveryState = LiveProgressDeliveryState<string>;
@@ -2441,7 +2437,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         online: false,
         busy: false,
         paused: Boolean(binding.paused),
-        lastActivityAt: parsedLastActivityAt(binding.lastSeenAt),
+        lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
       });
     }
 

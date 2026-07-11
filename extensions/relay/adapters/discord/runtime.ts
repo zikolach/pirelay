@@ -17,7 +17,7 @@ import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteIm
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
-import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
+import { buildImagePromptContent, modelSupportsImages, parseIsoTimestampToMs, summarizeTextDeterministically } from "../../core/utils.js";
 import { prepareInboundImagePromptContent } from "../../media/index.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
@@ -42,11 +42,6 @@ const DISCORD_CHANNEL = "discord" as const;
 function sessionsIncludeSuperseded(args: string | undefined): boolean {
   const normalized = String(args ?? "").trim().toLowerCase();
   return normalized === "all" || normalized === "--all";
-}
-
-function parsedLastActivityAt(value: string): number | undefined {
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
@@ -1298,7 +1293,7 @@ export class DiscordRuntime {
         online: false,
         busy: false,
         paused: Boolean(binding.paused),
-        lastActivityAt: parsedLastActivityAt(binding.lastSeenAt),
+        lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
       });
     }
     return visibleSessionEntries([...byKey.values()], options);

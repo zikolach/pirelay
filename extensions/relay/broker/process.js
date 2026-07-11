@@ -102,6 +102,7 @@ const isAcceptedInboundImageMimeType = requiredFunction(mediaModule, './media/in
 const isAllowedImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAllowedImageMimeType');
 const prepareInboundImagePromptContent = requiredFunction(mediaModule, './media/index.ts', 'prepareInboundImagePromptContent');
 const normalizeImageMimeType = requiredFunction(utilsModule, './utils.ts', 'normalizeImageMimeType');
+const parseIsoTimestampToMs = requiredFunction(utilsModule, './utils.ts', 'parseIsoTimestampToMs');
 const safeTelegramImageFilename = requiredFunction(utilsModule, './utils.ts', 'safeTelegramImageFilename');
 const formatSessionList = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'formatSessionList');
 const resolveSessionSelector = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionSelector');
@@ -665,11 +666,6 @@ function routeToSessionEntry(route) {
   };
 }
 
-function parsedLastActivityAt(value) {
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : undefined;
-}
-
 function bindingToSessionEntry(binding) {
   return {
     sessionKey: binding.sessionKey,
@@ -680,7 +676,7 @@ function bindingToSessionEntry(binding) {
     online: false,
     busy: false,
     paused: Boolean(binding.paused),
-    lastActivityAt: parsedLastActivityAt(binding.lastSeenAt),
+    lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
   };
 }
 

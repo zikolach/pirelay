@@ -2,7 +2,7 @@ import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
+import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseIsoTimestampToMs, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
 import { annotateSupersededSessionEntries, formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, visibleSessionEntries, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
 
 const tempDirs: string[] = [];
@@ -12,6 +12,13 @@ afterEach(async () => {
 });
 
 describe("telegram utils", () => {
+  it("parses ISO timestamps while preserving epoch zero and rejecting invalid values", () => {
+    expect(parseIsoTimestampToMs("1970-01-01T00:00:00.000Z")).toBe(0);
+    expect(parseIsoTimestampToMs("2026-07-11T08:00:00.000Z")).toBe(Date.parse("2026-07-11T08:00:00.000Z"));
+    expect(parseIsoTimestampToMs("invalid")).toBeUndefined();
+    expect(parseIsoTimestampToMs(undefined)).toBeUndefined();
+  });
+
   it("parses slash commands and strips bot usernames", () => {
     expect(parseTelegramCommand("/status")).toEqual({ command: "status", args: "" });
     expect(parseTelegramCommand("/followup@mybot fix the failing test")).toEqual({
