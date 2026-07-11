@@ -509,7 +509,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("hello while route is reconnecting", binding),
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const texts = parseOutbox(await readFile(outboxPath, "utf8"))
@@ -689,7 +689,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -782,7 +782,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -888,7 +888,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -908,7 +908,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github inspect repo", harness.binding),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -933,7 +933,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github inspect repo", harness.binding),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -963,7 +963,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("inspect later", harness.binding, 2),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -994,7 +994,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github", harness.binding, 2),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.counters.skillMetadataRequests).toBe(0);
@@ -1090,7 +1090,7 @@ describe("telegram broker process", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -1158,7 +1158,7 @@ describe("telegram broker process", () => {
       });
       await waitForFileToContain(outboxPath, "Fallback progress");
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -1238,7 +1238,7 @@ describe("telegram broker process", () => {
       await registerProgress("tool-3", "Resumed progress");
       await waitForFileToContain(outboxPath, "Resumed progress", 250);
     } finally {
-      client.close();
+      await client.close();
     }
   });
 

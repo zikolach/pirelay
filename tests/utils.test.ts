@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseIsoTimestampToMs, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
-import { annotateSupersededSessionEntries, formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, visibleSessionEntries, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
+import { annotateSupersededSessionEntries, formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, sessionsIncludeSuperseded, visibleSessionEntries, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
 
 const tempDirs: string[] = [];
 
@@ -62,6 +62,13 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector(entries, "abcdef")).toMatchObject({ kind: "matched", index: 0 });
     expect(resolveSessionSelector(entries, "missing")).toMatchObject({ kind: "no-match" });
     expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
+  });
+
+  it("parses the shared all-sessions flag consistently", () => {
+    expect(sessionsIncludeSuperseded("all")).toBe(true);
+    expect(sessionsIncludeSuperseded(" --ALL ")).toBe(true);
+    expect(sessionsIncludeSuperseded(undefined)).toBe(false);
+    expect(sessionsIncludeSuperseded("stale")).toBe(false);
   });
 
   it("hides older offline sessions from the same workspace by default", () => {

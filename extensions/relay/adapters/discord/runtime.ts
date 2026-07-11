@@ -8,7 +8,7 @@ import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDec
 import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation, buildHelpText } from "../../commands/remote.js";
 import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionsIncludeSuperseded, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
 import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
@@ -38,11 +38,6 @@ import {
 } from "../../core/skill-invocation.js";
 
 const DISCORD_CHANNEL = "discord" as const;
-
-function sessionsIncludeSuperseded(args: string | undefined): boolean {
-  const normalized = String(args ?? "").trim().toLowerCase();
-  return normalized === "all" || normalized === "--all";
-}
 
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
 const DISCORD_SESSION_LIST_FOOTER = "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, relay forget <session> to remove an offline session, or relay sessions all to show hidden stale sessions.";

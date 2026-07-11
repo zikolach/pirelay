@@ -176,6 +176,11 @@ export function visibleSessionEntries(entries: SessionListEntry[], options: { in
   return options.includeSuperseded ? annotated : annotated.filter((entry) => !entry.superseded);
 }
 
+export function sessionsIncludeSuperseded(args: string | undefined): boolean {
+  const normalized = String(args ?? "").trim().toLowerCase();
+  return normalized === "all" || normalized === "--all";
+}
+
 export interface SessionListFormatOptions {
   footer?: string;
 }

@@ -57,7 +57,7 @@ import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteComm
 import { delegationTaskActionButtons, parseDelegationActionId, parseDelegationCommand, renderDelegationTaskCard, type DelegationActionKind, type DelegationCommand } from "../../commands/delegation.js";
 import { redactSecrets } from "../../config/setup.js";
 import { telegramBotCommands } from "../../commands/surfaces.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, sessionsIncludeSuperseded, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
 import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFileName, planFinalOutputDelivery } from "../../core/final-output.js";
 import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
@@ -108,11 +108,6 @@ const TELEGRAM_ACTIVITY_ACTION = "typing" as const;
 const TELEGRAM_ACTIVITY_INITIAL_REFRESH_MS = 1_200;
 const TELEGRAM_ACTIVITY_REFRESH_MS = 4_000;
 const CUSTOM_ANSWER_EXPIRY_MS = 10 * 60_000;
-
-function sessionsIncludeSuperseded(args: string | undefined): boolean {
-  const normalized = String(args ?? "").trim().toLowerCase();
-  return normalized === "all" || normalized === "--all";
-}
 
 type TelegramProgressDeliveryState = LiveProgressDeliveryState<string>;
 const ANSWER_AMBIGUITY_EXPIRY_MS = 5 * 60_000;

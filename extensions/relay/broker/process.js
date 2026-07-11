@@ -108,6 +108,7 @@ const formatSessionList = requiredFunction(sessionMultiplexingModule, './session
 const resolveSessionSelector = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionSelector');
 const resolveSessionTargetArgs = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionTargetArgs');
 const sessionSourcePrefixForRoute = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionSourcePrefixForRoute');
+const sessionsIncludeSuperseded = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionsIncludeSuperseded');
 const visibleSessionEntries = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'visibleSessionEntries');
 const commandIntentFromPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'commandIntentFromPipeline');
 const runTelegramIngressPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'runTelegramIngressPipeline');
@@ -1436,11 +1437,6 @@ async function handlePairStart(message, nonce) {
     console.warn(`Telegram pairing audit failed for ${route.sessionLabel}: ${redact(error instanceof Error ? error.message : String(error))}`);
   });
   await sendPlainText(message.chat.id, `Connected to Pi session ${route.sessionLabel}. Send text prompts directly, or use /help for tunnel commands.`);
-}
-
-function sessionsIncludeSuperseded(args) {
-  const normalized = String(args || '').trim().toLowerCase();
-  return normalized === 'all' || normalized === '--all';
 }
 
 async function handleSessionsCommand(message, args = '') {
