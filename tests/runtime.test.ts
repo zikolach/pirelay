@@ -3068,18 +3068,19 @@ describe("InProcessTunnelRuntime", () => {
       sendPlainText: async () => undefined,
     };
 
-    route.notification.progressEvent = createProgressActivity({ id: "edit-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "edit-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sends).toHaveLength(1));
-    expect(sends[0]).toContain("Running tests");
+    expect(sends[0]).toContain("Tool progress");
+    expect(sends[0]).toContain("npm test");
 
-    route.notification.progressEvent = createProgressActivity({ id: "edit-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "edit-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/runtime.test.ts · tools: bash×1 edit×1", semanticKey: "tool-progress", at: Date.now() + 1 }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
 
     await vi.waitFor(() => expect(edits).toHaveLength(1));
-    expect(edits[0]).toEqual(expect.objectContaining({ messageId: 77, text: expect.stringContaining("Editing files") }));
+    expect(edits[0]).toEqual(expect.objectContaining({ messageId: 77, text: expect.stringContaining("edit: tests/runtime.test.ts") }));
   });
 
   it("falls back to a new Telegram progress snapshot when editing fails", async () => {
@@ -3116,17 +3117,17 @@ describe("InProcessTunnelRuntime", () => {
       sendPlainText: async () => undefined,
     };
 
-    route.notification.progressEvent = createProgressActivity({ id: "fallback-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "fallback-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sends).toHaveLength(1));
 
-    route.notification.progressEvent = createProgressActivity({ id: "fallback-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "fallback-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/runtime.test.ts", semanticKey: "tool-progress", at: Date.now() + 1 }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
 
     await vi.waitFor(() => expect(sends).toHaveLength(2));
-    expect(sends[1]).toContain("Editing files");
+    expect(sends[1]).toContain("edit: tests/runtime.test.ts");
   });
 
   it("clears Telegram progress state when queued progress becomes non-deliverable", async () => {

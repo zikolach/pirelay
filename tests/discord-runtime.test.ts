@@ -230,14 +230,15 @@ describe("DiscordRuntime", () => {
 
     await runtime.start();
 
-    session.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Running tests", at: Date.now() };
+    session.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(session);
     session.notification.progressEvent = { id: "assistant-progress", kind: "assistant", text: "Drafting response", at: Date.now() };
     await runtime.registerRoute(session);
     await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
 
     expect(ops.messages).toHaveLength(1);
-    expect(ops.messages[0]?.content).toContain("Running tests");
+    expect(ops.messages[0]?.content).toContain("Tool progress");
+    expect(ops.messages[0]?.content).toContain("npm test");
     expect(ops.messages[0]?.content).not.toContain("Pi progress");
     expect(ops.messages[0]?.content).not.toContain("Drafting response");
   });
@@ -264,17 +265,17 @@ describe("DiscordRuntime", () => {
     });
 
     await runtime.start();
-    session.notification.progressEvent = { id: "discord-live-progress-1", kind: "tool", text: "Compile", at: Date.now() };
+    session.notification.progressEvent = { id: "discord-live-progress-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(session);
     await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
 
     const firstMessageId = ops.messageIds.at(-1);
-    session.notification.progressEvent = { id: "discord-live-progress-2", kind: "tool", text: "Compile tests", at: Date.now() };
+    session.notification.progressEvent = { id: "discord-live-progress-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/discord-runtime.test.ts", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(session);
     await vi.waitFor(() => expect(ops.edits).toHaveLength(1));
 
     expect(ops.messages).toHaveLength(1);
-    expect(ops.edits[0]).toMatchObject({ channelId: "dm1", messageId: firstMessageId, content: expect.stringContaining("Compile tests") });
+    expect(ops.edits[0]).toMatchObject({ channelId: "dm1", messageId: firstMessageId, content: expect.stringContaining("edit: tests/discord-runtime.test.ts") });
   });
 
   it("falls back to a new Discord progress snapshot when edit updates fail", async () => {

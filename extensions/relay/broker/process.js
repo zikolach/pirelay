@@ -1245,7 +1245,7 @@ function syncProgressDelivery(route) {
   if (state.timer) return;
   const interval = progressIntervalMsFor(mode, config);
   const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
-  const delay = Math.max(0, interval - elapsed);
+  const delay = Math.max(1, interval - elapsed);
   state.timer = setTimeout(() => {
     void flushProgress(route.sessionKey, route.binding.chatId, route.binding.userId, key);
   }, delay);

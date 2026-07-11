@@ -41,6 +41,11 @@ The system SHALL aggregate current-turn tool progress by stable tool-call identi
 - **THEN** the progress update marks that tool as failed using the safe tool label
 - **AND** it does not include raw stack traces, command output, or unbounded error payloads in normal mode
 
+#### Scenario: Approval-gated tools are published only after authorization
+- **WHEN** a tool execution lifecycle starts before its blockable approval-gate check completes
+- **THEN** PiRelay may stage safe local progress state but does not publish the tool as active before the gate allows execution
+- **AND** denied, expired, undeliverable, or unauthorized approval requests do not leave active or failed tool-progress rows
+
 #### Scenario: Tool progress resets on turn boundaries
 - **WHEN** a Pi turn starts, completes, fails, aborts, unregisters, or the runtime restarts
 - **THEN** current-turn tool progress state is reset or discarded

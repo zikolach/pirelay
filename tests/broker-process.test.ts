@@ -1069,7 +1069,7 @@ describe("telegram broker process", () => {
           sessionLabel: binding.sessionLabel,
           online: true,
           busy: true,
-          notification: { lastStatus: "running", progressEvent: { id: "tool", kind: "tool", text: "Tool completed", detail: "bash", at: Date.now() } },
+          notification: { lastStatus: "running", progressEvent: { id: "tool", kind: "tool", text: "Tool progress", detail: "✓ bash: npm test", semanticKey: "tool-progress", at: Date.now() } },
           binding,
         },
       });
@@ -1084,7 +1084,7 @@ describe("telegram broker process", () => {
           sessionLabel: binding.sessionLabel,
           online: true,
           busy: true,
-          notification: { lastStatus: "running", progressEvent: { id: "tool-2", kind: "tool", text: "Tool completed", detail: "read", at: Date.now() + 1 } },
+          notification: { lastStatus: "running", progressEvent: { id: "tool-2", kind: "tool", text: "Tool progress", detail: "✓ read: extensions/relay/runtime/extension-runtime.ts · tools: bash×1 read×1", semanticKey: "tool-progress", at: Date.now() + 1 } },
           binding,
         },
       });
@@ -1097,7 +1097,8 @@ describe("telegram broker process", () => {
     const sends = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
     const edits = outbox.filter((entry): entry is TestOutboxEditMessage => entry.method === "editMessageText");
     expect(sends).toHaveLength(1);
-    expect(sends[0]?.text).toContain("Tool completed");
+    expect(sends[0]?.text).toContain("Tool progress");
+    expect(sends[0]?.text).toContain("npm test");
     expect(sends[0]?.text).not.toContain("Pi progress");
     expect(sends[0]?.text).not.toContain("Processed tool result");
     expect(edits).toHaveLength(1);
