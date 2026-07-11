@@ -230,10 +230,12 @@ describe("tool progress helpers", () => {
     expect(formatToolProgressCard(accumulator.snapshot(), config)).toContain("✓ bash: npm test");
   });
 
-  it("discards staged progress by explicit tool-call identity", () => {
+  it("discards staged progress by explicit or missing tool-call identity", () => {
     const accumulator = createToolProgressAccumulator();
     accumulator.start({ toolName: "bash", toolCallId: "blocked-1", at: 1 }, config);
     accumulator.discard("blocked-1");
+    accumulator.start({ toolName: "read", at: 2 }, config);
+    accumulator.discardMatching({ toolName: "read", input: { path: "README.md" } }, config);
 
     expect(accumulator.snapshot().records).toEqual([]);
     expect(accumulator.activity({ id: "empty" }, config)).toBeUndefined();

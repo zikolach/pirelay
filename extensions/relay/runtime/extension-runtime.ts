@@ -191,6 +191,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let progressSequence = 0;
   const toolProgress = createToolProgressAccumulator();
   const suppressedToolProgressIds = new Set<string>();
+  const suppressedMissingToolProgress = new Map<string, number>();
   let diagnosticsLogger: CommunicationDiagnosticsLogger | undefined;
   const pendingApprovalResolvers = new Map<string, (result: ApprovalDecisionResult) => void>();
 
@@ -588,17 +589,42 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   function resetToolProgress(): void {
     toolProgress.reset();
     suppressedToolProgressIds.clear();
+    suppressedMissingToolProgress.clear();
   }
 
-  function suppressToolProgress(toolCallId: unknown): void {
-    if (typeof toolCallId !== "string" || !toolCallId.trim()) return;
-    const stableId = toolCallId.trim();
-    suppressedToolProgressIds.add(stableId);
-    toolProgress.discard(stableId);
+  function missingToolProgressKey(toolName: unknown): string | undefined {
+    const normalized = String(toolName ?? "").trim().toLowerCase();
+    return normalized || undefined;
   }
 
-  function isToolProgressSuppressed(toolCallId: unknown): boolean {
-    return typeof toolCallId === "string" && suppressedToolProgressIds.has(toolCallId.trim());
+  function suppressToolProgress(event: ToolProgressEventInput, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): void {
+    if (typeof event.toolCallId === "string" && event.toolCallId.trim()) {
+      const stableId = event.toolCallId.trim();
+      suppressedToolProgressIds.add(stableId);
+      toolProgress.discard(stableId);
+      return;
+    }
+    const key = missingToolProgressKey(event.toolName);
+    if (!key) return;
+    suppressedMissingToolProgress.set(key, (suppressedMissingToolProgress.get(key) ?? 0) + 1);
+    toolProgress.discardMatching(event, config);
+  }
+
+  function isToolProgressSuppressed(toolCallId: unknown, toolName: unknown): boolean {
+    if (typeof toolCallId === "string" && toolCallId.trim()) return suppressedToolProgressIds.has(toolCallId.trim());
+    const key = missingToolProgressKey(toolName);
+    return key !== undefined && (suppressedMissingToolProgress.get(key) ?? 0) > 0;
+  }
+
+  function consumeToolProgressSuppression(toolCallId: unknown, toolName: unknown): boolean {
+    if (typeof toolCallId === "string" && toolCallId.trim()) return suppressedToolProgressIds.delete(toolCallId.trim());
+    const key = missingToolProgressKey(toolName);
+    if (!key) return false;
+    const count = suppressedMissingToolProgress.get(key) ?? 0;
+    if (count <= 0) return false;
+    if (count === 1) suppressedMissingToolProgress.delete(key);
+    else suppressedMissingToolProgress.set(key, count - 1);
+    return true;
   }
 
   function clearTurnImageCaches(): void {
@@ -2139,8 +2165,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       activeTurnImages.push(...extractImageContent(event.message.content));
       const toolText = extractTextContent(event.message.content as never);
       if (toolText) activeTurnImagePathTexts.push(toolText);
-      const progressSuppressed = isToolProgressSuppressed(event.message.toolCallId);
-      if (progressSuppressed && typeof event.message.toolCallId === "string") suppressedToolProgressIds.delete(event.message.toolCallId.trim());
+      const progressSuppressed = consumeToolProgressSuppression(event.message.toolCallId, event.message.toolName);
       if (currentRoute.notification.lastStatus === "running" && !progressSuppressed && !toolProgress.has(event.message.toolCallId)) {
         recordProgress("tool", "Processed tool result", undefined, { delivery: "volatile", semanticKey: `tool-result:${event.message.toolCallId ?? "unknown"}` });
         publishRouteStateSoon();
@@ -2184,7 +2209,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!requester) {
       if (currentRoute.remoteRequesterActiveTurn) {
         await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, summary: operation.summary, detail: "No active remote requester for approval target." });
-        suppressToolProgress(event.toolCallId);
+        suppressToolProgress(event, config);
         return { block: true, reason: "Approval required, but no active remote requester is available." };
       }
       recordAllowedProgress(config);
@@ -2197,7 +2222,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const active = await approvalRequesterBindingIsActive(currentRoute, requester, new TunnelStateStore(config.stateDir));
     if (!active) {
       await appendApprovalAudit(config, { kind: "failed", sessionKey: currentRoute.sessionKey, sessionLabel: currentRoute.sessionLabel, toolName: operation.toolName, category: operation.category, matcherFingerprint: operation.matcherFingerprint, requester, summary: operation.summary, detail: "Approval requester binding is inactive." });
-      suppressToolProgress(event.toolCallId);
+      suppressToolProgress(event, config);
       return { block: true, reason: "Approval required, but the remote requester binding is inactive." };
     }
     const grant = await findMatchingApprovalGrant(currentRoute, requester, operation, config);
@@ -2217,7 +2242,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     } catch (error) {
       await store.updateApprovalRequest(request.approvalId, (current) => ({ ...current, status: "failed", resolvedAt: toIsoNow(), decision: "deny" }));
       await appendApprovalAudit(config, { kind: "failed", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, detail: error instanceof Error ? error.message : String(error) });
-      suppressToolProgress(event.toolCallId);
+      suppressToolProgress(event, config);
       return { block: true, reason: "Approval request could not be delivered; operation blocked." };
     }
     const decision = await awaitApprovalDecision(request, Math.max(0, Date.parse(request.expiresAt) - Date.now()));
@@ -2226,7 +2251,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         await store.updateApprovalRequest(request.approvalId, (current) => current.status === "pending" ? { ...current, status: "expired", resolvedAt: toIsoNow(), decision: "deny" } : current);
         await appendApprovalAudit(config, { kind: "expired", approvalId: request.approvalId, sessionKey: request.sessionKey, sessionLabel: request.sessionLabel, toolName: request.toolName, category: request.category, matcherFingerprint: request.matcherFingerprint, requester: request.requester, summary: request.safeSummary, expiresAt: request.expiresAt });
       }
-      suppressToolProgress(event.toolCallId);
+      suppressToolProgress(event, config);
       return { block: true, reason: decision.message };
     }
     recordAllowedProgress(config);
@@ -2247,7 +2272,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
     recordDiagnostic({ component: "runtime", event: "tool_execution_end", outcome: event.isError ? "error" : "ok", ...diagnosticRouteFields(), details: { toolName: String(event.toolName ?? ""), isError: Boolean(event.isError) } });
     if (!currentRoute || currentRoute.sessionKey !== currentSessionKey || currentRoute.notification.lastStatus !== "running") return;
-    if (isToolProgressSuppressed(event.toolCallId)) {
+    if (isToolProgressSuppressed(event.toolCallId, event.toolName)) {
       if (event.isError) {
         currentRoute.notification.lastFailure = `Tool ${event.toolName} failed.`;
         publishRouteStateSoon();

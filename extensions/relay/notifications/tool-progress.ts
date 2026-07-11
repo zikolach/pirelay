@@ -65,9 +65,17 @@ export class ToolProgressAccumulator {
 
   discard(toolCallId: unknown): void {
     if (typeof toolCallId !== "string" || !toolCallId.trim()) return;
-    const stableId = toolCallId.trim();
-    this.records.delete(stableId);
-    this.deleteMissingIdentity(stableId);
+    this.discardStableId(toolCallId.trim());
+  }
+
+  discardMatching(event: ToolProgressEventInput, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): void {
+    const label = summarizeToolProgress(event.toolName, event.input, config);
+    if (!label) return;
+    const semanticMatch = this.missingIdBySemanticKey.get(label.semanticKey);
+    const stableId = semanticMatch && this.records.get(semanticMatch)?.state === "active"
+      ? semanticMatch
+      : this.activeMissingToolCallId(label.toolName);
+    if (stableId) this.discardStableId(stableId);
   }
 
   start(event: ToolProgressEventInput, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): ToolProgressRecord | undefined {
@@ -172,6 +180,11 @@ export class ToolProgressAccumulator {
       .filter((record) => record.toolCallId.startsWith("missing-") && record.toolName === toolName && record.state === "active")
       .sort((left, right) => left.startedAt - right.startedAt);
     return matches.length === 1 ? matches[0]?.toolCallId : undefined;
+  }
+
+  private discardStableId(toolCallId: string): void {
+    this.records.delete(toolCallId);
+    this.deleteMissingIdentity(toolCallId);
   }
 
   private deleteMissingIdentity(toolCallId: string): void {

@@ -652,11 +652,11 @@ describe("PiRelay integration behavior", () => {
     registeredRoute!.remoteRequester = undefined;
 
     const lifecycleProgress = { ...registeredRoute!.notification.progressEvent };
-    await pi.emit("tool_execution_start", { toolName: "bash", toolCallId: "tc-remote-missing", args: { command: "git push origin main" } }, context);
+    await pi.emit("tool_execution_start", { toolName: "bash", args: { command: "git push origin main" } }, context);
     expect(registeredRoute!.notification.progressEvent).toEqual(lifecycleProgress);
-    const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-remote-missing", input: { command: "git push origin main" } }, context);
-    await pi.emit("tool_execution_end", { toolName: "bash", toolCallId: "tc-remote-missing", result: {}, isError: true }, context);
-    await pi.emit("message_end", { message: { role: "toolResult", toolCallId: "tc-remote-missing", toolName: "bash", content: [], isError: true } }, context);
+    const results = await pi.emitResults("tool_call", { toolName: "bash", input: { command: "git push origin main" } }, context);
+    await pi.emit("tool_execution_end", { toolName: "bash", result: {}, isError: true }, context);
+    await pi.emit("message_end", { message: { role: "toolResult", toolName: "bash", content: [], isError: true } }, context);
 
     expect(results).toEqual([{ block: true, reason: "Approval required, but no active remote requester is available." }]);
     expect(registeredRoute!.notification.progressEvent).toEqual(lifecycleProgress);
