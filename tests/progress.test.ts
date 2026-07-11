@@ -145,6 +145,7 @@ describe("tool progress helpers", () => {
     expect(summarizeToolProgress("rg", { pattern: "botToken=SECRET_VALUE", path: "extensions" }, safeConfig)?.label).toBe("rg: botToken=[redacted] in extensions");
     expect(summarizeToolProgress("find", { path: "123456789", transcript: "raw transcript" }, safeConfig)?.label).toBe("find: [redacted]");
     expect(summarizeToolProgress("ls", { dir: "src", chatId: "123456789" }, safeConfig)?.label).toBe("ls: src");
+    expect(summarizeToolProgress("bash", { command: "npm test" }, safeConfig)?.semanticKey).toBe("bash:-npm-test");
   });
 
   it("keeps unknown tools conservative", () => {

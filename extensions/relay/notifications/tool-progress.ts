@@ -222,7 +222,7 @@ export function summarizeToolProgress(
   return {
     toolName: tool,
     label,
-    semanticKey: semanticToolKey(tool, label),
+    semanticKey: semanticToolKey(label),
   };
 }
 
@@ -349,6 +349,6 @@ function boundedToolLabel(label: string, config: Pick<TelegramTunnelConfig, "red
   return sanitized.length > maxLabelChars ? `${sanitized.slice(0, maxLabelChars - 1).trimEnd()}…` : sanitized;
 }
 
-function semanticToolKey(toolName: string, label: string): string {
-  return `${toolName}:${label}`.toLowerCase().replace(/[^a-z0-9_.:/-]+/g, "-").slice(0, 160);
+function semanticToolKey(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9_.:/-]+/g, "-").slice(0, 160);
 }
