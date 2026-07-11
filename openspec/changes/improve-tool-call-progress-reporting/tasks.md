@@ -21,6 +21,7 @@
 - [x] 3.3 Keep `message_end` tool-result bookkeeping volatile/verbose-only or suppress it when a matching tool lifecycle record exists.
 - [x] 3.4 Preserve approval-gate behavior and authorization boundaries in `tool_call` handlers before adding progress side effects.
 - [x] 3.5 Add integration tests for bash, read, edit/write, search/list, failed tools, duplicate tool events, and missing lifecycle fields.
+- [x] 3.6 Stage preflight lifecycle records without publishing before approval, and suppress denied/blocked calls through their end/result events.
 
 ## 4. Adapter and Broker Parity
 

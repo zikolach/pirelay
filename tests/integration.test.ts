@@ -651,9 +651,15 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("agent_start", {}, context);
     registeredRoute!.remoteRequester = undefined;
 
+    const lifecycleProgress = { ...registeredRoute!.notification.progressEvent };
+    await pi.emit("tool_execution_start", { toolName: "bash", toolCallId: "tc-remote-missing", args: { command: "git push origin main" } }, context);
+    expect(registeredRoute!.notification.progressEvent).toEqual(lifecycleProgress);
     const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-remote-missing", input: { command: "git push origin main" } }, context);
+    await pi.emit("tool_execution_end", { toolName: "bash", toolCallId: "tc-remote-missing", result: {}, isError: true }, context);
+    await pi.emit("message_end", { message: { role: "toolResult", toolCallId: "tc-remote-missing", toolName: "bash", content: [], isError: true } }, context);
 
     expect(results).toEqual([{ block: true, reason: "Approval required, but no active remote requester is available." }]);
+    expect(registeredRoute!.notification.progressEvent).toEqual(lifecycleProgress);
     await expect(new TunnelStateStore(config.stateDir).listApprovalAudit()).resolves.toEqual([
       expect.objectContaining({ kind: "failed", detail: "No active remote requester for approval target." }),
     ]);
@@ -2961,6 +2967,10 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", { reason: "startup" }, context);
     const route = [...registeredRoutes.values()][0]!;
     await pi.emit("agent_start", {}, context);
+
+    const lifecycleProgress = { ...route.notification.progressEvent };
+    await pi.emit("tool_execution_start", { toolName: "bash", toolCallId: "bash-1", args: { command: "npm test\necho SECRET_TOKEN", output: "raw output" } }, context);
+    expect(route.notification.progressEvent).toEqual(lifecycleProgress);
 
     await pi.emit("tool_call", { toolName: "bash", toolCallId: "bash-1", input: { command: "npm test\necho SECRET_TOKEN", output: "raw output" } }, context);
     expect(route.notification.progressEvent).toMatchObject({ text: "Tool progress", detail: expect.stringContaining("▶ bash: npm test") });

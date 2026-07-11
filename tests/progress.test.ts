@@ -218,6 +218,27 @@ describe("tool progress helpers", () => {
     expect(formatToolProgressCard(accumulator.snapshot(), config)).toContain("✓ read: README.md");
   });
 
+  it("enriches and completes one missing-id record across lifecycle labels", () => {
+    const accumulator = createToolProgressAccumulator();
+    accumulator.start({ toolName: "bash", at: 1 }, config);
+    accumulator.start({ toolName: "bash", input: { command: "npm test" }, at: 2 }, config);
+    accumulator.finish({ toolName: "bash", failed: false, at: 3 }, config);
+
+    expect(accumulator.snapshot().records).toEqual([
+      expect.objectContaining({ toolCallId: "missing-1", state: "completed", label: "bash: npm test" }),
+    ]);
+    expect(formatToolProgressCard(accumulator.snapshot(), config)).toContain("✓ bash: npm test");
+  });
+
+  it("discards staged progress by explicit tool-call identity", () => {
+    const accumulator = createToolProgressAccumulator();
+    accumulator.start({ toolName: "bash", toolCallId: "blocked-1", at: 1 }, config);
+    accumulator.discard("blocked-1");
+
+    expect(accumulator.snapshot().records).toEqual([]);
+    expect(accumulator.activity({ id: "empty" }, config)).toBeUndefined();
+  });
+
   it("bounds retained current-turn tool records", () => {
     const accumulator = createToolProgressAccumulator();
     for (let index = 0; index < 55; index += 1) {

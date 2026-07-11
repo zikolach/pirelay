@@ -63,11 +63,18 @@ export class ToolProgressAccumulator {
     return this.records.has(toolCallId.trim());
   }
 
+  discard(toolCallId: unknown): void {
+    if (typeof toolCallId !== "string" || !toolCallId.trim()) return;
+    const stableId = toolCallId.trim();
+    this.records.delete(stableId);
+    this.deleteMissingIdentity(stableId);
+  }
+
   start(event: ToolProgressEventInput, config: Pick<TelegramTunnelConfig, "redactionPatterns" | "maxProgressMessageChars">): ToolProgressRecord | undefined {
     const now = event.at ?? Date.now();
     const label = summarizeToolProgress(event.toolName, event.input, config);
     if (!label) return undefined;
-    const toolCallId = this.stableToolCallId(event.toolCallId, label.semanticKey);
+    const toolCallId = this.stableToolCallId(event.toolCallId, label);
     const existing = this.records.get(toolCallId);
     const record: ToolProgressRecord = {
       ...label,
@@ -86,7 +93,7 @@ export class ToolProgressAccumulator {
     const now = event.at ?? Date.now();
     const fallbackLabel = summarizeToolProgress(event.toolName, event.input, config);
     if (!fallbackLabel) return undefined;
-    const toolCallId = this.finishToolCallId(event.toolCallId, fallbackLabel.semanticKey);
+    const toolCallId = this.finishToolCallId(event.toolCallId, fallbackLabel);
     const existing = this.records.get(toolCallId);
     const label = existing ?? fallbackLabel;
     const record: ToolProgressRecord = {
@@ -133,23 +140,44 @@ export class ToolProgressAccumulator {
     };
   }
 
-  private stableToolCallId(toolCallId: unknown, semanticKey: string): string {
+  private stableToolCallId(toolCallId: unknown, label: ToolProgressLabel): string {
     if (typeof toolCallId === "string" && toolCallId.trim()) return toolCallId.trim();
-    const existing = this.missingIdBySemanticKey.get(semanticKey);
-    if (existing) return existing;
+    const semanticMatch = this.missingIdBySemanticKey.get(label.semanticKey);
+    if (semanticMatch) return semanticMatch;
+    const activeMatch = this.activeMissingToolCallId(label.toolName);
+    if (activeMatch) {
+      this.missingIdBySemanticKey.set(label.semanticKey, activeMatch);
+      return activeMatch;
+    }
     const generated = `missing-${++this.missingSequence}`;
-    this.missingIdBySemanticKey.set(semanticKey, generated);
+    this.missingIdBySemanticKey.set(label.semanticKey, generated);
     return generated;
   }
 
-  private finishToolCallId(toolCallId: unknown, semanticKey: string): string {
+  private finishToolCallId(toolCallId: unknown, label: ToolProgressLabel): string {
     if (typeof toolCallId === "string" && toolCallId.trim()) return toolCallId.trim();
-    const existing = this.missingIdBySemanticKey.get(semanticKey);
-    if (existing && this.records.get(existing)?.state === "active") {
-      this.missingIdBySemanticKey.delete(semanticKey);
+    const semanticMatch = this.missingIdBySemanticKey.get(label.semanticKey);
+    const existing = semanticMatch && this.records.get(semanticMatch)?.state === "active"
+      ? semanticMatch
+      : this.activeMissingToolCallId(label.toolName);
+    if (existing) {
+      this.deleteMissingIdentity(existing);
       return existing;
     }
     return `missing-${++this.missingSequence}`;
+  }
+
+  private activeMissingToolCallId(toolName: string): string | undefined {
+    const matches = [...this.records.values()]
+      .filter((record) => record.toolCallId.startsWith("missing-") && record.toolName === toolName && record.state === "active")
+      .sort((left, right) => left.startedAt - right.startedAt);
+    return matches.length === 1 ? matches[0]?.toolCallId : undefined;
+  }
+
+  private deleteMissingIdentity(toolCallId: string): void {
+    for (const [semanticKey, candidateId] of this.missingIdBySemanticKey) {
+      if (candidateId === toolCallId) this.missingIdBySemanticKey.delete(semanticKey);
+    }
   }
 
   private pruneRecords(): void {
@@ -157,9 +185,7 @@ export class ToolProgressAccumulator {
       const oldest = [...this.records.values()].sort((left, right) => left.updatedAt - right.updatedAt)[0];
       if (!oldest) return;
       this.records.delete(oldest.toolCallId);
-      for (const [semanticKey, toolCallId] of this.missingIdBySemanticKey) {
-        if (toolCallId === oldest.toolCallId) this.missingIdBySemanticKey.delete(semanticKey);
-      }
+      this.deleteMissingIdentity(oldest.toolCallId);
     }
   }
 }
