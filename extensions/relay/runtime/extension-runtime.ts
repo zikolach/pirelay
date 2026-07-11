@@ -714,8 +714,10 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   function optionalToolEventInput(event: unknown): unknown {
-    if (!event || typeof event !== "object" || !("input" in event)) return undefined;
-    return (event as { input?: unknown }).input;
+    if (!event || typeof event !== "object") return undefined;
+    if ("input" in event) return (event as { input?: unknown }).input;
+    if ("args" in event) return (event as { args?: unknown }).args;
+    return undefined;
   }
 
   function persistBinding(binding: TelegramBindingMetadata | null, revoked = false, route?: SessionRoute): void {

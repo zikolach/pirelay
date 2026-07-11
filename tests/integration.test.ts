@@ -2981,6 +2981,12 @@ describe("PiRelay integration behavior", () => {
     expect(route.notification.progressEvent?.detail).toContain("✓ bash: npm test");
     expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_RESULT");
 
+    await pi.emit("tool_execution_start", { toolName: "read", toolCallId: "read-lifecycle-only", args: { path: "README.md", content: "SECRET_LIFECYCLE_CONTENT" } }, context);
+    await pi.emit("tool_execution_end", { toolName: "read", toolCallId: "read-lifecycle-only", result: "SECRET_LIFECYCLE_RESULT", isError: false }, context);
+    expect(route.notification.progressEvent?.detail).toContain("✓ read: README.md");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_LIFECYCLE_CONTENT");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_LIFECYCLE_RESULT");
+
     await pi.emit("tool_call", { toolName: "read", toolCallId: "read-1", input: { path: "extensions/relay/runtime/extension-runtime.ts", content: "SECRET_FILE" } }, context);
     await pi.emit("tool_call", { toolName: "edit", toolCallId: "edit-1", input: { path: "tests/integration.test.ts", oldText: "SECRET_OLD", newText: "SECRET_NEW" } }, context);
     await pi.emit("tool_call", { toolName: "write", toolCallId: "write-1", input: { path: "README.md", content: "SECRET_CONTENT" } }, context);
