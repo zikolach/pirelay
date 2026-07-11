@@ -240,7 +240,6 @@ export function summarizeToolProgress(
   const rawDetail = summarizeToolIntent(intentTool, input);
   const labelText = rawDetail ? `${tool}: ${rawDetail}` : tool;
   const label = boundedToolLabel(labelText, config);
-  if (!label) return undefined;
   return {
     toolName: tool,
     label,
@@ -259,8 +258,7 @@ export function formatToolProgressCard(snapshot: ToolProgressAccumulatorSnapshot
     parts.push(row.text);
   }
   if (parts.length === 0) return undefined;
-  const output = parts.join(" · ");
-  return output.length > limit ? `${output.slice(0, limit - 1).trimEnd()}…` : output;
+  return parts.join(" · ");
 }
 
 export function toolProgressRows(snapshot: ToolProgressAccumulatorSnapshot): ToolProgressFormattedRow[] {
