@@ -509,13 +509,97 @@ describe("telegram broker process", () => {
         message: telegramMessage("hello while route is reconnecting", binding),
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const texts = parseOutbox(await readFile(outboxPath, "utf8"))
       .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
       .map((entry) => entry.text);
     expect(texts).toEqual(["The selected Pi session is currently offline. Resume it locally, then try again."]);
+  });
+
+  it("keeps a replacement route online when the previous client unregisters and disconnects", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-route-owner-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const testIngressSecret = "route-owner-secret";
+    const binding = {
+      sessionKey: "broker-route-owner:memory",
+      sessionId: "broker-route-owner",
+      sessionLabel: "Broker Route Owner",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(1).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+        PI_RELAY_BROKER_TEST_INGRESS_SECRET: testIngressSecret,
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const previousClient = await openBrokerClient(socketPath);
+    const replacementClient = await openBrokerClient(socketPath);
+    try {
+      await previousClient.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "previous-client",
+        route: brokerRoute(binding),
+      });
+      await replacementClient.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "replacement-client",
+        route: brokerRoute(binding),
+      });
+      await previousClient.request({
+        type: "request",
+        action: "unregisterRoute",
+        clientId: "previous-client",
+        sessionKey: binding.sessionKey,
+      });
+      await previousClient.close();
+      await replacementClient.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret,
+        message: telegramMessage("/sessions", binding),
+      });
+    } finally {
+      await replacementClient.close();
+    }
+
+    const texts = parseOutbox(await readFile(outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts.at(-1)).toContain("Broker Route Owner — online — idle");
   });
 
   it("delivers broker-owned full-output chunks before structured answer actions", async () => {
@@ -605,7 +689,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -698,7 +782,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -804,7 +888,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -824,7 +908,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github inspect repo", harness.binding),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -849,7 +933,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github inspect repo", harness.binding),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -879,7 +963,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("inspect later", harness.binding, 2),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -910,7 +994,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github", harness.binding, 2),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.counters.skillMetadataRequests).toBe(0);
@@ -1006,7 +1090,7 @@ describe("telegram broker process", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -1074,7 +1158,7 @@ describe("telegram broker process", () => {
       });
       await waitForFileToContain(outboxPath, "Fallback progress");
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -1154,7 +1238,7 @@ describe("telegram broker process", () => {
       await registerProgress("tool-3", "Resumed progress");
       await waitForFileToContain(outboxPath, "Resumed progress", 250);
     } finally {
-      client.close();
+      await client.close();
     }
   });
 
@@ -1423,29 +1507,34 @@ function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams
   });
 }
 
+function brokerRoute(binding: Record<string, unknown>): Record<string, unknown> {
+  return {
+    sessionKey: binding.sessionKey,
+    sessionId: binding.sessionId,
+    sessionLabel: binding.sessionLabel,
+    online: true,
+    busy: false,
+    notification: {},
+    binding,
+  };
+}
+
 function registerRouteRequest(sessionKey: string, sessionLabel: string): Record<string, unknown> {
+  const binding = {
+    sessionKey,
+    sessionId: sessionKey.split(":")[0],
+    sessionLabel,
+    chatId: 123,
+    userId: 456,
+    boundAt: new Date(0).toISOString(),
+    lastSeenAt: new Date(3).toISOString(),
+  };
   return {
     type: "request",
     requestId: `register-${sessionKey}`,
     action: "registerRoute",
     clientId: "test-client",
-    route: {
-      sessionKey,
-      sessionId: sessionKey.split(":")[0],
-      sessionLabel,
-      online: true,
-      busy: false,
-      notification: {},
-      binding: {
-        sessionKey,
-        sessionId: sessionKey.split(":")[0],
-        sessionLabel,
-        chatId: 123,
-        userId: 456,
-        boundAt: new Date(0).toISOString(),
-        lastSeenAt: new Date(3).toISOString(),
-      },
-    },
+    route: brokerRoute(binding),
   };
 }
 
@@ -1471,7 +1560,7 @@ function sendBrokerRequest(socketPath: string, payload: Record<string, unknown>)
   });
 }
 
-async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: Record<string, unknown>) => unknown | Promise<unknown>): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): void }> {
+async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: Record<string, unknown>) => unknown | Promise<unknown>): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): Promise<void> }> {
   const socket = net.createConnection(socketPath);
   socket.setEncoding("utf8");
   await new Promise<void>((resolve, reject) => {
@@ -1524,8 +1613,12 @@ async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: 
         socket.write(`${JSON.stringify(request)}\n`);
       });
     },
-    close() {
-      socket.end();
+    close(): Promise<void> {
+      if (socket.destroyed) return Promise.resolve();
+      return new Promise((resolve) => {
+        socket.once("close", resolve);
+        socket.end();
+      });
     },
   };
 }

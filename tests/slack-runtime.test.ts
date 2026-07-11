@@ -695,6 +695,8 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("Progress mode: verbose");
     await send("/sessions", "42");
     expect(operations.posts.at(-1)?.text).toContain("Docs");
+    await send("/sessions all", "42.1");
+    expect(operations.posts.at(-1)?.text).toContain("Docs");
     await send("/use Docs", "42.5");
     expect(operations.posts.at(-1)?.text).toContain("Active session set");
     await send("/summary", "43");

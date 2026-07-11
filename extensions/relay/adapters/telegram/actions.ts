@@ -1,7 +1,7 @@
 import type { StructuredAnswerMetadata } from "../../core/guided-answer.js";
 import type { TelegramInlineKeyboard } from "../../core/types.js";
 
-export type DashboardAction = "use" | "status" | "full" | "images" | "pause" | "resume" | "abort" | "compact" | "recent";
+export type DashboardAction = "use" | "status" | "full" | "images" | "pause" | "resume" | "abort" | "compact" | "recent" | "forget";
 
 export type TelegramActionCallback =
   | { kind: "answer-option"; turnId: string; optionId: string }
@@ -86,7 +86,7 @@ export function parseTelegramActionCallbackData(data: string): TelegramActionCal
   if (parts[0] === "dash" && parts.length === 3) {
     const sessionRef = decodePart(parts[1]);
     const action = parts[2] as DashboardAction;
-    if (!sessionRef || !["use", "status", "full", "images", "pause", "resume", "abort", "compact", "recent"].includes(action)) return undefined;
+    if (!sessionRef || !["use", "status", "full", "images", "pause", "resume", "abort", "compact", "recent", "forget"].includes(action)) return undefined;
     return { kind: "dashboard", sessionRef, action };
   }
 
@@ -181,13 +181,13 @@ export function buildSessionDashboardKeyboard(sessionRef: string, options: { pau
   return rows;
 }
 
-export function buildSessionListDashboardKeyboard(entries: Array<{ online: boolean; sessionKey: string }>, maxRows = 8): TelegramInlineKeyboard {
+export function buildSessionListDashboardKeyboard(entries: Array<{ online: boolean; sessionKey: string; superseded?: boolean }>, maxRows = 8): TelegramInlineKeyboard {
   return entries.slice(0, maxRows).map((entry, index) => {
     const sessionRef = sessionDashboardRef(entry.sessionKey);
-    return [
-      { text: entry.online ? `Use ${index + 1}` : `Offline ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "use") },
-      { text: `Recent ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "recent") },
-    ];
+    if (!entry.online) {
+      return [{ text: entry.superseded ? `Forget stale ${index + 1}` : `Forget ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "forget") }];
+    }
+    return [{ text: `Use ${index + 1}`, callbackData: buildDashboardCallbackData(sessionRef, "use") }];
   });
 }
 

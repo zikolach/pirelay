@@ -8,7 +8,7 @@ import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDec
 import { commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation, buildHelpText } from "../../commands/remote.js";
 import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput } from "../../formatting/presenters.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionsIncludeSuperseded, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
 import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
@@ -17,7 +17,7 @@ import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteIm
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
-import { buildImagePromptContent, modelSupportsImages, summarizeTextDeterministically } from "../../core/utils.js";
+import { buildImagePromptContent, modelSupportsImages, parseIsoTimestampToMs, summarizeTextDeterministically } from "../../core/utils.js";
 import { prepareInboundImagePromptContent } from "../../media/index.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
 import { classifySharedRoomEvent, normalizeMachineSelector, parseSharedRoomSessionsArgs, parseSharedRoomToArgs, parseSharedRoomUseArgs, resolveSharedRoomMachineTarget, sharedRoomAddressingFromEvent, sharedRoomMachineIdentity, type SharedRoomAddressing, type SharedRoomMachineIdentity } from "../../core/shared-room.js";
@@ -38,7 +38,9 @@ import {
 } from "../../core/skill-invocation.js";
 
 const DISCORD_CHANNEL = "discord" as const;
+
 const IMAGE_PROMPT_FALLBACK = "Please inspect the attached image.";
+const DISCORD_SESSION_LIST_FOOTER = "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, relay forget <session> to remove an offline session, or relay sessions all to show hidden stale sessions.";
 const DISCORD_TYPING_REFRESH_MS = 7_000;
 const DISCORD_PAIRING_MAX_INVALID_ATTEMPTS = 5;
 const DISCORD_PAIRING_ATTEMPT_WINDOW_MS = 60_000;
@@ -904,7 +906,7 @@ export class DiscordRuntime {
         await this.sendText(message, this.statusTextForRoute(route, binding, true));
         return;
       case "sessions":
-        await this.sendText(message, this.formatSessionListForMessage(message, await this.sessionEntriesForMessage(message), await this.activeSelectionForMessage(message) ?? route.sessionKey));
+        await this.sendText(message, this.formatSessionListForMessage(message, await this.sessionEntriesForMessage(message, { includeSuperseded: sessionsIncludeSuperseded(command.args) }), await this.activeSelectionForMessage(message) ?? route.sessionKey));
         return;
       case "use":
         await this.handleUseCommand(message, command.args);
@@ -1192,7 +1194,7 @@ export class DiscordRuntime {
   }
 
   private async handleForgetCommand(message: ChannelInboundMessage, args: string): Promise<void> {
-    const entries = await this.sessionEntriesForMessage(message);
+    const entries = await this.sessionEntriesForMessage(message, { includeSuperseded: true });
     const result = resolveSessionSelector(entries, args);
     if (result.kind !== "offline") {
       await this.sendText(message, result.kind === "matched" ? "Use /disconnect for an online active session. /forget only removes offline sessions." : formatSessionSelectorError(result, args));
@@ -1255,7 +1257,7 @@ export class DiscordRuntime {
     );
   }
 
-  private async sessionEntriesForMessage(message: ChannelInboundMessage): Promise<SessionListEntry[]> {
+  private async sessionEntriesForMessage(message: ChannelInboundMessage, options: { includeSuperseded?: boolean } = {}): Promise<SessionListEntry[]> {
     const bindings = await this.discordBindingsForMessage(message);
     const byKey = new Map<string, SessionListEntry>();
     for (const binding of bindings) {
@@ -1286,14 +1288,14 @@ export class DiscordRuntime {
         online: false,
         busy: false,
         paused: Boolean(binding.paused),
-        lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+        lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
       });
     }
-    return [...byKey.values()];
+    return visibleSessionEntries([...byKey.values()], options);
   }
 
   private formatSessionListForMessage(message: ChannelInboundMessage, entries: SessionListEntry[], activeSessionKey: string | undefined): string {
-    const list = formatSessionList(entries, activeSessionKey);
+    const list = formatSessionList(entries, activeSessionKey, { footer: DISCORD_SESSION_LIST_FOOTER });
     if (!this.isSharedRoomMessage(message)) return list;
     const machine = this.sharedRoomMachineIdentity();
     const aliasText = machine.aliases.length > 0 ? `\nAliases: ${machine.aliases.join(", ")}` : "";

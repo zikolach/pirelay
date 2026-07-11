@@ -102,11 +102,14 @@ const isAcceptedInboundImageMimeType = requiredFunction(mediaModule, './media/in
 const isAllowedImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAllowedImageMimeType');
 const prepareInboundImagePromptContent = requiredFunction(mediaModule, './media/index.ts', 'prepareInboundImagePromptContent');
 const normalizeImageMimeType = requiredFunction(utilsModule, './utils.ts', 'normalizeImageMimeType');
+const parseIsoTimestampToMs = requiredFunction(utilsModule, './utils.ts', 'parseIsoTimestampToMs');
 const safeTelegramImageFilename = requiredFunction(utilsModule, './utils.ts', 'safeTelegramImageFilename');
 const formatSessionList = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'formatSessionList');
 const resolveSessionSelector = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionSelector');
 const resolveSessionTargetArgs = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionTargetArgs');
 const sessionSourcePrefixForRoute = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionSourcePrefixForRoute');
+const sessionsIncludeSuperseded = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionsIncludeSuperseded');
+const visibleSessionEntries = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'visibleSessionEntries');
 const commandIntentFromPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'commandIntentFromPipeline');
 const runTelegramIngressPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'runTelegramIngressPipeline');
 const telegramActionFromPipelineResult = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'telegramActionFromPipelineResult');
@@ -674,6 +677,7 @@ function bindingToSessionEntry(binding) {
     online: false,
     busy: false,
     paused: Boolean(binding.paused),
+    lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
   };
 }
 
@@ -736,15 +740,16 @@ async function stripRevokedBindingFromRoute(route) {
   return authorityOutcomeAllowsDelivery(outcome) ? { ...route, binding: outcome.binding } : { ...route, binding: undefined };
 }
 
-async function getSessionEntriesForChat(chatId, userId) {
+async function getSessionEntriesForChat(chatId, userId, options = {}) {
   const state = await loadState();
   const live = await getActiveLiveRoutesForChat(chatId, userId, state);
   const persisted = await getPersistedBindingsForChat(chatId, userId, state) ?? [];
   const seen = new Set(live.map((route) => route.sessionKey));
-  return [
+  const entries = [
     ...live.map(routeToSessionEntry),
     ...persisted.filter((binding) => !seen.has(binding.sessionKey)).map(bindingToSessionEntry),
   ];
+  return visibleSessionEntries(entries, { includeSuperseded: Boolean(options.includeSuperseded) });
 }
 
 function sourcePrefixForRoute(route) {
@@ -1434,8 +1439,8 @@ async function handlePairStart(message, nonce) {
   await sendPlainText(message.chat.id, `Connected to Pi session ${route.sessionLabel}. Send text prompts directly, or use /help for tunnel commands.`);
 }
 
-async function handleSessionsCommand(message) {
-  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+async function handleSessionsCommand(message, args = '') {
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: sessionsIncludeSuperseded(args) });
   await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))), buildSessionListDashboardKeyboard(entries));
 }
 
@@ -1488,7 +1493,7 @@ async function handleForgetCommand(message, args) {
     return;
   }
 
-  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: true });
   const result = resolveSessionSelector(entries, selector);
   switch (result.kind) {
     case 'empty':
@@ -1789,7 +1794,7 @@ function statusTextForRoute(route) {
     `Busy: ${isEffectivelyBusy(route) ? 'yes' : 'no'}`,
     `Model: ${route.modelId || 'unknown'}`,
     `Progress mode: ${displayProgressMode(route.binding?.progressMode || config.progressMode)}`,
-    `Last activity: ${route.lastActivityAt ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
+    `Last activity: ${route.lastActivityAt !== undefined && Number.isFinite(route.lastActivityAt) ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
     `Paused: ${route.binding?.paused ? 'yes' : 'no'}`,
   ].filter(Boolean).join('\n');
 }
@@ -1871,7 +1876,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     return;
   }
   if (command === 'sessions') {
-    await handleSessionsCommand(message);
+    await handleSessionsCommand(message, args);
     return;
   }
   if (command === 'use') {
@@ -2309,6 +2314,10 @@ async function handleDashboardAction(callback, route, action) {
       await answerCallbackQuery(callback.callbackQueryId, 'Compaction requested.');
       await sendPlainText(callback.chat.id, 'Compaction requested.');
       return;
+    case 'forget':
+      await answerCallbackQuery(callback.callbackQueryId, 'Session is online.');
+      await sendPlainText(callback.chat.id, `Pi session ${route.binding.alias || route.sessionLabel} is online. Use /disconnect to revoke the active session.`);
+      return;
     default:
       await answerCallbackQuery(callback.callbackQueryId, 'Unknown dashboard action.');
   }
@@ -2351,7 +2360,7 @@ async function processCallback(callback) {
   const live = await getActiveLiveRoutesForChat(callback.chat.id, callback.user.id);
   let route;
   if (action.kind === 'dashboard' && action.sessionRef !== 'current') {
-    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id);
+    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id, { includeSuperseded: true });
     const entry = isIndexedSessionDashboardRef(action.sessionRef)
       ? entries[Number(action.sessionRef.slice(1)) - 1]
       : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
@@ -2362,6 +2371,13 @@ async function processCallback(callback) {
     }
     route = entry.online ? routes.get(entry.sessionKey) : undefined;
     if (!route) {
+      if (action.action === 'forget') {
+        const revoked = await revokeBindingForChat(entry.sessionKey, callback.chat.id, callback.user.id);
+        if (revoked && activeSessionByChatId.get(String(callback.chat.id)) === entry.sessionKey) activeSessionByChatId.delete(String(callback.chat.id));
+        await answerCallbackQuery(callback.callbackQueryId, revoked ? 'Offline session forgotten.' : 'No matching offline session.');
+        await sendPlainText(callback.chat.id, revoked ? `Forgot offline Pi session ${entry.alias || entry.sessionLabel}.` : 'No matching offline session found. Use /sessions for the latest list.');
+        return;
+      }
       await answerCallbackQuery(callback.callbackQueryId, 'Pi session is offline.');
       await sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
       return;
@@ -2593,11 +2609,10 @@ function removeClient(socket) {
   if (!client) return;
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
-    if (existing) {
-      clearAnswerStateForRoute(existing);
-      clearActivityIndicator(existing);
-      clearProgressState(existing);
-    }
+    if (!existing || existing.socket !== socket) continue;
+    clearAnswerStateForRoute(existing);
+    clearActivityIndicator(existing);
+    clearProgressState(existing);
     routes.delete(sessionKey);
   }
   clients.delete(socket);
@@ -2630,6 +2645,9 @@ async function handleClientRequest(socket, message) {
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
         const previousRoute = routes.get(route.sessionKey);
+        if (previousRoute?.socket && previousRoute.socket !== socket) {
+          clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
+        }
         const nextRoute = { ...route, socket };
         if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
           clearActivityIndicator(previousRoute);
@@ -2656,13 +2674,14 @@ async function handleClientRequest(socket, message) {
         const client = clients.get(socket);
         client?.routes.delete(message.sessionKey);
         const existing = routes.get(message.sessionKey);
-        if (existing) {
+        const ownsRoute = existing?.socket === socket;
+        if (ownsRoute) {
           clearAnswerStateForRoute(existing);
           clearActivityIndicator(existing);
           clearProgressState(existing);
+          routes.delete(message.sessionKey);
         }
-        routes.delete(message.sessionKey);
-        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: existing ? 'removed' : 'missing', sessionKey: message.sessionKey });
+        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: ownsRoute ? 'removed' : existing ? 'stale-owner' : 'missing', sessionKey: message.sessionKey });
         respond(true, true);
         return;
       }

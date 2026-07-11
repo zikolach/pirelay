@@ -62,6 +62,43 @@ describe("broker namespace isolation", () => {
     await runtime.stop();
   });
 
+  it("re-registers routes from multiple clients after broker socket recovery", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-multi-reconnect-"));
+    tempDirs.push(stateDir);
+    const firstRuntime = new BrokerTunnelRuntime(config(stateDir));
+    const secondRuntime = new BrokerTunnelRuntime(config(stateDir));
+    const firstMessages: Array<Record<string, unknown>> = [];
+    const firstServer = await listenJsonBroker(socketPath(firstRuntime), firstMessages);
+    const firstRoute = route("first-session");
+    const secondRoute = route("second-session");
+
+    await firstRuntime.registerRoute(firstRoute);
+    await secondRuntime.registerRoute(secondRoute);
+    expect(firstMessages.filter((message) => message.action === "registerRoute").length).toBeGreaterThanOrEqual(2);
+
+    for (const socket of sockets.splice(0)) socket.destroy();
+    (firstRuntime as unknown as { socket?: Socket }).socket?.destroy();
+    (firstRuntime as unknown as { socket?: Socket }).socket = undefined;
+    (secondRuntime as unknown as { socket?: Socket }).socket?.destroy();
+    (secondRuntime as unknown as { socket?: Socket }).socket = undefined;
+    await closeServer(firstServer);
+    await rm(socketPath(firstRuntime), { force: true });
+
+    const secondMessages: Array<Record<string, unknown>> = [];
+    await listenJsonBroker(socketPath(firstRuntime), secondMessages);
+    await Promise.all([
+      (firstRuntime as unknown as { ensureConnected(): Promise<void> }).ensureConnected(),
+      (secondRuntime as unknown as { ensureConnected(): Promise<void> }).ensureConnected(),
+    ]);
+
+    await waitForCondition(() => secondMessages.filter((message) => message.action === "registerRoute").length >= 2);
+    expect(secondMessages.some((message) => (message.route as { sessionKey?: string } | undefined)?.sessionKey === "first-session")).toBe(true);
+    expect(secondMessages.some((message) => (message.route as { sessionKey?: string } | undefined)?.sessionKey === "second-session")).toBe(true);
+
+    await firstRuntime.stop();
+    await secondRuntime.stop();
+  });
+
   it("bridges stale skill command lookups as an empty metadata list", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-skills-"));
     tempDirs.push(stateDir);

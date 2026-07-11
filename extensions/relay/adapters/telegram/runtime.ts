@@ -57,7 +57,7 @@ import { HELP_TEXT, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteComm
 import { delegationTaskActionButtons, parseDelegationActionId, parseDelegationCommand, renderDelegationTaskCard, type DelegationActionKind, type DelegationCommand } from "../../commands/delegation.js";
 import { redactSecrets } from "../../config/setup.js";
 import { telegramBotCommands } from "../../commands/surfaces.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, type SessionListEntry } from "../../core/session-selection.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionSourcePrefixForRoute, sessionsIncludeSuperseded, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
 import { DEFAULT_FINAL_OUTPUT_MAX_MESSAGE_CHUNKS, finalOutputMarkdownFileName, planFinalOutputDelivery } from "../../core/final-output.js";
 import type { ChannelInboundMessage } from "../../core/channel-adapter.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
@@ -96,6 +96,7 @@ import {
   getTelegramUserLabel,
   isAllowedImageMimeType,
   modelSupportsImages,
+  parseIsoTimestampToMs,
   parseTelegramCommand,
   redactSecret,
   summarizeTextDeterministically,
@@ -881,7 +882,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     action: NonNullable<ReturnType<typeof parseTelegramActionCallbackData>>,
   ): Promise<SessionRoute | undefined> {
     if (action.kind === "dashboard" && action.sessionRef !== "current") {
-      const entries = await this.sessionEntriesForChat(callback.chat.id, callback.user.id);
+      const entries = await this.sessionEntriesForChat(callback.chat.id, callback.user.id, { includeSuperseded: true });
       const entry = isIndexedSessionDashboardRef(action.sessionRef)
         ? entries[Number(action.sessionRef.slice(1)) - 1]
         : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
@@ -892,6 +893,19 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       }
       const route = entry.online ? this.routes.get(entry.sessionKey) : undefined;
       if (!route) {
+        if (action.kind === "dashboard" && action.action === "forget") {
+          const revoked = await this.store.revokeBinding(entry.sessionKey);
+          const selectionKey = this.activeSessionKey(callback.chat.id, callback.user.id);
+          if (this.activeSessionByChatUser.get(selectionKey) === entry.sessionKey) this.activeSessionByChatUser.delete(selectionKey);
+          if (!revoked) {
+            await this.api.answerCallbackQuery(callback.callbackQueryId, "No matching offline session.");
+            await this.api.sendPlainText(callback.chat.id, "No matching offline session found. Use /sessions for the latest list.");
+            return undefined;
+          }
+          await this.api.answerCallbackQuery(callback.callbackQueryId, "Offline session forgotten.");
+          await this.api.sendPlainText(callback.chat.id, `Forgot offline session ${entry.alias || entry.sessionLabel}.`);
+          return undefined;
+        }
         await this.api.answerCallbackQuery(callback.callbackQueryId, "Pi session is offline.");
         await this.api.sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
         return undefined;
@@ -1140,6 +1154,10 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         await this.api.sendPlainText(chatId, "Compaction requested.");
         return;
       }
+      case "forget":
+        await this.api.answerCallbackQuery(callback.callbackQueryId, "Session is online.");
+        await this.api.sendPlainText(chatId, `Pi session ${route.binding.alias || route.sessionLabel} is online. Use /disconnect to revoke the active session.`);
+        return;
     }
   }
 
@@ -1349,7 +1367,8 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return true;
     }
 
-    const entries = await this.sessionEntriesForTelegramUser(message.user.id);
+    const includeSupersededForList = target.command === "sessions" && sessionsIncludeSuperseded(target.args);
+    const entries = await this.sessionEntriesForTelegramUser(message.user.id, { includeSuperseded: includeSupersededForList });
     if (entries.length === 0) {
       await this.api.sendPlainText(message.chat.id, `Pair with this bot in a private Telegram chat first, then use /sessions@${setup.botUsername} from the group.`);
       return true;
@@ -1366,10 +1385,9 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     switch (target.command) {
-      case "sessions": {
+      case "sessions":
         await this.api.sendPlainText(message.chat.id, formatSessionList(entries, activeSessionKey));
         return true;
-      }
       case "use": {
         const result = resolveSessionSelector(entries, target.args);
         if (result.kind !== "matched") {
@@ -1792,7 +1810,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
     if (command === "sessions") {
-      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: sessionsIncludeSuperseded(args) });
       await this.sendTextWithKeyboard(message.chat.id, formatSessionList(entries, this.activeSessionByChatUser.get(this.activeSessionKey(message.chat.id, message.user.id)) ?? route?.sessionKey), buildSessionListDashboardKeyboard(entries));
       return;
     }
@@ -1809,7 +1827,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
       return;
     }
     if (command === "forget") {
-      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id);
+      const entries = await this.sessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: true });
       const result = resolveSessionSelector(entries, args);
       if (result.kind !== "offline") {
         await this.api.sendPlainText(message.chat.id, result.kind === "matched" ? "Use /disconnect for an online active session. /forget only removes offline sessions." : formatSessionSelectorError(result, args));
@@ -2362,26 +2380,27 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     return active ?? activeBindings.find((binding) => this.routes.has(binding.sessionKey)) ?? activeBindings[0];
   }
 
-  private async sessionEntriesForChat(chatId: number, userId: number): Promise<SessionListEntry[]> {
+  private async sessionEntriesForChat(chatId: number, userId: number, options: { includeSuperseded?: boolean } = {}): Promise<SessionListEntry[]> {
     const snapshot = await this.store.loadBindingAuthoritySnapshot();
     if (snapshot.kind === "state-unavailable") return [];
     const persisted = Object.values(snapshot.data.bindings)
       .filter((binding) => binding.chatId === chatId && binding.status !== "revoked" && binding.userId === userId);
-    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId, snapshot);
+    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.chatId === chatId && route.binding.userId === userId, snapshot, options);
   }
 
-  private async sessionEntriesForTelegramUser(userId: number): Promise<SessionListEntry[]> {
+  private async sessionEntriesForTelegramUser(userId: number, options: { includeSuperseded?: boolean } = {}): Promise<SessionListEntry[]> {
     const snapshot = await this.store.loadBindingAuthoritySnapshot();
     if (snapshot.kind === "state-unavailable") return [];
     const persisted = Object.values(snapshot.data.bindings)
       .filter((binding) => binding.userId === userId && binding.status !== "revoked");
-    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId, snapshot);
+    return await this.sessionEntriesFromBindings(persisted, (route) => route.binding?.userId === userId, snapshot, options);
   }
 
   private async sessionEntriesFromBindings(
     persisted: Array<TelegramBindingMetadata & { status?: string }>,
     includeUnpersistedRoute: (route: SessionRoute) => boolean,
     snapshot?: Awaited<ReturnType<TunnelStateStore["loadBindingAuthoritySnapshot"]>>,
+    options: { includeSuperseded?: boolean } = {},
   ): Promise<SessionListEntry[]> {
     const authoritySnapshot = snapshot ?? await this.store.loadBindingAuthoritySnapshot();
     const byKey = new Map<string, SessionListEntry>();
@@ -2413,7 +2432,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         online: false,
         busy: false,
         paused: Boolean(binding.paused),
-        lastActivityAt: Date.parse(binding.lastSeenAt) || undefined,
+        lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
       });
     }
 
@@ -2440,7 +2459,7 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
         lastActivityAt: route.lastActivityAt,
       });
     }
-    return [...byKey.values()];
+    return visibleSessionEntries([...byKey.values()], options);
   }
 
   private parseProgressModeArg(args: string) {

@@ -2493,6 +2493,82 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("offline");
   });
 
+  it("clears active in-memory selection when a dashboard forgets an offline session", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-forget-callback:/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionId: "session-forget-callback",
+      sessionFile: "/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    await store.upsertBinding(binding);
+    const selectionKey = (runtime as any).activeSessionKey(binding.chatId, binding.userId);
+    (runtime as any).activeSessionByChatUser.set(selectionKey, binding.sessionKey);
+    const callbacks: string[] = [];
+    const sent: string[] = [];
+    (runtime as any).api = {
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      callbackQueryId: "forget-offline-1",
+      data: buildDashboardCallbackData(sessionDashboardRef(binding.sessionKey), "forget"),
+      chat: { id: binding.chatId, type: "private" },
+      user: { id: binding.userId, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Offline session forgotten."]);
+    expect(sent.join("\n")).toContain("Forgot offline session offline.jsonl.");
+    expect((runtime as any).activeSessionByChatUser.has(selectionKey)).toBe(false);
+  });
+
+  it("reports stale dashboard forget callbacks when no offline binding is revoked", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-stale-forget-callback:/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionId: "session-stale-forget-callback",
+      sessionFile: "/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    await store.upsertBinding(binding);
+    const revoke = vi.spyOn(store, "revokeBinding").mockResolvedValue(undefined);
+    const callbacks: string[] = [];
+    const sent: string[] = [];
+    (runtime as any).api = {
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      callbackQueryId: "forget-offline-stale-1",
+      data: buildDashboardCallbackData(sessionDashboardRef(binding.sessionKey), "forget"),
+      chat: { id: binding.chatId, type: "private" },
+      user: { id: binding.userId, username: "owner" },
+    });
+
+    expect(revoke).toHaveBeenCalledWith(binding.sessionKey);
+    expect(callbacks).toEqual(["No matching offline session."]);
+    expect(sent.join("\n")).toContain("No matching offline session found. Use /sessions for the latest list.");
+    revoke.mockRestore();
+  });
+
   it("does not list a stale in-memory route after its persisted Telegram binding is revoked", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
