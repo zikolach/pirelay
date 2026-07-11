@@ -252,13 +252,18 @@ export function formatToolProgressCard(snapshot: ToolProgressAccumulatorSnapshot
   const rows = toolProgressRows(snapshot);
   const limit = maxProgressMessageChars(config);
   const parts: string[] = [];
+  let omittedRows = false;
   for (const row of rows) {
     const next = [...parts, row.text].join(" · ");
-    if (next.length > limit) break;
+    if (next.length > limit) {
+      omittedRows = true;
+      break;
+    }
     parts.push(row.text);
   }
   if (parts.length === 0) return undefined;
-  return parts.join(" · ");
+  const output = parts.join(" · ");
+  return omittedRows ? `${output.slice(0, limit - 1).trimEnd()}…` : output;
 }
 
 export function toolProgressRows(snapshot: ToolProgressAccumulatorSnapshot): ToolProgressFormattedRow[] {

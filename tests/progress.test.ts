@@ -196,6 +196,18 @@ describe("tool progress helpers", () => {
     expect(activity).toMatchObject({ kind: "tool", text: "Tool progress", delivery: "milestone" });
   });
 
+  it("marks a bounded card when rows are omitted", () => {
+    const accumulator = createToolProgressAccumulator();
+    const safeConfig = { ...config, maxProgressMessageChars: 120 };
+    for (let index = 0; index < 4; index += 1) {
+      accumulator.start({ toolName: "read", toolCallId: `read-${index}`, input: { path: `extensions/relay/very-long-progress-file-name-${index}.ts` }, at: index }, safeConfig);
+    }
+
+    const card = formatToolProgressCard(accumulator.snapshot(), safeConfig);
+    expect(card).toMatch(/…$/u);
+    expect(card!.length).toBeLessThanOrEqual(120);
+  });
+
   it("keeps completed rows when active rows are capped", () => {
     const accumulator = createToolProgressAccumulator();
     const safeConfig = { ...config, maxProgressMessageChars: 200 };
