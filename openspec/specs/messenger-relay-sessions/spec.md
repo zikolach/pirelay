@@ -955,3 +955,157 @@ The system SHALL deliver non-terminal live progress as an updated per-destinatio
 - **THEN** live progress update/edit behavior respects each binding's existing progress-mode eligibility independently
 - **AND** quiet receives no live progress while completion-only receives no ordinary live progress
 
+### Requirement: Workspace-aware stale session presentation
+The system SHALL reduce stale session-list clutter by identifying older offline bindings from the same machine and workspace as superseded when a newer online session for that workspace exists.
+
+#### Scenario: Newer online session supersedes older offline same-workspace bindings
+- **WHEN** an authorized user requests `/sessions` and there is a newer online session for the same machine and workspace as one or more older offline bindings
+- **THEN** the default session list shows the newer online session
+- **AND** the older offline same-workspace bindings are hidden or marked superseded by default
+- **AND** ordinary prompt routing does not target the superseded offline bindings unless the user explicitly selects them in an all-sessions or cleanup view
+
+#### Scenario: Offline session has no online same-workspace replacement
+- **WHEN** an authorized user requests `/sessions` and an offline binding has no newer online sibling for the same machine and workspace
+- **THEN** the system may show that offline binding as an offline session so the user can understand and clean up the pairing
+
+#### Scenario: Superseded sessions remain inspectable
+- **WHEN** an authorized user requests `/sessions all`, `relay sessions all`, or an equivalent explicit all-sessions or diagnostic session list
+- **THEN** the system includes superseded offline bindings with clear stale/superseded wording
+- **AND** it does not expose raw session file paths, hidden prompts, tool internals, bot tokens, or transcripts
+
+#### Scenario: Superseded session can be forgotten
+- **WHEN** an authorized user invokes `/forget <session>` for a superseded offline binding
+- **THEN** the system revokes or removes that binding according to existing forget semantics
+- **AND** the binding no longer appears in default or all-sessions lists for that messenger identity
+
+#### Scenario: Workspace grouping is unavailable
+- **WHEN** the system cannot safely determine a workspace identity for a binding or route
+- **THEN** it falls back to existing session selection/listing behavior for that entry
+- **AND** it does not guess supersession solely from an ambiguous display label
+
+### Requirement: Session list actions are primary-task oriented
+The system SHALL render session-list buttons and equivalent platform actions according to the useful next action for each session state.
+
+#### Scenario: Current online session is listed
+- **WHEN** the session list includes the currently selected online session
+- **THEN** the default actions identify it as current or active
+- **AND** they prioritize status or relevant live controls over switching to itself
+
+#### Scenario: Non-current online session is listed
+- **WHEN** the session list includes an online session that is not the current active selection
+- **THEN** the default actions include a way to select that session
+- **AND** they MAY include a platform-appropriate one-shot prompt affordance when safe and supported
+
+#### Scenario: Offline session is listed
+- **WHEN** the session list includes an offline or superseded session
+- **THEN** the default action SHOULD be cleanup-oriented, such as forgetting that offline binding
+- **AND** tapping the row action MUST NOT imply that an offline prompt or control succeeded
+
+#### Scenario: Busy current session is listed
+- **WHEN** the currently selected session is online and busy
+- **THEN** detailed session controls MAY prioritize steer, follow-up, abort, or compact actions according to existing authorization and delivery rules
+- **AND** they do not bypass pause, revocation, or route availability checks
+
+### Requirement: Recent activity remains explicit command-level inspection
+The system SHALL keep `/recent` and `/activity` as explicit commands for safe recent relay activity inspection while not requiring them as default per-session list buttons.
+
+#### Scenario: User requests recent activity explicitly
+- **WHEN** an authorized user invokes `/recent`, `/activity`, or an equivalent explicit recent-activity command for the current or resolved session
+- **THEN** the system returns recent safe relay activity according to existing progress/activity redaction and bounded retention rules
+
+#### Scenario: Session list is rendered
+- **WHEN** the system renders a default session-list button grid or equivalent action list
+- **THEN** it is not required to include a `Recent` action for every session row
+- **AND** removing those buttons MUST NOT remove the `/recent` or `/activity` text command behavior
+
+### Requirement: Tool progress is summarized safely
+The system SHALL summarize tool-call progress using safe, bounded, human-readable operation labels instead of exposing raw tool arguments, tool output, transcripts, hidden prompts, pairing codes, raw messenger destination identifiers, or secrets.
+
+#### Scenario: Bash progress shows command intent safely
+- **WHEN** a running paired session emits a bash tool call and the receiving binding is eligible for normal progress
+- **THEN** the progress update includes a bounded redacted summary of the command intent, such as the first command line
+- **AND** the update does not include command output, hidden prompts, full transcripts, bot tokens, or unredacted secret-pattern matches
+
+#### Scenario: File tools show target paths without content
+- **WHEN** a running paired session emits read, edit, or write tool calls and the receiving binding is eligible for progress
+- **THEN** the progress update identifies the relevant target file path or safe basename when available
+- **AND** the update does not include file contents, replacement text, patches, or unbounded arguments
+
+#### Scenario: Search/list tools show query or path intent safely
+- **WHEN** a running paired session emits grep, rg, find, or ls style tool calls and the receiving binding is eligible for progress
+- **THEN** the progress update includes a bounded redacted search pattern, query, or target path when available
+- **AND** unknown or unsafe fields are omitted rather than serialized generically
+
+#### Scenario: Unknown tools remain conservative
+- **WHEN** a running paired session emits an unknown or custom tool call
+- **THEN** normal-mode progress identifies only the sanitized tool name or a conservative generic label
+- **AND** it does not serialize arbitrary tool arguments
+
+### Requirement: Tool progress is aggregated by turn
+The system SHALL aggregate current-turn tool progress by stable tool-call identity and tool kind so repeated tool events produce a compact live status rather than many generic completion messages.
+
+#### Scenario: Repeated tool calls collapse into counts
+- **WHEN** a running paired session completes multiple tool calls of the same kind within the progress window
+- **THEN** the progress update includes a bounded aggregate count such as `bash×2` or `read×4`
+- **AND** it does not send a separate messenger message for every individual completion when the adapter can coalesce or edit live progress
+
+#### Scenario: Active and recent tools are shown compactly
+- **WHEN** one or more tool calls are active or recently completed during a running paired turn
+- **THEN** the progress update prioritizes the current active tool summaries and the most recent completed or failed summaries within the configured progress length limit
+- **AND** older repeated activity is represented by aggregate counts rather than unbounded rows
+
+#### Scenario: Failed tools are visible without leaking output
+- **WHEN** a tool call fails during a running paired turn and the receiving binding is eligible for progress
+- **THEN** the progress update marks that tool as failed using the safe tool label
+- **AND** it does not include raw stack traces, command output, or unbounded error payloads in normal mode
+
+#### Scenario: Approval-gated tools are published only after authorization
+- **WHEN** a tool execution lifecycle starts before its blockable approval-gate check completes
+- **THEN** PiRelay may stage safe local progress state but does not publish the tool as active before the gate allows execution
+- **AND** denied, expired, undeliverable, or unauthorized approval requests do not leave active or failed tool-progress rows
+
+#### Scenario: Tool progress resets on turn boundaries
+- **WHEN** a Pi turn starts, completes, fails, aborts, unregisters, or the runtime restarts
+- **THEN** current-turn tool progress state is reset or discarded
+- **AND** later turns do not display stale tool rows or counts from previous turns
+
+### Requirement: Progress modes govern tool reporting
+The system SHALL apply existing progress-mode semantics to improved tool reporting for every messenger binding independently.
+
+#### Scenario: Normal mode receives low-noise tool summaries
+- **WHEN** a binding is configured for normal progress and a running paired session emits tool activity
+- **THEN** the binding receives coalesced safe tool summaries and aggregate counts
+- **AND** it does not receive generic duplicate `Processed tool result` or repeated `Tool completed — <tool>` messages for the same activity
+
+#### Scenario: Verbose mode remains bounded and safe
+- **WHEN** a binding is configured for verbose progress and a running paired session emits tool activity
+- **THEN** the binding may receive additional safe technical tool lifecycle detail
+- **AND** the output remains redacted, bounded, coalesced, and free of raw tool output or arbitrary argument serialization
+
+#### Scenario: Completion-only excludes ordinary tool progress
+- **WHEN** a binding is configured for completion-only progress and a running paired session emits ordinary tool activity
+- **THEN** the binding does not receive the ordinary tool progress update
+- **AND** terminal completion output and allowed compaction notifications continue to follow their existing policies
+
+#### Scenario: Quiet suppresses all tool progress
+- **WHEN** a binding is configured for quiet progress and a running paired session emits tool activity
+- **THEN** the binding receives no tool progress update
+
+### Requirement: Tool progress delivery preserves adapter parity
+The system SHALL deliver improved tool progress through the same shared progress pipeline for Telegram direct runtime, Telegram broker runtime, Slack runtime, Discord runtime, and future messenger adapters.
+
+#### Scenario: Telegram updates live tool progress in place when possible
+- **WHEN** Telegram can edit the live progress message and the tool-progress card changes
+- **THEN** PiRelay updates the existing live progress message instead of posting a new message for every tool call
+- **AND** if editing fails, PiRelay falls back to bounded coalesced snapshots without exposing unsafe data
+
+#### Scenario: Slack and Discord use coalesced snapshots
+- **WHEN** Slack or Discord receives improved tool progress
+- **THEN** PiRelay sends bounded coalesced snapshots using the same safe summaries and progress-mode filtering as Telegram
+- **AND** authorization, paused/revoked binding checks, and destination scoping remain enforced before delivery
+
+#### Scenario: Broker and in-process runtimes match
+- **WHEN** equivalent tool progress is emitted through the in-process runtime and broker-owned Telegram runtime
+- **THEN** both paths produce equivalent safe tool summary content and progress-mode behavior
+- **AND** neither path persists raw tool args, tool outputs, or secret-bearing semantic keys
+
