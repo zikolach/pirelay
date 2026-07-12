@@ -969,7 +969,7 @@ The system SHALL reduce stale session-list clutter by identifying older offline 
 - **THEN** the system may show that offline binding as an offline session so the user can understand and clean up the pairing
 
 #### Scenario: Superseded sessions remain inspectable
-- **WHEN** an authorized user requests an explicit all-sessions or diagnostic session list
+- **WHEN** an authorized user requests `/sessions all`, `relay sessions all`, or an equivalent explicit all-sessions or diagnostic session list
 - **THEN** the system includes superseded offline bindings with clear stale/superseded wording
 - **AND** it does not expose raw session file paths, hidden prompts, tool internals, bot tokens, or transcripts
 

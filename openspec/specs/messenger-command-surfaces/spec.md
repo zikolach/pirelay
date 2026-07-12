@@ -146,7 +146,7 @@ Messenger command surfaces SHALL keep session-list buttons, menus, and equivalen
 
 #### Scenario: Offline session action is rendered
 - **WHEN** a messenger renders buttons or menu actions for an offline session row
-- **THEN** the primary action is a safe cleanup or inspection action such as forget or status
+- **THEN** the primary action is a safe cleanup or inspection action such as `/forget` or `/status`
 - **AND** the action does not advertise prompt delivery, recent live progress, or switching as if the offline session were reachable
 
 #### Scenario: Recent command remains available outside default row buttons
