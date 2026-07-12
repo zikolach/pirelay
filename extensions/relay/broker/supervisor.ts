@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 
@@ -113,6 +113,23 @@ export async function ensureLocalBroker(options: EnsureLocalBrokerOptions): Prom
   return { status: "started", paths, pid: started.pid };
 }
 
+async function removeLegacyBrokerLockFile(lockPath: string): Promise<void> {
+  try {
+    await unlink(lockPath);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
+
+    // proper-lockfile owns directory locks. If unlink failed because this is already
+    // a directory, leave an active or stale directory lock for it to coordinate.
+    try {
+      if ((await lstat(lockPath)).isDirectory()) return;
+    } catch (statError) {
+      if (typeof statError === "object" && statError !== null && "code" in statError && statError.code === "ENOENT") return;
+    }
+    throw error;
+  }
+}
+
 export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Promise<EnsureLocalBrokerResult> {
   const paths = brokerScopeControlPaths(options);
   const isAlive = options.isAlive ?? isProcessAlive;
@@ -122,6 +139,10 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
     const pid = await readBrokerPid(paths.pidPath);
     if (pid) return { status: "existing", paths, pid };
   }
+
+  // Older releases used this path as a regular lock target and left the file
+  // behind. proper-lockfile now uses it as an atomic directory lock.
+  await removeLegacyBrokerLockFile(paths.lockPath);
 
   const lockTargetPath = paths.lockPath.endsWith(".lock") ? paths.lockPath.slice(0, -".lock".length) : `${paths.lockPath}.target`;
   const release = await lockfile.lock(lockTargetPath, {
