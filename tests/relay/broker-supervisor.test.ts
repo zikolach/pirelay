@@ -97,7 +97,30 @@ describe("local broker supervisor", () => {
     const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
     expect(starts).toBe(1);
     expect(await readBrokerPid(paths.pidPath)).toBe(4444);
-    await expect(stat(`${paths.lockPath}.lock`)).rejects.toThrow();
+    await expect(stat(paths.lockPath)).rejects.toThrow();
+  });
+
+  it("replaces a legacy regular lock file with the directory lock format", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.lockPath, "", { mode: 0o600 });
+    let observedDirectoryLock = false;
+
+    const result = await ensureScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      startBroker: async () => {
+        observedDirectoryLock = (await stat(paths.lockPath)).isDirectory();
+        return { pid: 4567 };
+      },
+      probeSocket: async () => false,
+      waitForSocketReady: async () => undefined,
+      isAlive: () => false,
+    });
+
+    expect(result).toMatchObject({ status: "started", pid: 4567 });
+    expect(observedDirectoryLock).toBe(true);
+    await expect(stat(paths.lockPath)).rejects.toThrow();
   });
 
   it("does not return pid zero when a socket is ready before its pid file", async () => {
