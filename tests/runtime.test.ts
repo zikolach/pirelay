@@ -2357,6 +2357,70 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toContain("The Pi session is unavailable. Resume it locally, then try again.");
   });
 
+  it("routes authorized Telegram /new through typed route outcomes", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-new:/tmp/session-new.jsonl",
+      sessionId: "session-new",
+      sessionFile: "/tmp/session-new.jsonl",
+      sessionLabel: "new.jsonl",
+      chatId: 1017,
+      userId: 37,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, setIdle } = createRoute(binding, true);
+    const newSession = vi.fn(async () => ({ cancelled: false }));
+    route.actions.newSession = newSession;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({ updateId: 46, messageId: 46, text: "/new", chat: { id: 1017, type: "private" }, user: { id: 37, username: "owner" } });
+    expect(newSession).toHaveBeenCalledWith(expect.objectContaining({ channel: "telegram", conversationId: "1017", userId: "37" }));
+    expect(sent.at(-1)).toContain("New Pi session started");
+
+    setIdle(false);
+    await (runtime as any).processInbound({ updateId: 47, messageId: 47, text: "/new", chat: { id: 1017, type: "private" }, user: { id: 37, username: "owner" } });
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(sent.at(-1)).toContain("Pi is busy");
+
+    await (runtime as any).processInbound({ updateId: 48, messageId: 48, text: "/new", chat: { id: 1017, type: "private" }, user: { id: 99, username: "stranger" } });
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(sent.at(-1)).toContain("Unauthorized");
+  });
+
+  it("renders unsupported, cancelled, failed, and unavailable Telegram /new outcomes", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-new-outcomes:/tmp/session-new-outcomes.jsonl", sessionId: "session-new-outcomes", sessionFile: "/tmp/session-new-outcomes.jsonl", sessionLabel: "outcomes.jsonl", chatId: 1018, userId: 38, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+    const message = { updateId: 49, messageId: 49, text: "/new", chat: { id: 1018, type: "private" }, user: { id: 38, username: "owner" } };
+
+    await (runtime as any).processInbound(message);
+    expect(sent.at(-1)).toContain("cannot start a new session remotely");
+    route.actions.newSession = async () => ({ cancelled: true });
+    await (runtime as any).processInbound({ ...message, updateId: 50 });
+    expect(sent.at(-1)).toContain("cancelled locally");
+    route.actions.newSession = async () => { throw new Error("secret internal failure"); };
+    await (runtime as any).processInbound({ ...message, updateId: 51 });
+    expect(sent.at(-1)).toBe("Could not start a new Pi session.");
+    route.actions.isIdle = () => undefined;
+    await (runtime as any).processInbound({ ...message, updateId: 52 });
+    expect(sent.at(-1)).toContain("unavailable");
+  });
+
   it("supports text /use, /to, and /forget session controls in-process", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);

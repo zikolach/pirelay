@@ -47,6 +47,22 @@ function parseStoreData(raw: string): TunnelStoreData {
   };
 }
 
+export interface SessionBindingMigrationInput {
+  oldSessionKey: string;
+  newSessionKey: string;
+  newSessionId: string;
+  newSessionFile?: string;
+  newSessionLabel: string;
+  requester?: { channel: ChannelBinding["channel"]; instanceId?: string; conversationId: string; userId: string };
+  now?: string;
+}
+
+export interface SessionBindingMigrationResult {
+  telegram: PersistedBindingRecord[];
+  channels: ChannelPersistedBindingRecord[];
+  movedSelections: number;
+}
+
 export type PendingPairingInspection =
   | { status: "active"; pairing: PendingPairingRecord }
   | { status: "missing" | "wrong-channel" | "consumed" | "expired"; pairing?: PendingPairingRecord };
@@ -218,6 +234,72 @@ export class TunnelStateStore {
       delete data.pendingPairings[entry!.key];
     });
     return found;
+  }
+
+  async migrateSessionBindings(input: SessionBindingMigrationInput): Promise<SessionBindingMigrationResult> {
+    const now = input.now ?? toIsoNow();
+    const result: SessionBindingMigrationResult = { telegram: [], channels: [], movedSelections: 0 };
+    const movedAddresses = new Map<string, Pick<ChannelActiveSelectionRecord, "channel" | "conversationId" | "userId">>();
+
+    await this.update((data) => {
+      const telegram = data.bindings[input.oldSessionKey];
+      const telegramMatchesRequester = !input.requester || input.requester.channel === "telegram"
+        && input.requester.conversationId === String(telegram?.chatId)
+        && input.requester.userId === String(telegram?.userId);
+      if (telegram?.status === "active" && telegramMatchesRequester && !activeTargetTelegramBindingConflicts(data, input, telegram)) {
+        const moved: PersistedBindingRecord = {
+          ...telegram,
+          sessionKey: input.newSessionKey,
+          sessionId: input.newSessionId,
+          sessionFile: input.newSessionFile,
+          sessionLabel: input.newSessionLabel,
+          lastSeenAt: now,
+          status: "active",
+          revokedAt: undefined,
+          movedAt: undefined,
+          movedToSessionKey: undefined,
+        };
+        data.bindings[input.oldSessionKey] = { ...telegram, status: "revoked", revokedAt: now, movedAt: now, movedToSessionKey: input.newSessionKey };
+        data.bindings[input.newSessionKey] = moved;
+        result.telegram.push(moved);
+        movedAddresses.set(channelSelectionStorageKey("telegram", String(telegram.chatId), String(telegram.userId)), { channel: "telegram", conversationId: String(telegram.chatId), userId: String(telegram.userId) });
+      }
+
+      for (const [key, binding] of Object.entries(data.channelBindings)) {
+        if (binding.sessionKey !== input.oldSessionKey || binding.status !== "active") continue;
+        if (input.requester && (input.requester.channel !== binding.channel
+          || (input.requester.instanceId ?? "default") !== (binding.instanceId ?? "default")
+          || input.requester.conversationId !== binding.conversationId
+          || input.requester.userId !== binding.userId)) continue;
+        const targetKey = channelBindingStorageKey(binding.channel, input.newSessionKey, binding.instanceId);
+        const target = data.channelBindings[targetKey];
+        if (target?.status === "active") continue;
+        const moved: ChannelPersistedBindingRecord = {
+          ...binding,
+          sessionKey: input.newSessionKey,
+          sessionId: input.newSessionId,
+          sessionFile: input.newSessionFile,
+          sessionLabel: input.newSessionLabel,
+          lastSeenAt: now,
+          status: "active",
+          revokedAt: undefined,
+          movedAt: undefined,
+          movedToSessionKey: undefined,
+        };
+        data.channelBindings[key] = { ...binding, status: "revoked", revokedAt: now, movedAt: now, movedToSessionKey: input.newSessionKey };
+        data.channelBindings[targetKey] = moved;
+        result.channels.push(moved);
+        movedAddresses.set(channelSelectionStorageKey(binding.channel, binding.conversationId, binding.userId), { channel: binding.channel, conversationId: binding.conversationId, userId: binding.userId });
+      }
+
+      for (const [key, address] of movedAddresses) {
+        const selection = data.activeChannelSelections[key];
+        if (selection && selection.sessionKey !== input.oldSessionKey && selection.sessionKey !== input.newSessionKey) continue;
+        data.activeChannelSelections[key] = { ...address, ...selection, sessionKey: input.newSessionKey, updatedAt: now };
+        result.movedSelections += 1;
+      }
+    });
+    return result;
   }
 
   async upsertBinding(binding: TelegramBindingMetadata): Promise<PersistedBindingRecord> {
@@ -635,12 +717,17 @@ export class TunnelStateStore {
   }
 }
 
+function activeTargetTelegramBindingConflicts(data: TunnelStoreData, input: SessionBindingMigrationInput, source: PersistedBindingRecord): boolean {
+  const target = data.bindings[input.newSessionKey];
+  return Boolean(target?.status === "active" && (target.chatId !== source.chatId || target.userId !== source.userId));
+}
+
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
 }
 
 function lifecycleStateForNotification(kind: RelayLifecycleEventKind): "online" | "offline" | "disconnected" {
-  if (kind === "online") return "online";
+  if (kind === "online" || kind === "moved") return "online";
   if (kind === "offline") return "offline";
   return "disconnected";
 }

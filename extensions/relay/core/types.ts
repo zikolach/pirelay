@@ -132,7 +132,12 @@ export interface TelegramChatSummary {
   title?: string;
 }
 
-export interface TelegramBindingMetadata {
+export interface MovedSessionBindingMetadata {
+  movedToSessionKey?: string;
+  movedAt?: string;
+}
+
+export interface TelegramBindingMetadata extends MovedSessionBindingMetadata {
   sessionKey: string;
   sessionId: string;
   sessionFile?: string;
@@ -181,7 +186,7 @@ export interface SetupCache {
   validatedAt: string;
 }
 
-export interface ChannelPersistedBindingRecord extends ChannelBinding {
+export interface ChannelPersistedBindingRecord extends ChannelBinding, MovedSessionBindingMetadata {
   status: "active" | "revoked";
 }
 
@@ -289,6 +294,8 @@ export interface LatestTurnImageMetadata {
   fileCount?: number;
 }
 
+export type NewSessionActionResult = { cancelled: boolean };
+
 export interface SessionRouteActions {
   /** @deprecated Prefer narrow lifetime-safe helpers on this object. */
   context: ExtensionContext;
@@ -307,6 +314,8 @@ export interface SessionRouteActions {
   refreshLocalStatus?(): void;
   persistBinding(binding: TelegramBindingMetadata | null, revoked?: boolean): void;
   promptLocalConfirmation(identity: RelayPairingIdentity): Promise<PairingApprovalDecision | boolean>;
+  newSession?(requester?: RelayFileDeliveryRequester): Promise<NewSessionActionResult>;
+
   abort(): void;
   compact(): Promise<void>;
   resolveApprovalDecision?(decision: ApprovalDecisionRequest): Promise<ApprovalDecisionResult>;

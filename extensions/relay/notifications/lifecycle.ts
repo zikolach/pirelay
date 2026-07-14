@@ -1,6 +1,6 @@
 import type { ChannelAdapterKind } from "../core/channel-adapter.js";
 
-export type RelayLifecycleEventKind = "offline" | "online" | "disconnected";
+export type RelayLifecycleEventKind = "offline" | "online" | "disconnected" | "moved";
 export type RelayLifecycleState = "online" | "offline" | "disconnected";
 
 export interface RelayLifecycleNotificationRecord {
@@ -30,6 +30,8 @@ export function formatRelayLifecycleNotification(input: { kind: RelayLifecycleEv
       return `${subject} went offline locally. Restart Pi to resume relay control.`;
     case "online":
       return `${subject} is back online.`;
+    case "moved":
+      return `${subject} replaced the previous session. Relay control moved here automatically.`;
     case "disconnected":
       return input.channel === "slack"
         ? `PiRelay was disconnected locally for ${subject}. This chat is no longer paired; run \`relay pair <pin>\` from a fresh local pairing to reconnect.`
@@ -78,12 +80,13 @@ export function decideRelayLifecycleNotification(input: {
 }
 
 function lifecycleStateForEvent(kind: RelayLifecycleEventKind): RelayLifecycleState {
-  if (kind === "online") return "online";
+  if (kind === "online" || kind === "moved") return "online";
   if (kind === "offline") return "offline";
   return "disconnected";
 }
 
 function shouldNotifyLifecycle(input: { previous?: RelayLifecycleNotificationRecord; kind: RelayLifecycleEventKind; nowIso: string; debounceMs: number }): boolean {
+  if (input.kind === "moved") return !input.previous || !withinDebounce(input.previous, input.kind, input.nowIso, input.debounceMs);
   if (input.kind === "online") return input.previous?.state === "offline" && !withinDebounce(input.previous, input.kind, input.nowIso, input.debounceMs);
   if (!input.previous) return true;
   if (input.previous.state !== lifecycleStateForEvent(input.kind)) return true;

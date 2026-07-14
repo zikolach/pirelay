@@ -1908,6 +1908,32 @@ async function handleAuthorizedCommand(message, route, command, args) {
   }
 
   switch (command) {
+    case 'new': {
+      if (isEffectivelyBusy(route)) {
+        await sendPlainText(message.chat.id, 'Pi is busy. Use /abort or wait for the active work to finish before starting a new session.');
+        return;
+      }
+      try {
+        const outcome = await requestClient(route, 'newSession', { requester: requesterForMessage(route, message) });
+        if (outcome?.kind === 'success') {
+          await sendPlainText(message.chat.id, 'New Pi session started. Relay control is moving to the replacement session.');
+          return;
+        }
+        const text = outcome?.kind === 'unsupported'
+          ? 'This Pi route cannot start a new session remotely. Run /new locally instead.'
+          : outcome?.kind === 'cancelled'
+            ? 'The new-session request was cancelled locally.'
+            : outcome?.kind === 'busy'
+              ? 'Pi is busy. Use /abort or wait for the active work to finish before starting a new session.'
+              : outcome?.kind === 'failed'
+                ? 'Could not start a new Pi session.'
+                : 'The Pi session is unavailable. Resume it locally, then try again.';
+        await sendPlainText(message.chat.id, text);
+      } catch {
+        await sendPlainText(message.chat.id, 'The Pi session became unavailable before a new session could be started. Use /sessions to check its status.');
+      }
+      return;
+    }
     case 'status': {
       await sendPlainText(message.chat.id, statusTextForRoute(route), dashboardKeyboardForRoute(route));
       return;
