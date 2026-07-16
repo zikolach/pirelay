@@ -273,7 +273,10 @@ export class TunnelStateStore {
           || input.requester.userId !== binding.userId)) continue;
         const targetKey = channelBindingStorageKey(binding.channel, input.newSessionKey, binding.instanceId);
         const target = data.channelBindings[targetKey];
-        if (target?.status === "active") continue;
+        if (target && (target.channel !== binding.channel
+          || (target.instanceId ?? "default") !== (binding.instanceId ?? "default")
+          || target.conversationId !== binding.conversationId
+          || target.userId !== binding.userId)) continue;
         const moved: ChannelPersistedBindingRecord = {
           ...binding,
           sessionKey: input.newSessionKey,
@@ -295,7 +298,7 @@ export class TunnelStateStore {
       for (const [key, address] of movedAddresses) {
         const selection = data.activeChannelSelections[key];
         if (selection && selection.sessionKey !== input.oldSessionKey && selection.sessionKey !== input.newSessionKey) continue;
-        data.activeChannelSelections[key] = { ...address, ...selection, sessionKey: input.newSessionKey, updatedAt: now };
+        data.activeChannelSelections[key] = { ...selection, ...address, sessionKey: input.newSessionKey, updatedAt: now };
         result.movedSelections += 1;
       }
     });
@@ -719,7 +722,7 @@ export class TunnelStateStore {
 
 function activeTargetTelegramBindingConflicts(data: TunnelStoreData, input: SessionBindingMigrationInput, source: PersistedBindingRecord): boolean {
   const target = data.bindings[input.newSessionKey];
-  return Boolean(target?.status === "active" && (target.chatId !== source.chatId || target.userId !== source.userId));
+  return Boolean(target && (target.chatId !== source.chatId || target.userId !== source.userId));
 }
 
 function isMissingFileError(error: unknown): boolean {

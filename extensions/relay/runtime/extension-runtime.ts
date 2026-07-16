@@ -27,7 +27,7 @@ import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/f
 import { parseMessengerRef } from "../core/messenger-ref.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { isStaleExtensionReferenceError, routeUnavailableError, unavailableRouteMessage } from "../core/route-actions.js";
-import { activeSelectionsForSession, bindingSummariesForSession, createPendingSessionHandoff, findPendingSessionHandoff, listPendingSessionHandoffs, relayRuntimeInstanceId, registerPendingSessionHandoff, removePendingSessionHandoff, removePendingSessionHandoffsForSession, type PendingSessionHandoff, type SessionHandoffReason } from "../core/session-handoff.js";
+import { activeSelectionsForSession, bindingSummariesForSession, createPendingSessionHandoff, findPendingSessionHandoff, listPendingSessionHandoffs, normalizeWorkspaceRoot, relayRuntimeInstanceId, registerPendingSessionHandoff, removePendingSessionHandoff, removePendingSessionHandoffsForSession, type PendingSessionHandoff, type SessionHandoffReason } from "../core/session-handoff.js";
 import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
@@ -918,7 +918,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   function attachCommandContextToRoute(ctx: ExtensionCommandContext, route = currentRoute): void {
     if (!route) return;
     try {
-      if (safeSessionKeyForContext(ctx) !== route.sessionKey || ctx.cwd !== route.actions.getWorkspaceRoot?.()) return;
+      const routeWorkspace = route.actions.getWorkspaceRoot?.() ?? route.actions.context.cwd;
+      if (safeSessionKeyForContext(ctx) !== route.sessionKey || normalizeWorkspaceRoot(ctx.cwd) !== normalizeWorkspaceRoot(routeWorkspace)) return;
     } catch {
       return;
     }

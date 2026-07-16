@@ -44,6 +44,22 @@ describe("session handoff matching", () => {
     expect(matchPendingSessionHandoffs([handoff(), handoff({ oldSessionKey: "old-2", oldSessionId: "old-2" })], replacement, 2_000)).toMatchObject({ kind: "ambiguous", candidates: [{ oldSessionKey: "old" }, { oldSessionKey: "old-2" }] });
   });
 
+  it("runs expiry behavior when synchronous pruning wins the timer race", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const pending = handoff();
+    const expired = vi.fn();
+    registerPendingSessionHandoff(pending, expired);
+
+    vi.setSystemTime(6_000);
+    expect(takePendingSessionHandoff(replacement)).toEqual({ kind: "none" });
+    await vi.runAllTicks();
+    expect(expired).toHaveBeenCalledOnce();
+    expect(expired).toHaveBeenCalledWith(pending);
+    await vi.runAllTimersAsync();
+    expect(expired).toHaveBeenCalledOnce();
+  });
+
   it("takes a matched handoff once and expires bounded records", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);

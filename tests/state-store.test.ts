@@ -358,6 +358,21 @@ describe("session binding migration", () => {
     expect(await store.getActiveChannelSelection("discord", "C1", "U1")).toMatchObject({ sessionKey: "new" });
   });
 
+  it("does not overwrite revoked target records belonging to another identity", async () => {
+    const store = await createStore();
+    await store.upsertBinding({ sessionKey: "old", sessionId: "old-id", sessionLabel: "old", chatId: 10, userId: 20, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertBinding({ sessionKey: "new", sessionId: "new-id", sessionLabel: "new", chatId: 99, userId: 98, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.revokeBinding("new");
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C-old", userId: "U-old", sessionKey: "old", sessionId: "old-id", sessionLabel: "old", boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C-other", userId: "U-other", sessionKey: "new", sessionId: "new-id", sessionLabel: "new", boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.revokeChannelBinding("slack", "new");
+
+    const result = await store.migrateSessionBindings({ oldSessionKey: "old", newSessionKey: "new", newSessionId: "new-id", newSessionLabel: "new" });
+    expect(result).toEqual({ telegram: [], channels: [], movedSelections: 0 });
+    expect(await store.getBindingBySessionKey("new")).toMatchObject({ chatId: 99, userId: 98, status: "revoked" });
+    expect(await store.getChannelBindingRecordBySessionKey("slack", "new")).toMatchObject({ conversationId: "C-other", userId: "U-other", status: "revoked" });
+  });
+
   it("fails closed for revoked bindings, conflicting target bindings, and requester mismatch", async () => {
     const store = await createStore();
     await store.upsertBinding({ sessionKey: "old", sessionId: "old-id", sessionLabel: "old", chatId: 10, userId: 20, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });

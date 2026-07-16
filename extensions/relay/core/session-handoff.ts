@@ -46,6 +46,7 @@ export type PendingHandoffMatch =
 interface RegisteredPendingHandoff {
   handoff: PendingSessionHandoff;
   timeout?: ReturnType<typeof setTimeout>;
+  onExpire?: (handoff: PendingSessionHandoff) => void | Promise<void>;
 }
 
 const pendingHandoffs = new Map<string, RegisteredPendingHandoff>();
@@ -102,14 +103,11 @@ export function matchPendingSessionHandoffs(candidates: readonly PendingSessionH
 export function registerPendingSessionHandoff(handoff: PendingSessionHandoff, onExpire?: (handoff: PendingSessionHandoff) => void | Promise<void>): void {
   removePendingSessionHandoff(handoff.id);
   const delay = Math.max(0, handoff.expiresAt - Date.now());
-  const timeout = onExpire ? setTimeout(() => {
-    const current = pendingHandoffs.get(handoff.id);
-    if (!current) return;
-    pendingHandoffs.delete(handoff.id);
-    void Promise.resolve(onExpire(handoff)).catch(() => undefined);
+  const timeout = onExpire ? setTimeout(async () => {
+    await expirePendingSessionHandoff(handoff.id);
   }, delay) : undefined;
   timeout?.unref?.();
-  pendingHandoffs.set(handoff.id, { handoff, timeout });
+  pendingHandoffs.set(handoff.id, { handoff, timeout, onExpire });
 }
 
 export function findPendingSessionHandoff(replacement: ReplacementSessionIdentity, now = Date.now()): PendingHandoffMatch {
@@ -147,9 +145,20 @@ export function listPendingSessionHandoffs(): PendingSessionHandoff[] {
 }
 
 function pruneExpiredPendingSessionHandoffs(now = Date.now()): void {
-  for (const entry of [...pendingHandoffs.values()]) {
-    if (entry.handoff.expiresAt <= now) removePendingSessionHandoff(entry.handoff.id);
-  }
+  void expirePendingSessionHandoffs(now);
+}
+
+export async function expirePendingSessionHandoffs(now = Date.now()): Promise<void> {
+  const expired = [...pendingHandoffs.values()].filter((entry) => entry.handoff.expiresAt <= now);
+  await Promise.all(expired.map((entry) => expirePendingSessionHandoff(entry.handoff.id)));
+}
+
+async function expirePendingSessionHandoff(id: string): Promise<void> {
+  const entry = pendingHandoffs.get(id);
+  if (!entry) return;
+  if (entry.timeout) clearTimeout(entry.timeout);
+  pendingHandoffs.delete(id);
+  if (entry.onExpire) await Promise.resolve(entry.onExpire(entry.handoff)).catch(() => undefined);
 }
 
 function telegramBindingSummary(binding: PersistedBindingRecord): SessionHandoffBindingSummary {

@@ -791,6 +791,7 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", { reason: "startup" }, context);
     const route = registerRoute.mock.calls.at(-1)?.[0] as SessionRoute;
     expect(route.actions.newSession).toBeUndefined();
+    route.actions.getWorkspaceRoot = undefined;
 
     await pi.runCommand("relay", "status", context);
     expect(route.actions.newSession).toBeTypeOf("function");
@@ -859,11 +860,13 @@ describe("PiRelay integration behavior", () => {
     const { context } = createMockContext("handoff-expiry");
     relayExtension(pi.api as any);
     await pi.emit("session_start", { reason: "startup" }, context);
+    vi.useFakeTimers();
     await pi.emit("session_shutdown", { reason: "new" }, context);
     expect(fakeRuntime.sendToBoundChat).not.toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("went offline"));
-    await new Promise((resolve) => setTimeout(resolve, 5_100));
-    await waitFor(() => (fakeRuntime.sendToBoundChat as ReturnType<typeof vi.fn>).mock.calls.some(([sessionKey, text]) => sessionKey === binding.sessionKey && String(text).includes("went offline locally")));
-  }, 10_000);
+    vi.setSystemTime(Date.now() + 5_000);
+    await (await import("../extensions/relay/core/session-handoff.js")).expirePendingSessionHandoffs();
+    expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("went offline locally"));
+  });
 
   it("fails a same-workspace ambiguous handoff closed without migrating bindings", async () => {
     const config = await createRuntimeConfig("pi-lifecycle-handoff-ambiguous-");
