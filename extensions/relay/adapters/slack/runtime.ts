@@ -13,7 +13,7 @@ import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progr
 import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, newSessionRouteActionMessage, newSessionRouteSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
@@ -956,6 +956,15 @@ export class SlackRuntime {
       case "help":
         await this.sendText(message, SLACK_HELP_TEXT);
         return;
+      case "new": {
+        const outcome = await newSessionRouteSafely(route, this.slackRequester(route, message));
+        if (outcome.kind !== "success") {
+          await this.sendText(message, newSessionRouteActionMessage(outcome));
+          return;
+        }
+        await this.sendText(message, "New Pi session started. Relay control is moving to the replacement session.");
+        return;
+      }
       case "status": {
         const availability = slackRouteAvailability(route);
         await this.sendText(message, formatRelayStatusForRoute(route, { online: availability.online, busy: availability.busy, binding }));

@@ -11,6 +11,7 @@ import {
   compactRouteSafely,
   deliverRoutePrompt,
   latestRouteImagesSafely,
+  newSessionRouteSafely,
   routeActionOutcomeFromError,
   routeActionSuccess,
   routeActionUnavailable,
@@ -114,6 +115,16 @@ describe("route action lifetime helpers", () => {
     const getImageByPath = vi.fn(async () => loadResult);
     await expect(routeImageByPathSafely(route({ isIdle: () => true, getWorkspaceRoot: () => "/workspace", getImageByPath }), "missing.png")).resolves.toEqual({ kind: "success", result: loadResult });
     expect(getImageByPath).toHaveBeenCalledWith("missing.png");
+  });
+
+  it("handles typed new-session outcomes without using raw context", async () => {
+    await expect(newSessionRouteSafely(route({ newSession: async () => ({ cancelled: false }) }))).resolves.toEqual({ kind: "success", result: { started: true } });
+    await expect(newSessionRouteSafely(route({ isIdle: () => undefined, newSession: async () => ({ cancelled: false }) }))).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    await expect(newSessionRouteSafely(route({ isIdle: () => false, newSession: async () => ({ cancelled: false }) }))).resolves.toMatchObject({ kind: "busy" });
+    await expect(newSessionRouteSafely(route())).resolves.toMatchObject({ kind: "unsupported" });
+    await expect(newSessionRouteSafely(route({ newSession: async () => ({ cancelled: true }) }))).resolves.toMatchObject({ kind: "cancelled" });
+    await expect(newSessionRouteSafely(route({ newSession: async () => { throw new Error(STALE_EXTENSION_ERROR); } }))).resolves.toEqual({ kind: "unavailable", message: unavailableRouteMessage() });
+    await expect(newSessionRouteSafely(route({ newSession: async () => { throw new Error("boom"); } }))).resolves.toMatchObject({ kind: "failed", safeMessage: "Could not start a new Pi session." });
   });
 
   it("handles abort outcomes and rollback", () => {

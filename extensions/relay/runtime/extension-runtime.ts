@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { Type, type ImageContent } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { loadTelegramTunnelConfig, ConfigError } from "../config/tunnel-config.js";
 import { renderQrLines } from "../ui/qr.js";
@@ -25,8 +25,9 @@ import { migrateRelayConfigPlan, planRelayConfigMigrationForEnv, type RelayConfi
 import { createTurnId, deriveSessionLabel, extractImageContent, extractTextContent, getTelegramUserLabel, isAllowedImageMimeType, latestImageFileCandidatesFromText, latestImageFromContent, loadWorkspaceImageFile, sessionKeyOf, summarizeTextDeterministically, toIsoNow } from "../core/utils.js";
 import { loadWorkspaceOutboundFile, type RelayOutboundFileKind } from "../core/file-delivery.js";
 import { parseMessengerRef } from "../core/messenger-ref.js";
-import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult } from "../core/requester-file-delivery.js";
+import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, type RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
 import { isStaleExtensionReferenceError, routeUnavailableError, unavailableRouteMessage } from "../core/route-actions.js";
+import { activeSelectionsForSession, bindingSummariesForSession, createPendingSessionHandoff, findPendingSessionHandoff, listPendingSessionHandoffs, normalizeWorkspaceRoot, relayRuntimeInstanceId, registerPendingSessionHandoff, removePendingSessionHandoff, removePendingSessionHandoffsForSession, type PendingSessionHandoff, type SessionHandoffReason } from "../core/session-handoff.js";
 import type { ChannelOutboundFile, ChannelRouteAddress } from "../core/channel-adapter.js";
 import { TelegramChannelAdapter } from "../adapters/telegram/adapter.js";
 import { DEFAULT_DISCORD_MAX_FILE_BYTES } from "../adapters/discord/adapter.js";
@@ -176,6 +177,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   let configCache: TelegramTunnelConfig | undefined;
   let runtime: TunnelRuntime | undefined;
   let telegramRuntimeStatus: { enabled: boolean; started: boolean; error?: string } | undefined;
+  let latestCommandContext: ExtensionCommandContext | undefined;
+  let completedHandoff: PendingSessionHandoff | undefined;
   const discordRuntimes = new Map<string, DiscordRuntime>();
   const slackRuntimes = new Map<string, SlackRuntime>();
   const volatileTelegramBindings = new Map<string, TelegramBindingMetadata>();
@@ -912,6 +915,38 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return Boolean(binding && !binding.paused);
   }
 
+  function attachCommandContextToRoute(ctx: ExtensionCommandContext, route = currentRoute): void {
+    if (!route) return;
+    try {
+      const routeWorkspace = route.actions.getWorkspaceRoot?.() ?? route.actions.context.cwd;
+      if (safeSessionKeyForContext(ctx) !== route.sessionKey || normalizeWorkspaceRoot(ctx.cwd) !== normalizeWorkspaceRoot(routeWorkspace)) return;
+    } catch {
+      return;
+    }
+    latestCommandContext = ctx;
+    route.actions.newSession = async (requester) => {
+      const commandContext = latestCommandContext;
+      if (commandContext !== ctx) throw routeUnavailableError();
+      const handoff = await preparePendingHandoff(route, requester ? "remote-new" : "local-new", requester);
+      if (requester && !handoff) throw routeUnavailableError("The selected relay binding is no longer active. Use /sessions to choose an online session.");
+      const parentSession = route.sessionFile;
+      try {
+        const result = await commandContext.newSession({
+          ...(parentSession ? { parentSession } : {}),
+          withSession: async (replacementContext) => {
+            latestContext = replacementContext;
+            attachCommandContextToRoute(replacementContext);
+          },
+        });
+        if (result.cancelled && handoff) removePendingSessionHandoffsForSession(route.sessionKey);
+        return { cancelled: result.cancelled };
+      } catch (error) {
+        if (handoff) removePendingSessionHandoffsForSession(route.sessionKey);
+        throw error;
+      }
+    };
+  }
+
   function buildRoute(ctx: ExtensionContext, binding?: TelegramBindingMetadata, explicitLabel?: string): SessionRoute {
     const sessionId = ctx.sessionManager.getSessionId();
     const sessionFile = ctx.sessionManager.getSessionFile();
@@ -1076,6 +1111,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           }),
       },
     };
+    if (latestCommandContext) attachCommandContextToRoute(latestCommandContext, route);
     return route;
   }
 
@@ -1164,7 +1200,15 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
   }
 
-  async function restoreBinding(ctx: ExtensionContext, config: TelegramTunnelConfig): Promise<TelegramBindingMetadata | undefined> {
+  async function restoreBinding(ctx: ExtensionContext, config: TelegramTunnelConfig, preferPersisted = false): Promise<TelegramBindingMetadata | undefined> {
+    if (preferPersisted) {
+      const sessionKey = sessionKeyOf(ctx.sessionManager.getSessionId(), ctx.sessionManager.getSessionFile());
+      const migrated = await new TunnelStateStore(config.stateDir).getBindingBySessionKey(sessionKey);
+      if (migrated?.status === "active") {
+        volatileTelegramBindings.set(sessionKey, migrated);
+        return migrated;
+      }
+    }
     let latest: BindingEntryData | undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === "custom" && (entry.customType === BINDING_ENTRY_TYPE || entry.customType === LEGACY_BINDING_ENTRY_TYPE)) {
@@ -1189,6 +1233,41 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return localBinding;
   }
 
+  async function preparePendingHandoff(route: SessionRoute, reason: SessionHandoffReason, remoteRequester?: RelayFileDeliveryRequester): Promise<PendingSessionHandoff | undefined> {
+    const config = configCache;
+    if (!config) return undefined;
+    const data = await new TunnelStateStore(config.stateDir).load();
+    const bindings = bindingSummariesForSession(data, route.sessionKey);
+    if (bindings.length === 0) return undefined;
+    const requester = reason === "remote-new" && remoteRequester
+      ? bindings.find((binding) => binding.channel === remoteRequester.channel
+        && binding.instanceId === remoteRequester.instanceId
+        && binding.conversationId === remoteRequester.conversationId
+        && binding.userId === remoteRequester.userId)
+      : undefined;
+    if (reason === "remote-new" && !requester) return undefined;
+    const handoff = createPendingSessionHandoff({
+      oldSessionKey: route.sessionKey,
+      oldSessionId: route.sessionId,
+      oldSessionFile: route.sessionFile,
+      oldSessionLabel: route.sessionLabel,
+      runtimeInstanceId: relayRuntimeInstanceId,
+      machineId: config.machineId ?? "local",
+      workspaceRoot: route.actions.getWorkspaceRoot?.() ?? route.actions.context.cwd,
+      reason,
+      requester,
+      bindings,
+      activeSelections: activeSelectionsForSession(data, route.sessionKey),
+    });
+    registerPendingSessionHandoff(handoff, async () => {
+      const deliveries: Array<Promise<void> | undefined> = [notifyTelegramLifecycle(config, route, "offline")];
+      for (const discord of discordRuntimes.values()) deliveries.push(discord.notifyLifecycle?.(route, "offline"));
+      for (const slack of slackRuntimes.values()) deliveries.push(slack.notifyLifecycle?.(route, "offline"));
+      await Promise.allSettled(deliveries.filter((delivery): delivery is Promise<void> => Boolean(delivery)));
+    });
+    return handoff;
+  }
+
   async function syncRoute(ctx: ExtensionContext): Promise<void> {
     latestContext = ctx;
     let config: TelegramTunnelConfig;
@@ -1201,7 +1280,35 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    const restoredBinding = await restoreBinding(ctx, config);
+    const nextSessionId = ctx.sessionManager.getSessionId();
+    const nextSessionFile = ctx.sessionManager.getSessionFile();
+    const nextSessionKey = sessionKeyOf(nextSessionId, nextSessionFile);
+    const handoffMatch = findPendingSessionHandoff({
+      sessionKey: nextSessionKey,
+      runtimeInstanceId: relayRuntimeInstanceId,
+      machineId: config.machineId ?? "local",
+      workspaceRoot: ctx.cwd,
+    });
+    completedHandoff = undefined;
+    if (handoffMatch.kind === "matched") {
+      const previewRoute = buildRoute(ctx);
+      const migration = await new TunnelStateStore(config.stateDir).migrateSessionBindings({
+        oldSessionKey: handoffMatch.handoff.oldSessionKey,
+        newSessionKey: nextSessionKey,
+        newSessionId: nextSessionId,
+        newSessionFile: nextSessionFile,
+        newSessionLabel: previewRoute.sessionLabel,
+        requester: handoffMatch.handoff.reason === "remote-new" && handoffMatch.handoff.requester
+          ? handoffMatch.handoff.requester
+          : undefined,
+      });
+      if (migration.telegram.length > 0 || migration.channels.length > 0) {
+        removePendingSessionHandoff(handoffMatch.handoff.id);
+        completedHandoff = handoffMatch.handoff;
+      }
+    }
+
+    const restoredBinding = await restoreBinding(ctx, config, Boolean(completedHandoff));
     const previousSessionKey = currentRoute?.sessionKey;
     const nextRoute = buildRoute(ctx, restoredBinding);
     if (nextRoute.sessionKey !== previousSessionKey) clearTurnImageCaches();
@@ -1237,7 +1344,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       }
       throw error;
     });
-    await notifyRelayLifecycle(ctx, "online", currentRoute, { telegram: telegramStarted, discordInstances: startedDiscordInstances, slackInstances: startedSlackInstances });
+    await notifyRelayLifecycle(ctx, completedHandoff ? "moved" : "online", currentRoute, { telegram: telegramStarted, discordInstances: startedDiscordInstances, slackInstances: startedSlackInstances });
   }
 
   async function handleSetup(ctx: ExtensionContext): Promise<void> {
@@ -1882,6 +1989,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     if (!currentRoute) await syncRoute(ctx);
     if (!currentRoute) return;
     const disconnectedRoute = currentRoute;
+    removePendingSessionHandoffsForSession(disconnectedRoute.sessionKey);
     await notifyRelayLifecycle(ctx, "disconnected", disconnectedRoute);
     currentRoute.binding = undefined;
     await store.revokeBinding(currentRoute.sessionKey);
@@ -1947,6 +2055,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       },
       handler: async (args, ctx) => {
         latestContext = ctx;
+        attachCommandContextToRoute(ctx);
         const intent = parseRelayLocalCommand(args);
         try {
           if (intent.unsupportedChannel) {
@@ -2052,11 +2161,23 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (event, ctx) => {
     latestContext = ctx;
     resetToolProgress();
     closeConnectQrScreen = undefined;
-    if (currentRoute) await notifyRelayLifecycle(ctx, "offline", currentRoute);
+    const shuttingDownRoute = currentRoute;
+    if (shuttingDownRoute && runtime) await runtime.unregisterRoute(shuttingDownRoute.sessionKey);
+    if (shuttingDownRoute) {
+      for (const discordRuntime of discordRuntimes.values()) await discordRuntime.unregisterRoute(shuttingDownRoute.sessionKey);
+      for (const slackRuntime of slackRuntimes.values()) await slackRuntime.unregisterRoute(shuttingDownRoute.sessionKey);
+    }
+    let handoffPending = false;
+    if (shuttingDownRoute && event.reason === "new") {
+      const existing = listPendingSessionHandoffs().some((handoff) => handoff.oldSessionKey === shuttingDownRoute.sessionKey);
+      if (!existing) await preparePendingHandoff(shuttingDownRoute, "local-new").catch(() => undefined);
+      handoffPending = listPendingSessionHandoffs().some((handoff) => handoff.oldSessionKey === shuttingDownRoute.sessionKey);
+    }
+    if (shuttingDownRoute && !handoffPending) await notifyRelayLifecycle(ctx, "offline", shuttingDownRoute);
     if (currentRoute && configCache) {
       await new TunnelStateStore(configCache.stateDir).cancelPendingApprovalsForSession(currentRoute.sessionKey, "session shutdown").catch(() => undefined);
       for (const [approvalId, resolve] of pendingApprovalResolvers) {
@@ -2064,13 +2185,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
         pendingApprovalResolvers.delete(approvalId);
       }
     }
-    if (runtime && currentRoute) {
-      await runtime.unregisterRoute(currentRoute.sessionKey);
-    }
-    if (currentRoute) {
-      for (const discordRuntime of discordRuntimes.values()) await discordRuntime.unregisterRoute(currentRoute.sessionKey);
-      for (const slackRuntime of slackRuntimes.values()) await slackRuntime.unregisterRoute(currentRoute.sessionKey);
-    }
+    latestCommandContext = undefined;
   });
 
   pi.on("session_tree", async (_event, ctx) => {

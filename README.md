@@ -252,6 +252,7 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 | select session | `/use <session>` | `relay use <session>` | `/relay use <session>` |
 | forget offline session | `/forget <session>` | `relay forget <session>` | `/relay forget <session>` |
 | one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `/relay to <session> <prompt>` |
+| start replacement session | `/new` | `relay new` | `/relay new` |
 | progress mode | `/progress <mode>` | `relay progress <mode>` | `/relay progress <mode>` |
 | current progress mode | `/progress` | `relay progress` | `/relay progress` |
 | alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `/relay alias <name\|clear>` |
@@ -277,6 +278,8 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 `quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. Progress mode controls non-terminal progress noise: quiet suppresses progress updates, completion-only sends final results plus safe compaction notifications, normal sends coalesced milestone progress, and verbose additionally includes safe visible model/tool snapshots at a shorter interval. Tool progress in normal/verbose modes is summarized as a bounded live card with safe intent labels such as `▶ bash: npm test`, `✓ read: extensions/relay/runtime/extension-runtime.ts`, or `✕ rg: pattern in extensions`, plus aggregate counts like `tools: bash×2 read×4`; it never includes tool output, file contents, replacement text, raw transcripts, or arbitrary custom-tool arguments. Progress updates are deduplicated/coalesced, and supported messengers update the same live progress message in place where possible instead of posting every raw Pi stream event. Terminal notifications still deliver the final assistant answer when it fits safe platform limits, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 
 Remote `/disconnect` is scoped to the requesting chat/conversation only: it revokes that Telegram, Discord, or Slack binding and suppresses future session output/buttons there, without disconnecting other messengers that remain paired to the same Pi session. Local `/relay disconnect` is broader and disconnects the current session from all paired messenger bindings.
+
+Remote `/new` starts a replacement session only for the selected online, idle Pi route; it does not start or resume an offline Pi process. Busy routes refuse the request and suggest waiting or using `/abort`. When Pi provides safe command-capable session control, eligible requester bindings and active selections move to the replacement session automatically; unsupported routes return an explicit limitation. Local `/new` uses the same short, strict same-machine/same-workspace handoff and otherwise falls back to normal offline/reconnect behavior.
 
 Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
 

@@ -649,6 +649,8 @@ describe("SlackRuntime foundations", () => {
     const testRoute = route();
     testRoute.notification.lastAssistantText = "full output";
     testRoute.notification.lastSummary = "summary output";
+    const newSession = vi.fn(async () => ({ cancelled: false }));
+    testRoute.actions.newSession = newSession;
     const store = new TunnelStateStore(runtimeConfig.stateDir);
     await store.upsertChannelBinding({
       channel: "slack",
@@ -709,6 +711,12 @@ describe("SlackRuntime foundations", () => {
     await send("/to Docs hello there", "45");
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("hello there", undefined);
     expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "45" });
+    await send("/new", "45.5");
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(operations.posts.at(-1)?.text).toContain("New Pi session started");
+    testRoute.actions.newSession = undefined;
+    await send("/new", "45.6");
+    expect(operations.posts.at(-1)?.text).toContain("cannot start a new session remotely");
     await send("/pause", "46");
     expect(operations.posts.at(-1)?.text).toContain("paused");
     await send("ordinary while paused", "47");

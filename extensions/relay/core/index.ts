@@ -5,3 +5,4 @@ export * from "./agent-delegation.js";
 export * from "./agent-delegation-approval.js";
 export type * from "./adapter-contracts.js";
 export type * from "./session-contracts.js";
+export * from "./session-handoff.js";

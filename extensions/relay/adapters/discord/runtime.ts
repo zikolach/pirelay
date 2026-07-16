@@ -13,7 +13,7 @@ import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progr
 import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, newSessionRouteActionMessage, newSessionRouteSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { redactSecrets } from "../../config/setup.js";
@@ -902,6 +902,15 @@ export class DiscordRuntime {
       case "help":
         await this.sendText(message, DISCORD_HELP_TEXT);
         return;
+      case "new": {
+        const outcome = await newSessionRouteSafely(route, this.discordRequester(route, message));
+        if (outcome.kind !== "success") {
+          await this.sendText(message, newSessionRouteActionMessage(outcome));
+          return;
+        }
+        await this.sendText(message, "New Pi session started. Relay control is moving to the replacement session.");
+        return;
+      }
       case "status":
         await this.sendText(message, this.statusTextForRoute(route, binding, true));
         return;
@@ -1587,7 +1596,7 @@ export class DiscordRuntime {
   }
 }
 
-export type DiscordCommandName = "help" | "status" | "sessions" | "use" | "to" | "progress" | "notify" | "alias" | "forget" | "recent" | "activity" | "summary" | "full" | "skills" | "skill" | "cancel" | "images" | "send-file" | "sendfile" | "send-image" | "sendimage" | "steer" | "followup" | "abort" | "compact" | "pause" | "resume" | "disconnect";
+export type DiscordCommandName = "help" | "status" | "sessions" | "use" | "to" | "new" | "progress" | "notify" | "alias" | "forget" | "recent" | "activity" | "summary" | "full" | "skills" | "skill" | "cancel" | "images" | "send-file" | "sendfile" | "send-image" | "sendimage" | "steer" | "followup" | "abort" | "compact" | "pause" | "resume" | "disconnect";
 
 type DiscordCommand = { name: DiscordCommandName; args: string };
 
@@ -1597,6 +1606,7 @@ export const DISCORD_SUPPORTED_COMMANDS: readonly DiscordCommandName[] = [
   "sessions",
   "use",
   "to",
+  "new",
   "progress",
   "notify",
   "alias",

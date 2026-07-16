@@ -61,6 +61,7 @@ describe("binding authority", () => {
     ["active", telegramBinding(), { chatId: 100, userId: 200 }, "active"],
     ["paused", telegramBinding({ paused: true }), { chatId: 100, userId: 200 }, "paused"],
     ["revoked", telegramBinding({ status: "revoked", revokedAt: "2026-05-15T00:01:00.000Z" }), { chatId: 100, userId: 200 }, "revoked"],
+    ["handoff-moved", telegramBinding({ status: "revoked", revokedAt: "2026-05-15T00:01:00.000Z", movedToSessionKey: "session-2" }), { chatId: 100, userId: 200 }, "moved"],
     ["moved-chat", telegramBinding({ chatId: 999 }), { chatId: 100, userId: 200 }, "moved"],
     ["moved-user", telegramBinding({ userId: 999 }), { chatId: 100, userId: 200 }, "moved"],
   ] as const)("classifies Telegram %s bindings", (_name, binding, expected, kind) => {
@@ -81,6 +82,7 @@ describe("binding authority", () => {
     ["active", channelBinding(), { conversationId: "C1", userId: "U1" }, "active"],
     ["paused", channelBinding({ paused: true }), { conversationId: "C1", userId: "U1" }, "paused"],
     ["revoked", channelBinding({ status: "revoked", revokedAt: "2026-05-15T00:01:00.000Z" }), { conversationId: "C1", userId: "U1" }, "revoked"],
+    ["handoff-moved", channelBinding({ status: "revoked", revokedAt: "2026-05-15T00:01:00.000Z", movedToSessionKey: "session-2" }), { conversationId: "C1", userId: "U1" }, "moved"],
     ["moved-conversation", channelBinding({ conversationId: "C2" }), { conversationId: "C1", userId: "U1" }, "moved"],
     ["moved-user", channelBinding({ userId: "U2" }), { conversationId: "C1", userId: "U1" }, "moved"],
   ] as const)("classifies channel %s bindings", (_name, binding, expected, kind) => {

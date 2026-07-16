@@ -758,8 +758,146 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", {}, context);
     expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("back online"));
 
+    const handoffs = await import("../extensions/relay/core/session-handoff.js");
+    handoffs.registerPendingSessionHandoff(handoffs.createPendingSessionHandoff({
+      oldSessionKey: binding.sessionKey, oldSessionId: binding.sessionId, oldSessionFile: binding.sessionFile, oldSessionLabel: binding.sessionLabel,
+      runtimeInstanceId: handoffs.relayRuntimeInstanceId, machineId: config.machineId ?? "local", workspaceRoot: process.cwd(), reason: "local-new",
+      bindings: [{ channel: "telegram", instanceId: "default", conversationId: String(binding.chatId), userId: String(binding.userId), paused: false }], activeSelections: [],
+    }));
     await pi.runCommand("relay", "disconnect", context);
     expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("disconnected locally"));
+    expect(handoffs.listPendingSessionHandoffs().filter((pending) => pending.oldSessionKey === binding.sessionKey)).toEqual([]);
+  });
+
+  it("exposes remote new-session capability only after a command-capable context is captured", async () => {
+    const config = await createRuntimeConfig("pi-new-command-context-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const binding = createBinding("new-command-context", 557, 44);
+    await new TunnelStateStore(config.stateDir).upsertBinding(binding);
+    const registerRoute = vi.fn(async (_route: SessionRoute) => undefined);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), restartBrokerProcess: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute, unregisterRoute: vi.fn(async () => undefined), getStatus: vi.fn(() => undefined), sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({ getOrCreateTunnelRuntime: () => fakeRuntime, sendSessionNotification: vi.fn(async () => undefined) }));
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("new-command-context");
+    context.newSession = vi.fn(async () => ({ cancelled: false }));
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = registerRoute.mock.calls.at(-1)?.[0] as SessionRoute;
+    expect(route.actions.newSession).toBeUndefined();
+    route.actions.getWorkspaceRoot = undefined;
+
+    await pi.runCommand("relay", "status", context);
+    expect(route.actions.newSession).toBeTypeOf("function");
+    await expect(route.actions.newSession?.()).resolves.toEqual({ cancelled: false });
+    expect(context.newSession).toHaveBeenCalledWith(expect.objectContaining({ parentSession: binding.sessionFile, withSession: expect.any(Function) }));
+  });
+
+  it("hands an active binding to a local replacement session without a false offline notification", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-handoff-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const oldBinding = createBinding("handoff-old", 556, 43);
+    await new TunnelStateStore(config.stateDir).upsertBinding(oldBinding);
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const oldContext = createMockContext("handoff-old").context;
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "startup" }, oldContext);
+    await pi.runCommand("relay", "status", oldContext);
+    const oldRoute = (fakeRuntime.registerRoute as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as SessionRoute;
+    expect(oldRoute.actions.newSession).toBeTypeOf("function");
+    await pi.emit("session_shutdown", { reason: "new" }, oldContext);
+
+    expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(oldBinding.sessionKey);
+    expect(fakeRuntime.sendToBoundChat).not.toHaveBeenCalledWith(oldBinding.sessionKey, expect.stringContaining("went offline"));
+
+    const newContext = createMockContext("handoff-new").context;
+    await pi.emit("session_start", { reason: "new", previousSessionFile: oldBinding.sessionFile }, newContext);
+    const newKey = sessionKeyOf("handoff-new", "/tmp/handoff-new.jsonl");
+    const store = new TunnelStateStore(config.stateDir);
+    expect(await store.getBindingBySessionKey(oldBinding.sessionKey)).toMatchObject({ status: "revoked", movedToSessionKey: newKey });
+    expect(await store.getBindingBySessionKey(newKey)).toMatchObject({ status: "active", chatId: 556, userId: 43 });
+    expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(newKey, expect.stringContaining("Relay control moved here automatically"));
+    await expect(oldRoute.actions.newSession?.()).rejects.toThrow("unavailable");
+  });
+
+  it("flushes the offline lifecycle notification when a new-session handoff expires", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-handoff-expiry-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const binding = createBinding("handoff-expiry", 558, 45);
+    await new TunnelStateStore(config.stateDir).upsertBinding(binding);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined, start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined), unregisterRoute: vi.fn(async () => undefined), getStatus: vi.fn(() => undefined), sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({ getOrCreateTunnelRuntime: () => fakeRuntime, sendSessionNotification: vi.fn(async () => undefined) }));
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("handoff-expiry");
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "startup" }, context);
+    vi.useFakeTimers();
+    await pi.emit("session_shutdown", { reason: "new" }, context);
+    expect(fakeRuntime.sendToBoundChat).not.toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("went offline"));
+    vi.setSystemTime(Date.now() + 5_000);
+    await (await import("../extensions/relay/core/session-handoff.js")).expirePendingSessionHandoffs();
+    expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("went offline locally"));
+  });
+
+  it("fails a same-workspace ambiguous handoff closed without migrating bindings", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-handoff-ambiguous-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const first = createBinding("handoff-ambiguous-a", 559, 46);
+    const second = createBinding("handoff-ambiguous-b", 560, 47);
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertBinding(first);
+    await store.upsertBinding(second);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined, start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined), unregisterRoute: vi.fn(async () => undefined), getStatus: vi.fn(() => undefined), sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({ getOrCreateTunnelRuntime: () => fakeRuntime, sendSessionNotification: vi.fn(async () => undefined) }));
+    const handoffs = await import("../extensions/relay/core/session-handoff.js");
+    for (const binding of [first, second]) {
+      handoffs.registerPendingSessionHandoff(handoffs.createPendingSessionHandoff({
+        oldSessionKey: binding.sessionKey, oldSessionId: binding.sessionId, oldSessionFile: binding.sessionFile, oldSessionLabel: binding.sessionLabel,
+        runtimeInstanceId: handoffs.relayRuntimeInstanceId, machineId: config.machineId ?? "local", workspaceRoot: process.cwd(), reason: "local-new",
+        bindings: [{ channel: "telegram", instanceId: "default", conversationId: String(binding.chatId), userId: String(binding.userId), paused: false }], activeSelections: [],
+      }));
+    }
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "new" }, createMockContext("handoff-ambiguous-new").context);
+    expect(await store.getBindingBySessionKey(first.sessionKey)).toMatchObject({ status: "active" });
+    expect(await store.getBindingBySessionKey(second.sessionKey)).toMatchObject({ status: "active" });
+    expect(await store.getBindingBySessionKey(sessionKeyOf("handoff-ambiguous-new", "/tmp/handoff-ambiguous-new.jsonl"))).toBeUndefined();
+    for (const pending of handoffs.listPendingSessionHandoffs()) handoffs.removePendingSessionHandoff(pending.id);
   });
 
   it("does not mark restored binding online when Telegram registration fails", async () => {
@@ -3495,6 +3633,26 @@ describe("PiRelay integration behavior", () => {
       await waitFor(() => clientResponses.some((message) => message.requestId === "broker-missing-pipeline-version"));
       expect(clientResponses.find((message) => message.requestId === "broker-missing-pipeline-version")).toMatchObject({ ok: false, error: "Invalid relay pipeline protocol version." });
 
+      setIdle(true);
+      const newSession = vi.fn(async () => ({ cancelled: false }));
+      route.actions.newSession = newSession;
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-new-session-1",
+        action: "newSession",
+        sessionKey: route.sessionKey,
+        requester: { channel: "telegram", instanceId: "default", conversationId: "8001", userId: "9001", sessionKey: route.sessionKey, safeLabel: "Telegram owner", createdAt: Date.now() },
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-new-session-1"));
+      expect(clientResponses.find((message) => message.requestId === "broker-new-session-1")).toMatchObject({ ok: true, result: { kind: "success", result: { started: true } } });
+      expect(newSession).toHaveBeenCalledWith(expect.objectContaining({ channel: "telegram", conversationId: "8001", userId: "9001" }));
+
+      route.actions.newSession = undefined;
+      sockets[0]!.write(`${JSON.stringify({ type: "request", requestId: "broker-new-session-unsupported", action: "newSession", sessionKey: route.sessionKey })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-new-session-unsupported"));
+      expect(clientResponses.find((message) => message.requestId === "broker-new-session-unsupported")).toMatchObject({ ok: true, result: { kind: "unsupported" } });
+
+      setIdle(false);
       const multimodalContent = [
         { type: "text", text: "look at this" },
         { type: "image", data: Buffer.from("img").toString("base64"), mimeType: "image/png" },

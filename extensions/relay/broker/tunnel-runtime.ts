@@ -10,7 +10,7 @@ import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, typ
 import { ensureStateDir } from "../state/paths.js";
 import { TunnelStateStore } from "../state/tunnel-store.js";
 import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState } from "../core/relay-core.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, routeActionDisplayMessage, routeImageByPathSafely, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, newSessionRouteSafely, routeActionDisplayMessage, routeImageByPathSafely, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { brokerScopeControlPaths, ensureScopedBroker, normalizeBrokerNamespace } from "./supervisor.js";
@@ -380,6 +380,12 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
             return;
           }
           await respond({ ok: true, result: outcome.result });
+          return;
+        }
+        case "newSession": {
+          const requester = isRecord(request.requester) ? request.requester as unknown as RelayFileDeliveryRequester : undefined;
+          const outcome = await newSessionRouteSafely(route, requester);
+          await respond({ ok: true, result: outcome.kind === "failed" ? { kind: "failed", safeMessage: outcome.safeMessage } : outcome });
           return;
         }
         case "abort": {

@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { ensureParentDir, ensureStateDir, getLockFilePath } from "../../state/paths.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, newSessionRouteActionMessage, newSessionRouteSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, resolveTelegramBindingAuthority, telegramDestinationKey } from "../../core/binding-authority.js";
 import { BrokerTunnelRuntime } from "../../broker/tunnel-runtime.js";
@@ -1849,6 +1849,15 @@ export class InProcessTunnelRuntime implements TunnelRuntime {
     }
 
     switch (command) {
+      case "new": {
+        const outcome = await newSessionRouteSafely(route, this.telegramRequester(route, message));
+        if (outcome.kind !== "success") {
+          await this.api.sendPlainText(message.chat.id, newSessionRouteActionMessage(outcome));
+          return;
+        }
+        await this.api.sendPlainText(message.chat.id, "New Pi session started. Relay control is moving to the replacement session.");
+        return;
+      }
       case "status": {
         await this.sendTextWithKeyboard(message.chat.id, this.statusTextForRoute(route, true), this.dashboardKeyboardForRoute(route));
         return;

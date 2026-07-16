@@ -19,6 +19,7 @@ export const CANONICAL_REMOTE_COMMANDS = [
   { command: "use", usage: "/use <session>", description: "select an active session", allowedWhilePaused: true },
   { command: "forget", usage: "/forget <session>", description: "remove an offline session from the list", allowedWhilePaused: true },
   { command: "to", usage: "/to <session> <prompt>", description: "send one prompt without switching sessions" },
+  { command: "new", usage: "/new", description: "start a replacement session for the selected live Pi route" },
   { command: "summary", usage: "/summary", description: "latest summary/excerpt" },
   { command: "full", usage: "/full", description: "latest full assistant output" },
   { command: "skills", usage: "/skills", description: "list remote-invokable local skills", allowedWhilePaused: true },
