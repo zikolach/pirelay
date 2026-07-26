@@ -1,9 +1,9 @@
 ## 1. Reconciliation Protocol and Domain Model
 
-- [ ] 1.1 Define typed broker epoch, route-reconciliation request/response, accepted-route, and broker-health contracts with bounded route counts and payload sizes.
-- [ ] 1.2 Add pure validation and normalization helpers for reconciliation snapshots and secret-safe rejection outcomes.
-- [ ] 1.3 Define client-side transport and per-route synchronization states scoped to a broker epoch.
-- [ ] 1.4 Add unit tests for valid, malformed, oversized, duplicate, and stale-epoch reconciliation payloads.
+- [x] 1.1 Define typed broker epoch, route-reconciliation request/response, accepted-route, and broker-health contracts with bounded route counts and payload sizes.
+- [x] 1.2 Add pure validation and normalization helpers for reconciliation snapshots and secret-safe rejection outcomes.
+- [x] 1.3 Define client-side transport and per-route synchronization states scoped to a broker epoch.
+- [x] 1.4 Add unit tests for valid, malformed, oversized, duplicate, and stale-epoch reconciliation payloads.
 
 ## 2. Broker Route Reconciliation
 

@@ -3,6 +3,52 @@ import type { RelayInboundEvent, RelayOutboundPayload } from "../core/adapter-co
 import type { RelaySessionRouteDescriptor } from "../core/session-contracts.js";
 import type { ApprovalDecisionKind, ApprovalRiskCategory } from "../core/approval-gates.js";
 import type { RelayFileDeliveryRequester } from "../core/requester-file-delivery.js";
+import type { RelayRouteState } from "../core/relay-core.js";
+
+export type BrokerEpoch = string;
+
+export const MAX_BROKER_RECONCILIATION_ROUTES = 64;
+export const MAX_BROKER_RECONCILIATION_PAYLOAD_BYTES = 256 * 1024;
+
+export interface BrokerRouteReconciliationRequest {
+  clientId: string;
+  observedBrokerEpoch?: BrokerEpoch;
+  routes: RelayRouteState[];
+}
+
+export type BrokerRouteReconciliationRejectionCode =
+  | "invalid-request"
+  | "payload-too-large"
+  | "too-many-routes"
+  | "duplicate-route"
+  | "stale-epoch";
+
+export interface BrokerRouteReconciliationRejection {
+  index?: number;
+  code: BrokerRouteReconciliationRejectionCode;
+  safeMessage: string;
+}
+
+export interface BrokerRouteReconciliationResponse {
+  brokerEpoch: BrokerEpoch;
+  acceptedSessionKeys: string[];
+  rejected: BrokerRouteReconciliationRejection[];
+}
+
+export interface BrokerHealthSnapshot {
+  brokerEpoch: BrokerEpoch;
+  connectedClientCount: number;
+  registeredRouteCount: number;
+}
+
+export type BrokerTransportHealth = "disconnected" | "connecting" | "connected" | "reconnecting" | "unavailable";
+export type BrokerRouteSynchronizationHealth = "unknown" | "pending" | "synchronized" | "missing" | "rejected";
+
+export interface BrokerClientSynchronizationState {
+  transport: BrokerTransportHealth;
+  brokerEpoch?: BrokerEpoch;
+  routes: Readonly<Record<string, BrokerRouteSynchronizationHealth>>;
+}
 
 export type BrokerPeerAuthKind = "shared-secret" | "keypair";
 
