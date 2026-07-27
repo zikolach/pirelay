@@ -41,6 +41,11 @@ describe("broker route reconciliation contracts", () => {
     if (!result.ok) expect(result.rejection.safeMessage).not.toContain("session-1");
   });
 
+  it("accepts bounded non-Telegram channel descriptors", () => {
+    const discordRoute = { ...route(), channel: "discord" as const };
+    expect(normalizeBrokerReconciliationRequest({ clientId: "client-1", routes: [discordRoute] }, "epoch-1")).toMatchObject({ ok: true });
+  });
+
   it("rejects snapshots over the route count limit", () => {
     const routes = Array.from({ length: MAX_BROKER_RECONCILIATION_ROUTES + 1 }, (_, index) => route(`session-${index}`));
     expect(normalizeBrokerReconciliationRequest({ clientId: "client-1", routes }, "epoch-1")).toMatchObject({
@@ -93,6 +98,14 @@ describe("broker route reconciliation contracts", () => {
       transport: "reconnecting",
       routes: { "session-1": "unknown", "session-2": "unknown" },
     });
+  });
+
+  it("maps indexed rejections back to request-order routes", () => {
+    expect(synchronizationStateAfterResponse(["session-1", "session-2"], {
+      brokerEpoch: "epoch-2",
+      acceptedSessionKeys: ["session-1"],
+      rejected: [{ index: 1, code: "invalid-request", safeMessage: "Invalid route." }],
+    })).toMatchObject({ routes: { "session-1": "synchronized", "session-2": "rejected" } });
   });
 
   it("marks unacknowledged routes rejected for a general safe rejection", () => {

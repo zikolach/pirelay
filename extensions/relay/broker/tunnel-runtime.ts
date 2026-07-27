@@ -124,7 +124,9 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   async unregisterRoute(sessionKey: string): Promise<void> {
     this.routes.delete(sessionKey);
     if (this.routes.size === 0) {
-      await this.request("unregisterRoute", { clientId: this.clientId, sessionKey });
+      if (this.socket && !this.socket.destroyed) {
+        await this.requestOnce("unregisterRoute", { clientId: this.clientId, sessionKey }).catch(() => undefined);
+      }
       await this.stop();
     } else {
       await this.reconcileRoutes();
@@ -503,9 +505,6 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       throw new Error("Invalid broker route reconciliation response.");
     }
     this.synchronizationState = synchronizationStateAfterResponse([...this.routes.keys()], response);
-    if (Object.values(this.synchronizationState.routes).some((health) => health !== "synchronized")) {
-      throw new Error("Broker did not acknowledge every live route.");
-    }
     return true;
   }
 

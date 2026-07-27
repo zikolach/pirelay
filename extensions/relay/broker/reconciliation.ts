@@ -116,9 +116,11 @@ export function synchronizationStateAfterResponse(
 ): BrokerClientSynchronizationState {
   const accepted = new Set(response.acceptedSessionKeys);
   const hasGeneralRejection = response.rejected.some((rejection) => rejection.index === undefined);
+  const rejectedIndices = new Set(response.rejected.flatMap((rejection) => rejection.index === undefined ? [] : [rejection.index]));
   const routes: Record<string, BrokerRouteSynchronizationHealth> = {};
-  for (const sessionKey of sessionKeys) {
-    routes[sessionKey] = accepted.has(sessionKey) ? "synchronized" : hasGeneralRejection ? "rejected" : "missing";
+  for (let index = 0; index < sessionKeys.length; index += 1) {
+    const sessionKey = sessionKeys[index]!;
+    routes[sessionKey] = accepted.has(sessionKey) ? "synchronized" : hasGeneralRejection || rejectedIndices.has(index) ? "rejected" : "missing";
   }
   return { transport: "connected", brokerEpoch: response.brokerEpoch, routes };
 }
@@ -144,7 +146,7 @@ function serializedByteSize(value: unknown): number {
 
 function isRelayRouteState(value: unknown): value is RelayRouteState {
   if (!isRecord(value)) return false;
-  return value.channel === "telegram"
+  return isBoundedNonEmptyString(value.channel, 64)
     && isBoundedNonEmptyString(value.sessionKey, MAX_SESSION_KEY_CHARS)
     && isBoundedNonEmptyString(value.sessionId, MAX_SESSION_ID_CHARS)
     && (value.sessionFile === undefined || isBoundedNonEmptyString(value.sessionFile, MAX_SESSION_FILE_CHARS))

@@ -99,6 +99,33 @@ describe("broker namespace isolation", () => {
     await secondRuntime.stop();
   });
 
+  it("tracks reconciliation rejection without failing the live runtime", () => {
+    const runtime = new BrokerTunnelRuntime(config("/tmp/pirelay-reconciliation-rejection"));
+    const rejectedRoute = route("rejected-session");
+    (runtime as unknown as { routes: Map<string, SessionRoute> }).routes.set(rejectedRoute.sessionKey, rejectedRoute);
+
+    expect(() => (runtime as unknown as { applyReconciliationResponse(value: unknown): boolean }).applyReconciliationResponse({
+      brokerEpoch: "epoch-1",
+      acceptedSessionKeys: [],
+      rejected: [{ index: 0, code: "invalid-request", safeMessage: "Invalid route." }],
+    })).not.toThrow();
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ routes: { "rejected-session": "rejected" } });
+  });
+
+  it("does not connect or spawn a broker only to unregister the final route", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-final-unregister-"));
+    tempDirs.push(stateDir);
+    const runtime = new BrokerTunnelRuntime(config(stateDir));
+    const finalRoute = route("final-session");
+    (runtime as unknown as { routes: Map<string, SessionRoute> }).routes.set(finalRoute.sessionKey, finalRoute);
+    const ensureConnected = vi.fn(async () => { throw new Error("must not connect"); });
+    (runtime as unknown as { ensureConnected(): Promise<void> }).ensureConnected = ensureConnected;
+
+    await runtime.unregisterRoute(finalRoute.sessionKey);
+
+    expect(ensureConnected).not.toHaveBeenCalled();
+  });
+
   it("bridges stale skill command lookups as an empty metadata list", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-skills-"));
     tempDirs.push(stateDir);
