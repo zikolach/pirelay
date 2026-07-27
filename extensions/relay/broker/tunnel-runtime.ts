@@ -14,6 +14,8 @@ import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteIm
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
 import { brokerScopeControlPaths, ensureScopedBroker, normalizeBrokerNamespace } from "./supervisor.js";
+import { normalizeBrokerReconciliationResponse, synchronizationStateAfterConnect, synchronizationStateAfterDisconnect, synchronizationStateAfterResponse } from "./reconciliation.js";
+import type { BrokerClientSynchronizationState } from "./protocol.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const BROKER_CHANNEL = "telegram" as const;
@@ -65,6 +67,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private reconnectDelayMs = 250;
   private started = false;
   private setupCache?: SetupCache;
+  private synchronizationState: BrokerClientSynchronizationState = { transport: "disconnected", routes: {} };
 
   constructor(private readonly config: TelegramTunnelConfig) {
     this.brokerNamespace = normalizeBrokerNamespace(config.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE);
@@ -114,19 +117,22 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   async registerRoute(route: SessionRoute): Promise<void> {
     this.routes.set(route.sessionKey, route);
-    await this.request("registerRoute", {
-      clientId: this.clientId,
-      route: this.serializeRoute(route),
-    });
+    await this.reconcileRoutes();
     route.actions.clearLocalStatus?.("relay-sync");
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
     this.routes.delete(sessionKey);
-    await this.request("unregisterRoute", { clientId: this.clientId, sessionKey });
     if (this.routes.size === 0) {
+      await this.request("unregisterRoute", { clientId: this.clientId, sessionKey });
       await this.stop();
+    } else {
+      await this.reconcileRoutes();
     }
+  }
+
+  getBrokerSynchronizationState(): BrokerClientSynchronizationState {
+    return this.synchronizationState;
   }
 
   getStatus(sessionKey: string): SessionStatusSnapshot | undefined {
@@ -149,6 +155,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     this.rejectPending(error);
     this.socket?.destroy();
     this.socket = undefined;
+    this.synchronizationState = synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected");
   }
 
   private async ensureConnected(): Promise<void> {
@@ -210,6 +217,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     this.reconnectTimer = undefined;
     this.reconnectDelayMs = 250;
     this.socket = socket;
+    this.synchronizationState = synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState);
     this.buffer = "";
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
@@ -226,6 +234,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     });
     socket.on("close", () => {
       if (this.socket === socket) this.socket = undefined;
+      this.synchronizationState = synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected");
       this.rejectPending(new Error("Broker connection closed."));
       this.scheduleReconnect();
     });
@@ -468,13 +477,57 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private async resyncRoutes(): Promise<void> {
-    for (const route of this.routes.values()) {
-      await this.requestOnce("registerRoute", {
-        clientId: this.clientId,
-        route: this.serializeRoute(route),
-      });
-      route.actions.clearLocalStatus?.("relay-sync");
+    if (this.routes.size === 0) return;
+    const result = await this.requestOnce("reconcileRoutes", {
+      clientId: this.clientId,
+      routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
+    });
+    if (!this.applyReconciliationResponse(result)) await this.resyncRoutesLegacy();
+    for (const route of this.routes.values()) route.actions.clearLocalStatus?.("relay-sync");
+  }
+
+  private async reconcileRoutes(): Promise<void> {
+    this.synchronizationState = synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState);
+    const result = await this.request("reconcileRoutes", {
+      clientId: this.clientId,
+      observedBrokerEpoch: this.synchronizationState.brokerEpoch,
+      routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
+    });
+    if (!this.applyReconciliationResponse(result)) await this.reconcileRoutesLegacy();
+  }
+
+  private applyReconciliationResponse(value: unknown): boolean {
+    const response = normalizeBrokerReconciliationResponse(value);
+    if (!response) {
+      if (value === undefined || value === true) return false;
+      throw new Error("Invalid broker route reconciliation response.");
     }
+    this.synchronizationState = synchronizationStateAfterResponse([...this.routes.keys()], response);
+    if (Object.values(this.synchronizationState.routes).some((health) => health !== "synchronized")) {
+      throw new Error("Broker did not acknowledge every live route.");
+    }
+    return true;
+  }
+
+  private async resyncRoutesLegacy(): Promise<void> {
+    for (const route of this.routes.values()) {
+      await this.requestOnce("registerRoute", { clientId: this.clientId, route: this.serializeRoute(route) });
+    }
+    this.markLegacyRoutesSynchronized();
+  }
+
+  private async reconcileRoutesLegacy(): Promise<void> {
+    for (const route of this.routes.values()) {
+      await this.request("registerRoute", { clientId: this.clientId, route: this.serializeRoute(route) });
+    }
+    this.markLegacyRoutesSynchronized();
+  }
+
+  private markLegacyRoutesSynchronized(): void {
+    this.synchronizationState = {
+      transport: "connected",
+      routes: Object.fromEntries([...this.routes.keys()].map((sessionKey) => [sessionKey, "synchronized" as const])),
+    };
   }
 
   private async readBrokerPid(): Promise<number | undefined> {

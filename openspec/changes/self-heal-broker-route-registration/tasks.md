@@ -7,16 +7,16 @@
 
 ## 2. Broker Route Reconciliation
 
-- [ ] 2.1 Generate a non-secret broker epoch for each broker process lifetime and expose it only through local client protocol responses and diagnostics.
-- [ ] 2.2 Implement atomic reconciliation that upserts the requesting socket's declared routes after binding-authority validation.
-- [ ] 2.3 Remove omitted routes only when they are still owned by the requesting socket, preserving replacement-socket registrations.
-- [ ] 2.4 Return acknowledged and rejected route outcomes without raw route descriptors, destinations, prompts, outputs, or secrets.
+- [x] 2.1 Generate a non-secret broker epoch for each broker process lifetime and expose it only through local client protocol responses and diagnostics.
+- [x] 2.2 Implement atomic reconciliation that upserts the requesting socket's declared routes after binding-authority validation.
+- [x] 2.3 Remove omitted routes only when they are still owned by the requesting socket, preserving replacement-socket registrations.
+- [x] 2.4 Return acknowledged and rejected route outcomes without raw route descriptors, destinations, prompts, outputs, or secrets.
 - [ ] 2.5 Add broker tests for missing-route restoration, stale binding stripping, omitted-route removal, malformed snapshot rollback, and replacement-socket ownership races.
 
 ## 3. Autonomous Broker Client Recovery
 
-- [ ] 3.1 Replace one-off reconnect resync with a shared reconciliation operation over the client's current live route map.
-- [ ] 3.2 Reconcile immediately after initial connection, reconnect, broker epoch change, and local route-map mutation.
+- [x] 3.1 Replace one-off reconnect resync with a shared reconciliation operation over the client's current live route map.
+- [x] 3.2 Reconcile immediately after initial connection, reconnect, broker epoch change, and local route-map mutation.
 - [ ] 3.3 Add an unref'ed jittered periodic reconciliation timer that runs only while the client is started with live routes.
 - [ ] 3.4 Clear current-epoch synchronization immediately on socket close, broker epoch change, route removal, or reconciliation rejection.
 - [ ] 3.5 Persist reconnect-needed state when close occurs during `connecting`, and enforce that every started client is connected or has a bounded retry scheduled after the attempt settles.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeBrokerReconciliationRequest,
+  normalizeBrokerReconciliationResponse,
   synchronizationStateAfterConnect,
   synchronizationStateAfterDisconnect,
   synchronizationStateAfterResponse,
@@ -69,6 +70,12 @@ describe("broker route reconciliation contracts", () => {
       ok: false,
       rejection: { code: "stale-epoch" },
     });
+  });
+
+  it("normalizes only bounded typed reconciliation responses", () => {
+    expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: ["session-1"], rejected: [] })).toEqual({ brokerEpoch: "epoch-1", acceptedSessionKeys: ["session-1"], rejected: [] });
+    expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: ["session-1", "session-1"], rejected: [] })).toBeUndefined();
+    expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: [], rejected: [{ code: "unknown", safeMessage: "no" }] })).toBeUndefined();
   });
 
   it("tracks transport and per-route health within the acknowledged epoch", () => {

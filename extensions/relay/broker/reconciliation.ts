@@ -75,6 +75,23 @@ export function normalizeBrokerReconciliationRequest(
   };
 }
 
+export function normalizeBrokerReconciliationResponse(value: unknown): BrokerRouteReconciliationResponse | undefined {
+  if (!isRecord(value) || !isBoundedNonEmptyString(value.brokerEpoch, 128)) return undefined;
+  if (!Array.isArray(value.acceptedSessionKeys) || !value.acceptedSessionKeys.every((key) => isBoundedNonEmptyString(key, MAX_SESSION_KEY_CHARS))) return undefined;
+  if (new Set(value.acceptedSessionKeys).size !== value.acceptedSessionKeys.length || !Array.isArray(value.rejected)) return undefined;
+  const rejected: BrokerRouteReconciliationRejection[] = [];
+  for (const rejection of value.rejected) {
+    if (!isRecord(rejection) || !isRejectionCode(rejection.code) || typeof rejection.safeMessage !== "string") return undefined;
+    if (rejection.index !== undefined && (!Number.isInteger(rejection.index) || Number(rejection.index) < 0)) return undefined;
+    rejected.push({
+      index: rejection.index === undefined ? undefined : Number(rejection.index),
+      code: rejection.code,
+      safeMessage: rejection.safeMessage,
+    });
+  }
+  return { brokerEpoch: value.brokerEpoch, acceptedSessionKeys: value.acceptedSessionKeys, rejected };
+}
+
 export function synchronizationStateAfterConnect(
   sessionKeys: readonly string[],
   previous: BrokerClientSynchronizationState = { transport: "disconnected", routes: {} },
@@ -142,6 +159,10 @@ function isRelayRouteState(value: unknown): value is RelayRouteState {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRejectionCode(value: unknown): value is BrokerRouteReconciliationRejection["code"] {
+  return value === "invalid-request" || value === "payload-too-large" || value === "too-many-routes" || value === "duplicate-route" || value === "stale-epoch";
 }
 
 function isBoundedNonEmptyString(value: unknown, maxChars: number): value is string {
