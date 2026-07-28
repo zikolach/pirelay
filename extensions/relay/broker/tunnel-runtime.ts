@@ -68,6 +68,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private started = false;
   private setupCache?: SetupCache;
   private synchronizationState: BrokerClientSynchronizationState = { transport: "disconnected", routes: {} };
+  private reconciliationSupported?: boolean;
 
   constructor(private readonly config: TelegramTunnelConfig) {
     this.brokerNamespace = normalizeBrokerNamespace(config.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE);
@@ -219,6 +220,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     this.reconnectTimer = undefined;
     this.reconnectDelayMs = 250;
     this.socket = socket;
+    this.reconciliationSupported = undefined;
     this.synchronizationState = synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState);
     this.buffer = "";
     socket.setEncoding("utf8");
@@ -480,21 +482,41 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   private async resyncRoutes(): Promise<void> {
     if (this.routes.size === 0) return;
-    const result = await this.requestOnce("reconcileRoutes", {
-      clientId: this.clientId,
-      routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
-    });
+    let result: unknown;
+    try {
+      result = await this.requestOnce("reconcileRoutes", {
+        clientId: this.clientId,
+        routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
+      });
+    } catch (error) {
+      if (!isUnsupportedReconciliationAction(error)) throw error;
+      this.reconciliationSupported = false;
+      await this.resyncRoutesLegacy();
+      for (const route of this.routes.values()) route.actions.clearLocalStatus?.("relay-sync");
+      return;
+    }
     if (!this.applyReconciliationResponse(result)) await this.resyncRoutesLegacy();
     for (const route of this.routes.values()) route.actions.clearLocalStatus?.("relay-sync");
   }
 
   private async reconcileRoutes(): Promise<void> {
+    if (this.reconciliationSupported === false) {
+      await this.reconcileRoutesLegacy();
+      return;
+    }
     this.synchronizationState = synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState);
-    const result = await this.request("reconcileRoutes", {
-      clientId: this.clientId,
-      observedBrokerEpoch: this.synchronizationState.brokerEpoch,
-      routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
-    });
+    let result: unknown;
+    try {
+      result = await this.request("reconcileRoutes", {
+        clientId: this.clientId,
+        observedBrokerEpoch: this.synchronizationState.brokerEpoch,
+        routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
+      });
+    } catch (error) {
+      if (!isUnsupportedReconciliationAction(error)) throw error;
+      await this.reconcileRoutesLegacy();
+      return;
+    }
     if (!this.applyReconciliationResponse(result)) await this.reconcileRoutesLegacy();
   }
 
@@ -504,6 +526,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       if (value === undefined || value === true) return false;
       throw new Error("Invalid broker route reconciliation response.");
     }
+    this.reconciliationSupported = true;
     this.synchronizationState = synchronizationStateAfterResponse([...this.routes.keys()], response);
     return true;
   }
@@ -632,6 +655,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     }, this.reconnectDelayMs);
     this.reconnectTimer.unref?.();
   }
+}
+
+function isUnsupportedReconciliationAction(error: unknown): boolean {
+  return error instanceof Error && (error.message === "Unknown client action: reconcileRoutes" || error.message === "Unknown broker action: reconcileRoutes");
 }
 
 function isMissingFileError(error: unknown): boolean {

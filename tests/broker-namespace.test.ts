@@ -62,6 +62,21 @@ describe("broker namespace isolation", () => {
     await runtime.stop();
   });
 
+  it("falls back to legacy registration when an existing broker lacks reconciliation", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-legacy-reconcile-"));
+    tempDirs.push(stateDir);
+    const runtime = new BrokerTunnelRuntime(config(stateDir));
+    const messages: Array<Record<string, unknown>> = [];
+    await listenJsonBroker(socketPath(runtime), messages, { rejectReconciliation: true });
+
+    await runtime.registerRoute(route("legacy-session"));
+
+    expect(messages.some((message) => message.action === "reconcileRoutes")).toBe(true);
+    expect(messages.some((message) => message.action === "registerRoute" && (message.route as { sessionKey?: string } | undefined)?.sessionKey === "legacy-session")).toBe(true);
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ routes: { "legacy-session": "synchronized" } });
+    await runtime.stop();
+  });
+
   it("re-registers routes from multiple clients after broker socket recovery", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-multi-reconnect-"));
     tempDirs.push(stateDir);
@@ -179,7 +194,7 @@ function socketPath(runtime: BrokerTunnelRuntime): string {
   return (runtime as unknown as { socketPath: string }).socketPath;
 }
 
-async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>): Promise<Server> {
+async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>, options: { rejectReconciliation?: boolean } = {}): Promise<Server> {
   const server = createServer((socket) => {
     sockets.push(socket);
     socket.setEncoding("utf8");
@@ -193,7 +208,8 @@ async function listenJsonBroker(path: string, messages: Array<Record<string, unk
         if (line) {
           const message = JSON.parse(line) as Record<string, unknown>;
           messages.push(message);
-          socket.write(`${JSON.stringify({ type: "response", requestId: message.requestId, ok: true })}\n`);
+          const unsupported = options.rejectReconciliation && message.action === "reconcileRoutes";
+          socket.write(`${JSON.stringify({ type: "response", requestId: message.requestId, ok: !unsupported, error: unsupported ? "Unknown client action: reconcileRoutes" : undefined })}\n`);
         }
         newlineIndex = buffer.indexOf("\n");
       }
