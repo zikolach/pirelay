@@ -151,6 +151,7 @@ const normalizeBrokerReconciliationRequest = requiredFunction(brokerReconciliati
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
+const epochPath = process.env.PI_RELAY_BROKER_EPOCH_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
@@ -2662,6 +2663,30 @@ async function handleClientRequest(socket, message) {
         respond(true, setup);
         return;
       }
+      case 'getBrokerHealth': {
+        recordDiagnostic({ component: 'broker', event: 'broker.health', outcome: 'reported', details: { brokerEpoch, connectedClientCount: [...clients.values()].filter((client) => client.routes.size > 0).length, registeredRouteCount: routes.size } });
+        respond(true, { brokerEpoch, connectedClientCount: [...clients.values()].filter((client) => client.routes.size > 0).length, registeredRouteCount: routes.size });
+        return;
+      }
+      case 'prepareBrokerRestart': {
+        const expectedClientCount = [...clients.values()].filter((client) => client.routes.size > 0).length;
+        const expectedRouteCount = routes.size;
+        recordDiagnostic({ component: 'broker', event: 'broker.restart.prepare', outcome: 'notified', details: { brokerEpoch, expectedClientCount, expectedRouteCount } });
+        respond(true, { brokerEpoch, expectedClientCount, expectedRouteCount });
+        setImmediate(() => {
+          for (const [clientSocket, client] of clients) {
+            if (client.routes.size === 0 || clientSocket.destroyed) continue;
+            write(clientSocket, {
+              type: 'request',
+              requestId: `restart-${randomUUID()}`,
+              protocolVersion: BROKER_PROTOCOL_VERSION,
+              channel: 'telegram',
+              action: 'brokerRestartNotice',
+            });
+          }
+        });
+        return;
+      }
       case 'reconcileRoutes': {
         const validation = normalizeBrokerReconciliationRequest({
           clientId: message.clientId,
@@ -2669,11 +2694,19 @@ async function handleClientRequest(socket, message) {
           routes: message.routes,
         }, brokerEpoch);
         if (!validation.ok) {
+          recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'rejected', details: { brokerEpoch, code: validation.rejection.code } });
           respond(true, { brokerEpoch, acceptedSessionKeys: [], rejected: [validation.rejection] });
           return;
         }
 
-        const state = await loadState();
+        const authoritySnapshot = await loadStateSnapshot();
+        if (authoritySnapshot.kind === 'state-unavailable') {
+          const rejection = { code: 'invalid-request', safeMessage: 'Broker binding authority is temporarily unavailable.' };
+          recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'rejected', details: { brokerEpoch, code: rejection.code, category: 'state-unavailable' } });
+          respond(true, { brokerEpoch, acceptedSessionKeys: [], rejected: [rejection] });
+          return;
+        }
+        const state = authoritySnapshot.data;
         const preparedRoutes = [];
         for (const descriptor of validation.request.routes) {
           preparedRoutes.push(await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(descriptor, state), state));
@@ -2814,6 +2847,7 @@ async function handleClientRequest(socket, message) {
 await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
 try { await unlink(socketPath); } catch {}
 if (pidPath) await writeFile(pidPath, `${process.pid}\n`, { mode: 0o600 }).catch(() => undefined);
+if (epochPath) await writeFile(epochPath, `${brokerEpoch}\n`, { mode: 0o600 }).catch(() => undefined);
 
 const server = net.createServer((socket) => {
   recordDiagnostic({ component: 'broker', event: 'socket.connect', outcome: 'accepted', details: { clients: clients.size + 1 } });
@@ -2855,8 +2889,9 @@ const shutdown = async () => {
   clearAllActivityIndicators();
   clearAllProgressStates();
   server.close();
-  try { await unlink(socketPath); } catch {}
-  if (pidPath) { try { await unlink(pidPath); } catch {} }
+  // Scope control files are supervisor-owned. Leaving stale files is safer
+  // than an old/orphan broker unlinking a replacement broker's live files;
+  // the next supervised startup removes files after PID/epoch verification.
   process.exit(0);
 };
 

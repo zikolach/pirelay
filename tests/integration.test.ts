@@ -1426,9 +1426,59 @@ describe("PiRelay integration behavior", () => {
     expect(fakeSlackRuntime.stop).toHaveBeenCalledTimes(1);
     expect(fakeRuntime.registerRoute).toHaveBeenCalledTimes(2);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(2);
-    expect(notifications.at(-1)?.message).toBe("PiRelay broker process and runtimes restarted for this session.");
+    expect(notifications.at(-1)?.message).toBe("Shared PiRelay broker and runtimes restarted for this session.");
     expect(statuses).toContainEqual({ key: "relay", value: "tg ◌" });
     expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ◌" });
+  });
+
+  it("reports and repairs broker route health without exposing routing identifiers", async () => {
+    const config = await createRuntimeConfig("pi-relay-broker-health-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    let registeredRoute: SessionRoute | undefined;
+    let health = "missing" as "missing" | "synchronized";
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route) => {
+        registeredRoute = route;
+        route.binding = createBinding(route.sessionId, 987654, 456789);
+        route.binding.sessionKey = route.sessionKey;
+        await new TunnelStateStore(config.stateDir).upsertBinding(route.binding);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      getBrokerSynchronizationState: vi.fn(() => ({ transport: "connected" as const, routes: registeredRoute ? { [registeredRoute.sessionKey]: health } : {} })),
+      reconcileBrokerRoutes: vi.fn(async () => {
+        health = "synchronized";
+        return { transport: "connected" as const, routes: registeredRoute ? { [registeredRoute.sessionKey]: health } : {} };
+      }),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("broker-health-session");
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", {}, context);
+
+    await pi.runCommand("relay", "status", context);
+    const status = notifications.at(-1)?.message ?? "";
+    expect(status).toContain("Binding: active");
+    expect(status).toContain("Broker transport: connected");
+    expect(status).toContain("Broker route: missing");
+    expect(status).not.toContain("987654");
+    expect(status).not.toContain("456789");
+    expect(status).not.toContain(registeredRoute!.sessionKey);
+
+    await pi.runCommand("relay", "doctor", context);
+    expect(fakeRuntime.reconcileBrokerRoutes).toHaveBeenCalledTimes(1);
+    expect(notifications.at(-1)?.message).toContain("Broker route repair: synchronized.");
   });
 
   it("does not show Slack ready when required credentials are incomplete", async () => {

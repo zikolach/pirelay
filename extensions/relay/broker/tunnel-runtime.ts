@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, unlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,12 +13,22 @@ import { relayRouteStateForRoute, statusSnapshotForRoute, type RelayRouteState }
 import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, newSessionRouteSafely, routeActionDisplayMessage, routeImageByPathSafely, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../core/route-actions.js";
 import { relayPipelineProtocolVersion } from "../middleware/pipeline.js";
 import { sha256 } from "../core/utils.js";
-import { brokerScopeControlPaths, ensureScopedBroker, normalizeBrokerNamespace } from "./supervisor.js";
+import { brokerScopeControlPaths, ensureScopedBroker, normalizeBrokerNamespace, replaceScopedBroker } from "./supervisor.js";
 import { normalizeBrokerReconciliationResponse, synchronizationStateAfterConnect, synchronizationStateAfterDisconnect, synchronizationStateAfterResponse } from "./reconciliation.js";
-import type { BrokerClientSynchronizationState } from "./protocol.js";
+import type { BrokerClientSynchronizationState, BrokerHealthSnapshot, BrokerRestartOutcome, BrokerRestartPreparation } from "./protocol.js";
+import { createCommunicationDiagnosticsLogger, type CommunicationDiagnosticsLogger } from "../diagnostics/communication.js";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const BROKER_CHANNEL = "telegram" as const;
+const DEFAULT_RECONCILIATION_INTERVAL_MS = 20_000;
+const MAX_RECONCILIATION_JITTER_MS = 10_000;
+
+export interface BrokerTunnelRuntimeOptions {
+  reconciliationIntervalMs?: number;
+  restartConvergenceTimeoutMs?: number;
+  random?: () => number;
+  onSynchronizationStateChange?: (state: BrokerClientSynchronizationState) => void;
+}
 
 type BrokerRouteState = RelayRouteState;
 
@@ -57,6 +67,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private readonly clientId = randomUUID();
   private readonly socketPath: string;
   private readonly pidPath: string;
+  private readonly epochPath: string;
   private readonly brokerNamespace?: string;
   private readonly routes = new Map<string, SessionRoute>();
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -64,13 +75,21 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private buffer = "";
   private connecting?: Promise<void>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconciliationTimer?: ReturnType<typeof setTimeout>;
+  private reconciliationInFlight?: Promise<void>;
+  private reconnectNeeded = false;
+  private restartInProgress = false;
   private reconnectDelayMs = 250;
   private started = false;
   private setupCache?: SetupCache;
   private synchronizationState: BrokerClientSynchronizationState = { transport: "disconnected", routes: {} };
   private reconciliationSupported?: boolean;
+  private synchronizationListener?: (state: BrokerClientSynchronizationState) => void;
+  private readonly diagnostics: CommunicationDiagnosticsLogger;
+  private lastFailureDiagnostic?: string;
 
-  constructor(private readonly config: TelegramTunnelConfig) {
+  constructor(private readonly config: TelegramTunnelConfig, private readonly options: BrokerTunnelRuntimeOptions = {}) {
+    this.diagnostics = createCommunicationDiagnosticsLogger(config.communicationDiagnostics);
     this.brokerNamespace = normalizeBrokerNamespace(config.brokerNamespace ?? process.env.PI_RELAY_BROKER_NAMESPACE);
     const tokenHash = sha256(config.botToken).slice(0, 16);
     // Broker scope is intentionally machine-local and secret-safe:
@@ -79,6 +98,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     const paths = brokerScopeControlPaths({ stateDir: config.stateDir, tokenHash, namespace: this.brokerNamespace });
     this.socketPath = paths.socketPath;
     this.pidPath = paths.pidPath;
+    this.epochPath = paths.epochPath;
   }
 
   get setup(): SetupCache | undefined {
@@ -87,7 +107,14 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   async start(): Promise<void> {
     this.started = true;
-    await this.ensureConnected();
+    try {
+      await this.ensureConnected();
+    } catch (error) {
+      this.scheduleReconnect();
+      throw error;
+    } finally {
+      this.schedulePeriodicReconciliation();
+    }
   }
 
   async stop(): Promise<void> {
@@ -95,19 +122,65 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     this.disconnectClient(new Error("Broker runtime stopped."));
   }
 
-  async restartBrokerProcess(): Promise<void> {
+  async restartBrokerProcess(): Promise<BrokerRestartOutcome> {
+    if (this.restartInProgress) {
+      return { status: "in-progress", expectedClientCount: 1, connectedClientCount: this.socket && !this.socket.destroyed ? 1 : 0, registeredRouteCount: Object.values(this.synchronizationState.routes).filter((health) => health === "synchronized").length };
+    }
+    this.restartInProgress = true;
+    try {
+      const restartStartedAt = Date.now();
+    const fallbackExpected = Math.max(1, this.routes.size);
+    let preparation: BrokerRestartPreparation = { brokerEpoch: this.synchronizationState.brokerEpoch ?? "legacy", expectedClientCount: 1, expectedRouteCount: fallbackExpected };
+    if (this.socket && !this.socket.destroyed) {
+      try {
+        const value = await this.requestOnce("prepareBrokerRestart", { clientId: this.clientId });
+        if (isBrokerRestartPreparation(value)) preparation = value;
+      } catch (error) {
+        if (!isUnsupportedRestartAction(error)) throw error;
+      }
+    }
+    const selectedPid = await this.readBrokerPid();
+    this.recordDiagnostic("broker.restart", "prepared", { expectedClientCount: preparation.expectedClientCount, expectedRouteCount: preparation.expectedRouteCount });
     this.started = false;
     this.disconnectClient(new Error("Broker runtime restarted."));
-    const pid = await this.readBrokerPid();
-    if (pid !== undefined && this.isProcessAlive(pid)) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch (error) {
-        if (!isNoSuchProcessError(error)) throw new Error(`Failed to stop PiRelay broker process ${pid}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      await this.waitForBrokerProcessExit(pid);
+    const tokenHash = sha256(this.config.botToken).slice(0, 16);
+    const replacement = await replaceScopedBroker({
+      stateDir: this.config.stateDir,
+      tokenHash,
+      namespace: this.brokerNamespace,
+      selectedPid,
+      selectedEpoch: preparation.brokerEpoch === "legacy" ? undefined : preparation.brokerEpoch,
+      isAlive: (pid) => this.isProcessAlive(pid),
+      probeSocket: async () => this.probeSocket().then(() => true, () => false),
+      waitForSocketReady: async () => this.waitForSocketReady(),
+      stopBroker: async (pid) => {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch (error) {
+          if (!isNoSuchProcessError(error)) throw error;
+        }
+        await this.waitForBrokerProcessExit(pid);
+      },
+      startBroker: async () => this.spawnBroker(),
+    });
+    this.recordDiagnostic("broker.restart", replacement.status, {});
+    this.started = true;
+    try {
+      await this.ensureConnected();
+      const outcome = await this.waitForBrokerConvergence(preparation);
+      this.recordDiagnostic("broker.restart", outcome.status, { expectedClientCount: outcome.expectedClientCount, connectedClientCount: outcome.connectedClientCount, registeredRouteCount: outcome.registeredRouteCount, durationMs: Date.now() - restartStartedAt });
+      return outcome;
+    } catch {
+      this.scheduleReconnect();
+      return { status: "failed", expectedClientCount: preparation.expectedClientCount, connectedClientCount: 0, registeredRouteCount: 0, safeMessage: "Broker restart did not converge; automatic retry remains active." };
     }
-    await this.unlinkBrokerFiles();
+    } catch {
+      this.started = true;
+      this.scheduleReconnect();
+      return { status: "failed", expectedClientCount: 1, connectedClientCount: 0, registeredRouteCount: 0, safeMessage: "Broker restart failed safely; automatic retry remains active." };
+    } finally {
+      this.restartInProgress = false;
+    }
   }
 
   async ensureSetup(): Promise<SetupCache> {
@@ -118,13 +191,23 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
 
   async registerRoute(route: SessionRoute): Promise<void> {
     this.routes.set(route.sessionKey, route);
-    await this.reconcileRoutes();
-    route.actions.clearLocalStatus?.("relay-sync");
+    this.publishSynchronizationState(synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState));
+    try {
+      await this.reconcileRoutes();
+      route.actions.clearLocalStatus?.("relay-sync");
+    } finally {
+      this.schedulePeriodicReconciliation();
+    }
   }
 
   async unregisterRoute(sessionKey: string): Promise<void> {
     this.routes.delete(sessionKey);
+    this.publishSynchronizationState({
+      ...this.synchronizationState,
+      routes: Object.fromEntries(Object.entries(this.synchronizationState.routes).filter(([key]) => key !== sessionKey)),
+    });
     if (this.routes.size === 0) {
+      this.cancelPeriodicReconciliation();
       if (this.socket && !this.socket.destroyed) {
         await this.requestOnce("unregisterRoute", { clientId: this.clientId, sessionKey }).catch(() => undefined);
       }
@@ -135,6 +218,15 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   getBrokerSynchronizationState(): BrokerClientSynchronizationState {
+    return this.synchronizationState;
+  }
+
+  setBrokerSynchronizationListener(listener: (state: BrokerClientSynchronizationState) => void): void {
+    this.synchronizationListener = listener;
+  }
+
+  async reconcileBrokerRoutes(): Promise<BrokerClientSynchronizationState> {
+    if (this.routes.size > 0) await this.reconcileRoutes();
     return this.synchronizationState;
   }
 
@@ -155,10 +247,11 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   private disconnectClient(error: Error): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+    this.cancelPeriodicReconciliation();
     this.rejectPending(error);
     this.socket?.destroy();
     this.socket = undefined;
-    this.synchronizationState = synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected");
+    this.publishSynchronizationState(synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected"));
   }
 
   private async ensureConnected(): Promise<void> {
@@ -187,6 +280,10 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       await this.connecting;
     } finally {
       this.connecting = undefined;
+      if (this.started && (this.reconnectNeeded || !this.socket || this.socket.destroyed)) {
+        this.reconnectNeeded = false;
+        this.scheduleReconnect();
+      }
     }
   }
 
@@ -221,7 +318,9 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     this.reconnectDelayMs = 250;
     this.socket = socket;
     this.reconciliationSupported = undefined;
-    this.synchronizationState = synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState);
+    this.reconnectNeeded = false;
+    this.publishSynchronizationState(synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState));
+    this.recordDiagnostic("broker.connect", "connected", { routeCount: this.routes.size });
     this.buffer = "";
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
@@ -238,7 +337,9 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     });
     socket.on("close", () => {
       if (this.socket === socket) this.socket = undefined;
-      this.synchronizationState = synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected");
+      if (this.started) this.reconnectNeeded = true;
+      this.publishSynchronizationState(synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected"));
+      this.recordDiagnostic("broker.disconnect", this.started ? "reconnecting" : "stopped", { routeCount: this.routes.size });
       this.rejectPending(new Error("Broker connection closed."));
       this.scheduleReconnect();
     });
@@ -281,6 +382,14 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       const pipelineProtocolError = relayPipelineProtocolError(request.pipeline);
       if (pipelineProtocolError) {
         await respond({ ok: false, error: pipelineProtocolError });
+        return;
+      }
+
+      if (request.action === "brokerRestartNotice") {
+        await respond({ ok: true });
+        this.reconnectNeeded = this.started;
+        this.publishSynchronizationState(synchronizationStateAfterDisconnect([...this.routes.keys()], this.started ? "reconnecting" : "disconnected"));
+        setTimeout(() => this.socket?.destroy(), 0).unref?.();
         return;
       }
 
@@ -481,6 +590,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private async resyncRoutes(): Promise<void> {
+    const startedAt = Date.now();
     if (this.routes.size === 0) return;
     let result: unknown;
     try {
@@ -495,39 +605,53 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
       for (const route of this.routes.values()) route.actions.clearLocalStatus?.("relay-sync");
       return;
     }
-    if (!this.applyReconciliationResponse(result)) await this.resyncRoutesLegacy();
+    if (!this.applyReconciliationResponse(result, startedAt)) await this.resyncRoutesLegacy();
     for (const route of this.routes.values()) route.actions.clearLocalStatus?.("relay-sync");
   }
 
   private async reconcileRoutes(): Promise<void> {
+    const startedAt = Date.now();
+    this.recordDiagnostic("broker.reconcile", "attempt", { routeCount: this.routes.size });
     if (this.reconciliationSupported === false) {
       await this.reconcileRoutesLegacy();
       return;
     }
-    this.synchronizationState = synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState);
+    this.publishSynchronizationState(synchronizationStateAfterConnect([...this.routes.keys()], this.synchronizationState));
     let result: unknown;
     try {
-      result = await this.request("reconcileRoutes", {
+      await this.ensureConnected();
+      result = await this.requestOnce("reconcileRoutes", {
         clientId: this.clientId,
         observedBrokerEpoch: this.synchronizationState.brokerEpoch,
         routes: [...this.routes.values()].map((route) => this.serializeRoute(route)),
       });
     } catch (error) {
       if (!isUnsupportedReconciliationAction(error)) throw error;
+      this.reconciliationSupported = false;
       await this.reconcileRoutesLegacy();
       return;
     }
-    if (!this.applyReconciliationResponse(result)) await this.reconcileRoutesLegacy();
+    if (!this.applyReconciliationResponse(result, startedAt)) await this.reconcileRoutesLegacy();
   }
 
-  private applyReconciliationResponse(value: unknown): boolean {
+  private applyReconciliationResponse(value: unknown, startedAt = Date.now()): boolean {
+    const previous = this.synchronizationState;
     const response = normalizeBrokerReconciliationResponse(value);
     if (!response) {
       if (value === undefined || value === true) return false;
       throw new Error("Invalid broker route reconciliation response.");
     }
     this.reconciliationSupported = true;
-    this.synchronizationState = synchronizationStateAfterResponse([...this.routes.keys()], response);
+    this.publishSynchronizationState(synchronizationStateAfterResponse([...this.routes.keys()], response));
+    const synchronizedCount = Object.values(this.synchronizationState.routes).filter((health) => health === "synchronized").length;
+    const repairedCount = Object.entries(this.synchronizationState.routes).filter(([sessionKey, health]) => health === "synchronized" && previous.routes[sessionKey] !== "synchronized").length;
+    this.recordDiagnostic("broker.reconcile", response.rejected.length > 0 ? "rejected" : repairedCount > 0 ? "repaired" : "acknowledged", {
+      routeCount: this.routes.size,
+      synchronizedCount,
+      rejectedCount: response.rejected.length,
+      repairedCount,
+      durationMs: Date.now() - startedAt,
+    });
     return true;
   }
 
@@ -546,10 +670,80 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private markLegacyRoutesSynchronized(): void {
-    this.synchronizationState = {
+    this.publishSynchronizationState({
       transport: "connected",
       routes: Object.fromEntries([...this.routes.keys()].map((sessionKey) => [sessionKey, "synchronized" as const])),
-    };
+    });
+  }
+
+  private recordDiagnostic(event: string, outcome: string, details: Record<string, unknown>): void {
+    if (!this.diagnostics.config.enabled) return;
+    const failureSignature = outcome === "error" || outcome === "rejected" ? `${event}:${outcome}:${JSON.stringify(details)}` : undefined;
+    if (failureSignature) {
+      if (failureSignature === this.lastFailureDiagnostic) return;
+      this.lastFailureDiagnostic = failureSignature;
+    } else if (outcome === "acknowledged" || outcome === "repaired" || outcome === "connected") {
+      this.lastFailureDiagnostic = undefined;
+    }
+    void this.diagnostics.record({ component: "runtime", event, outcome, details });
+  }
+
+  private publishSynchronizationState(state: BrokerClientSynchronizationState): void {
+    this.synchronizationState = state;
+    try {
+      (this.synchronizationListener ?? this.options.onSynchronizationStateChange)?.(state);
+    } catch {
+      // Status rendering must not interfere with broker recovery.
+    }
+  }
+
+  private schedulePeriodicReconciliation(): void {
+    this.cancelPeriodicReconciliation();
+    if (!this.started || this.routes.size === 0) return;
+    const baseDelay = Math.max(10, this.options.reconciliationIntervalMs ?? DEFAULT_RECONCILIATION_INTERVAL_MS);
+    const random = this.options.random ?? Math.random;
+    const jitter = this.options.reconciliationIntervalMs === undefined
+      ? Math.floor(Math.max(0, Math.min(1, random())) * MAX_RECONCILIATION_JITTER_MS)
+      : 0;
+    this.reconciliationTimer = setTimeout(() => {
+      this.reconciliationTimer = undefined;
+      if (!this.started || this.routes.size === 0) return;
+      if (this.reconciliationInFlight) {
+        this.schedulePeriodicReconciliation();
+        return;
+      }
+      const reconciliation = this.reconcileRoutes()
+        .catch(() => {
+          this.recordDiagnostic("broker.reconcile", "error", { category: "request-failed" });
+          if (this.started) this.scheduleReconnect();
+        })
+        .finally(() => {
+          if (this.reconciliationInFlight === reconciliation) this.reconciliationInFlight = undefined;
+          this.schedulePeriodicReconciliation();
+        });
+      this.reconciliationInFlight = reconciliation;
+    }, baseDelay + jitter);
+    this.reconciliationTimer.unref?.();
+  }
+
+  private cancelPeriodicReconciliation(): void {
+    if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer);
+    this.reconciliationTimer = undefined;
+  }
+
+  private async waitForBrokerConvergence(preparation: BrokerRestartPreparation): Promise<BrokerRestartOutcome> {
+    const deadline = Date.now() + (this.options.restartConvergenceTimeoutMs ?? 10_000);
+    let latest: BrokerHealthSnapshot = { brokerEpoch: this.synchronizationState.brokerEpoch ?? "unknown", connectedClientCount: 1, registeredRouteCount: this.routes.size };
+    while (Date.now() < deadline) {
+      const value = await this.requestOnce("getBrokerHealth", { clientId: this.clientId });
+      if (isBrokerHealthSnapshot(value)) latest = value;
+      const ownRoutesSynchronized = [...this.routes.keys()].every((sessionKey) => this.synchronizationState.routes[sessionKey] === "synchronized");
+      if (ownRoutesSynchronized && latest.connectedClientCount >= preparation.expectedClientCount && latest.registeredRouteCount >= preparation.expectedRouteCount) {
+        return { status: "complete", expectedClientCount: preparation.expectedClientCount, connectedClientCount: latest.connectedClientCount, registeredRouteCount: latest.registeredRouteCount };
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    }
+    return { status: "partial-timeout", expectedClientCount: preparation.expectedClientCount, connectedClientCount: latest.connectedClientCount, registeredRouteCount: latest.registeredRouteCount };
   }
 
   private async readBrokerPid(): Promise<number | undefined> {
@@ -583,18 +777,6 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
     throw new Error(`PiRelay broker process ${pid} did not stop in time.`);
   }
 
-  private async unlinkBrokerFiles(): Promise<void> {
-    await Promise.all([this.unlinkBrokerFile(this.socketPath), this.unlinkBrokerFile(this.pidPath)]);
-  }
-
-  private async unlinkBrokerFile(path: string): Promise<void> {
-    try {
-      await unlink(path);
-    } catch (error) {
-      if (!isMissingFileError(error)) throw new Error(`Could not remove PiRelay broker file ${path}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
   private async spawnBroker(): Promise<{ pid: number }> {
     const brokerPath = fileURLToPath(new URL("./process.js", import.meta.url));
     const child = spawn(process.execPath, [brokerPath], {
@@ -605,6 +787,7 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
         TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify(this.config),
         TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: this.socketPath,
         TELEGRAM_TUNNEL_BROKER_PID_PATH: this.pidPath,
+        PI_RELAY_BROKER_EPOCH_PATH: this.epochPath,
         PI_RELAY_BROKER_NAMESPACE: this.brokerNamespace ?? "",
         PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON: JSON.stringify(this.config.communicationDiagnostics ?? { enabled: false }),
       },
@@ -644,17 +827,42 @@ export class BrokerTunnelRuntime implements TunnelRuntime {
   }
 
   private scheduleReconnect(): void {
-    if (!this.started || this.reconnectTimer || this.connecting) return;
+    if (!this.started || this.reconnectTimer) return;
+    if (this.connecting) {
+      this.reconnectNeeded = true;
+      return;
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       if (!this.started) return;
       void this.ensureConnected().catch(() => {
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 5_000);
         this.scheduleReconnect();
+      }).then(() => {
+        this.schedulePeriodicReconciliation();
       });
     }, this.reconnectDelayMs);
+    this.recordDiagnostic("broker.retry", "scheduled", { delayMs: this.reconnectDelayMs });
     this.reconnectTimer.unref?.();
   }
+}
+
+function isBrokerRestartPreparation(value: unknown): value is BrokerRestartPreparation {
+  return isRecord(value)
+    && typeof value.brokerEpoch === "string"
+    && Number.isInteger(value.expectedClientCount) && Number(value.expectedClientCount) >= 0
+    && Number.isInteger(value.expectedRouteCount) && Number(value.expectedRouteCount) >= 0;
+}
+
+function isBrokerHealthSnapshot(value: unknown): value is BrokerHealthSnapshot {
+  return isRecord(value)
+    && typeof value.brokerEpoch === "string"
+    && Number.isInteger(value.connectedClientCount) && Number(value.connectedClientCount) >= 0
+    && Number.isInteger(value.registeredRouteCount) && Number(value.registeredRouteCount) >= 0;
+}
+
+function isUnsupportedRestartAction(error: unknown): boolean {
+  return error instanceof Error && error.message === "Unknown client action: prepareBrokerRestart";
 }
 
 function isUnsupportedReconciliationAction(error: unknown): boolean {

@@ -41,6 +41,18 @@ export interface BrokerHealthSnapshot {
   registeredRouteCount: number;
 }
 
+export interface BrokerRestartPreparation {
+  brokerEpoch: BrokerEpoch;
+  expectedClientCount: number;
+  expectedRouteCount: number;
+}
+
+export type BrokerRestartOutcome =
+  | { status: "complete"; expectedClientCount: number; connectedClientCount: number; registeredRouteCount: number }
+  | { status: "partial-timeout"; expectedClientCount: number; connectedClientCount: number; registeredRouteCount: number }
+  | { status: "in-progress"; expectedClientCount: number; connectedClientCount: number; registeredRouteCount: number }
+  | { status: "failed"; expectedClientCount: number; connectedClientCount: number; registeredRouteCount: number; safeMessage: string };
+
 export type BrokerTransportHealth = "disconnected" | "connecting" | "connected" | "reconnecting" | "unavailable";
 export type BrokerRouteSynchronizationHealth = "unknown" | "pending" | "synchronized" | "missing" | "rejected";
 

@@ -62,6 +62,66 @@ describe("broker namespace isolation", () => {
     await runtime.stop();
   });
 
+  it("periodically reconciles live routes without a local command", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-periodic-"));
+    tempDirs.push(stateDir);
+    const messages: Array<Record<string, unknown>> = [];
+    const runtime = new BrokerTunnelRuntime(config(stateDir), { reconciliationIntervalMs: 20 });
+    await listenJsonBroker(socketPath(runtime), messages);
+
+    await runtime.start();
+    await runtime.registerRoute(route("periodic-session"));
+    const initialCount = messages.filter((message) => message.action === "reconcileRoutes").length;
+
+    await waitForCondition(() => messages.filter((message) => message.action === "reconcileRoutes").length > initialCount);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    await runtime.stop();
+    const stoppedCount = messages.filter((message) => message.action === "reconcileRoutes").length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(messages.filter((message) => message.action === "reconcileRoutes")).toHaveLength(stoppedCount);
+  });
+
+  it("autonomously reconnects and republishes routes after socket loss", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-autonomous-reconnect-"));
+    tempDirs.push(stateDir);
+    const firstMessages: Array<Record<string, unknown>> = [];
+    const runtime = new BrokerTunnelRuntime(config(stateDir), { reconciliationIntervalMs: 20 });
+    const firstServer = await listenJsonBroker(socketPath(runtime), firstMessages);
+    await runtime.start();
+    await runtime.registerRoute(route("autonomous-session"));
+
+    for (const socket of sockets.splice(0)) socket.destroy();
+    await closeServer(firstServer);
+    await rm(socketPath(runtime), { force: true });
+    const recoveredMessages: Array<Record<string, unknown>> = [];
+    await listenJsonBroker(socketPath(runtime), recoveredMessages);
+
+    await waitForCondition(() => recoveredMessages.some((message) => message.action === "registerRoute") && runtime.getBrokerSynchronizationState().routes["autonomous-session"] === "synchronized", 3_000);
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ transport: "connected", routes: { "autonomous-session": "synchronized" } });
+    await runtime.stop();
+  });
+
+  it("keeps routes pending until delayed acknowledgement and resets them for a new epoch", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-epoch-"));
+    tempDirs.push(stateDir);
+    const messages: Array<Record<string, unknown>> = [];
+    const broker = { brokerEpoch: "epoch-1", reconciliationDelayMs: 30 };
+    const runtime = new BrokerTunnelRuntime(config(stateDir));
+    await listenJsonBroker(socketPath(runtime), messages, broker);
+    const pendingRegistration = runtime.registerRoute(route("epoch-session"));
+    expect(runtime.getBrokerSynchronizationState().routes["epoch-session"]).toBe("pending");
+    await pendingRegistration;
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ brokerEpoch: "epoch-1", routes: { "epoch-session": "synchronized" } });
+
+    broker.brokerEpoch = "epoch-2";
+    const pendingEpoch = runtime.reconcileBrokerRoutes();
+    expect(runtime.getBrokerSynchronizationState().routes["epoch-session"]).toBe("pending");
+    await pendingEpoch;
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ brokerEpoch: "epoch-2", routes: { "epoch-session": "synchronized" } });
+    await runtime.stop();
+  });
+
   it("falls back to legacy registration when an existing broker lacks reconciliation", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-legacy-reconcile-"));
     tempDirs.push(stateDir);
@@ -69,9 +129,11 @@ describe("broker namespace isolation", () => {
     const messages: Array<Record<string, unknown>> = [];
     await listenJsonBroker(socketPath(runtime), messages, { rejectReconciliation: true });
 
+    await runtime.start();
     await runtime.registerRoute(route("legacy-session"));
 
     expect(messages.some((message) => message.action === "reconcileRoutes")).toBe(true);
+    expect(messages.filter((message) => message.action === "reconcileRoutes")).toHaveLength(1);
     expect(messages.some((message) => message.action === "registerRoute" && (message.route as { sessionKey?: string } | undefined)?.sessionKey === "legacy-session")).toBe(true);
     expect(runtime.getBrokerSynchronizationState()).toMatchObject({ routes: { "legacy-session": "synchronized" } });
     await runtime.stop();
@@ -194,7 +256,7 @@ function socketPath(runtime: BrokerTunnelRuntime): string {
   return (runtime as unknown as { socketPath: string }).socketPath;
 }
 
-async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>, options: { rejectReconciliation?: boolean } = {}): Promise<Server> {
+async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>, options: { rejectReconciliation?: boolean; brokerEpoch?: string; reconciliationDelayMs?: number } = {}): Promise<Server> {
   const server = createServer((socket) => {
     sockets.push(socket);
     socket.setEncoding("utf8");
@@ -209,7 +271,12 @@ async function listenJsonBroker(path: string, messages: Array<Record<string, unk
           const message = JSON.parse(line) as Record<string, unknown>;
           messages.push(message);
           const unsupported = options.rejectReconciliation && message.action === "reconcileRoutes";
-          socket.write(`${JSON.stringify({ type: "response", requestId: message.requestId, ok: !unsupported, error: unsupported ? "Unknown client action: reconcileRoutes" : undefined })}\n`);
+          const result = message.action === "reconcileRoutes" && options.brokerEpoch
+            ? { brokerEpoch: options.brokerEpoch, acceptedSessionKeys: (message.routes as Array<{ sessionKey: string }> | undefined)?.map((route) => route.sessionKey) ?? [], rejected: [] }
+            : undefined;
+          const respond = () => socket.write(`${JSON.stringify({ type: "response", requestId: message.requestId, ok: !unsupported, result, error: unsupported ? "Unknown client action: reconcileRoutes" : undefined })}\n`);
+          if (message.action === "reconcileRoutes" && options.reconciliationDelayMs) setTimeout(respond, options.reconciliationDelayMs);
+          else respond();
         }
         newlineIndex = buffer.indexOf("\n");
       }

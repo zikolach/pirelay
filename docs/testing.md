@@ -174,6 +174,17 @@ When a test fails, record:
 - whether the failure affects only local Pi input, only Telegram behavior, or both
 - the exact final assistant output if answer parsing behaved incorrectly
 
+## 9. Broker route recovery and shared restart
+
+1. Start three same-scope Pi sessions and verify all appear online in `/sessions`.
+2. Remove one route from broker memory without closing its client socket in the automated real-socket harness; verify periodic reconciliation restores it without `/reload`, `/relay status`, or another command.
+3. Run `/relay restart` from one session and verify the output explains shared impact and reports all three clients/routes recovered.
+4. Verify the pid/socket control files identify one broker, delayed clients can join later, and no old broker retains messenger ingress.
+5. While transport is reconnecting or a route is pending/missing, verify `/relay status`, `/relay doctor`, and the concise Telegram status segment do not imply full remote reachability.
+6. Revoke a binding during reconciliation and verify it is not resurrected, retargeted, or unpaused.
+
+Automated lifecycle tests must use public runtime behavior and real socket close/recreation. Do not invoke private `ensureConnected()` or rely on `/reload` as the recovery mechanism.
+
 ## 9. Optional communication diagnostics troubleshooting
 
 When investigating missing final assistant responses or broker delivery issues, enable `communicationDiagnostics.enabled` only for the reproduction, then inspect `logs/communication.jsonl` locally. Prefer sharing only redacted `agent_end.final_extraction` metadata. See `docs/communication-diagnostics.md`.

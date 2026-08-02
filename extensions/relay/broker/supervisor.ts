@@ -8,6 +8,7 @@ export interface LocalBrokerControlPaths {
   namespace?: string;
   socketPath: string;
   pidPath: string;
+  epochPath: string;
   lockPath: string;
 }
 
@@ -52,6 +53,7 @@ function controlPathsForBasename(stateDir: string, basename: string, namespace?:
     namespace,
     socketPath: join(stateDir, `${basename}.sock`),
     pidPath: join(stateDir, `${basename}.pid`),
+    epochPath: join(stateDir, `${basename}.epoch`),
     lockPath: join(stateDir, `${basename}.lock`),
   };
 }
@@ -82,12 +84,13 @@ export function isProcessAlive(pid: number): boolean {
 export async function readBrokerPid(pidPath: string): Promise<number | undefined> {
   try {
     await access(pidPath, constants.R_OK);
-  } catch {
-    return undefined;
+    const raw = (await readFile(pidPath, "utf8")).trim();
+    const pid = Number(raw);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
   }
-  const raw = (await readFile(pidPath, "utf8")).trim();
-  const pid = Number(raw);
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
 export async function cleanupStaleBrokerControlFiles(paths: LocalBrokerControlPaths, isAlive: (pid: number) => boolean = isProcessAlive): Promise<boolean> {
@@ -95,6 +98,7 @@ export async function cleanupStaleBrokerControlFiles(paths: LocalBrokerControlPa
   if (pid && isAlive(pid)) return false;
   await Promise.all([
     rm(paths.pidPath, { force: true }),
+    rm(paths.epochPath, { force: true }),
     rm(paths.socketPath, { force: true }),
     rm(paths.lockPath, { force: true, recursive: true }),
   ]);
@@ -166,6 +170,7 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
 
     await Promise.all([
       rm(paths.pidPath, { force: true }),
+      rm(paths.epochPath, { force: true }),
       rm(paths.socketPath, { force: true }),
     ]);
     const started = await options.startBroker(paths);
@@ -174,5 +179,75 @@ export async function ensureScopedBroker(options: EnsureScopedBrokerOptions): Pr
     return { status: "started", paths, pid: started.pid };
   } finally {
     await release();
+  }
+}
+
+export interface ReplaceScopedBrokerOptions extends BrokerScopeOptions {
+  selectedPid?: number;
+  selectedEpoch?: string;
+  stopBroker: (pid: number) => Promise<void>;
+  startBroker: (paths: LocalBrokerControlPaths) => Promise<LocalBrokerStartResult>;
+  probeSocket: (paths: LocalBrokerControlPaths) => Promise<boolean>;
+  waitForSocketReady: (paths: LocalBrokerControlPaths) => Promise<void>;
+  isAlive?: (pid: number) => boolean;
+}
+
+export type ReplaceScopedBrokerResult =
+  | { status: "replaced"; paths: LocalBrokerControlPaths; oldPid?: number; pid: number }
+  | { status: "joined"; paths: LocalBrokerControlPaths; pid: number };
+
+export async function replaceScopedBroker(options: ReplaceScopedBrokerOptions): Promise<ReplaceScopedBrokerResult> {
+  const paths = brokerScopeControlPaths(options);
+  const alive = options.isAlive ?? isProcessAlive;
+  await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
+  await removeLegacyBrokerLockFile(paths.lockPath);
+  const lockTargetPath = paths.lockPath.endsWith(".lock") ? paths.lockPath.slice(0, -".lock".length) : `${paths.lockPath}.target`;
+  const release = await lockfile.lock(lockTargetPath, {
+    lockfilePath: paths.lockPath,
+    realpath: false,
+    stale: 60_000,
+    retries: { retries: 200, minTimeout: 50, maxTimeout: 500 },
+  });
+  try {
+    let authoritativePid = await readBrokerPid(paths.pidPath);
+    const authoritativeEpoch = await readBrokerEpoch(paths.epochPath);
+    if (options.selectedEpoch && authoritativeEpoch && authoritativeEpoch !== options.selectedEpoch && authoritativePid && alive(authoritativePid) && await options.probeSocket(paths)) {
+      return { status: "joined", paths, pid: authoritativePid };
+    }
+    if (options.selectedPid && authoritativePid && authoritativePid !== options.selectedPid && alive(authoritativePid) && await options.probeSocket(paths)) {
+      return { status: "joined", paths, pid: authoritativePid };
+    }
+
+    const oldPid = options.selectedPid ?? authoritativePid;
+    if (oldPid && authoritativePid === oldPid && alive(oldPid)) await options.stopBroker(oldPid);
+
+    authoritativePid = await readBrokerPid(paths.pidPath);
+    if (authoritativePid && authoritativePid !== oldPid && alive(authoritativePid) && await options.probeSocket(paths)) {
+      return { status: "joined", paths, pid: authoritativePid };
+    }
+    if (authoritativePid === oldPid || !authoritativePid || !alive(authoritativePid)) {
+      await Promise.all([rm(paths.pidPath, { force: true }), rm(paths.epochPath, { force: true }), rm(paths.socketPath, { force: true })]);
+    } else if (await options.probeSocket(paths)) {
+      return { status: "joined", paths, pid: authoritativePid };
+    } else {
+      throw new Error("A different live PiRelay broker owns the scope but its socket is unavailable.");
+    }
+
+    const started = await options.startBroker(paths);
+    await writeFile(paths.pidPath, `${started.pid}\n`, { mode: 0o600 });
+    await options.waitForSocketReady(paths);
+    return { status: "replaced", paths, oldPid, pid: started.pid };
+  } finally {
+    await release();
+  }
+}
+
+export async function readBrokerEpoch(epochPath: string): Promise<string | undefined> {
+  try {
+    const value = (await readFile(epochPath, "utf8")).trim();
+    return value || undefined;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
   }
 }
