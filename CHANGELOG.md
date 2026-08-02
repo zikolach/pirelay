@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0 - 2026-08-02
+
+- Added authorized remote new-session handoff across Telegram, Discord, and Slack, preserving eligible bindings and active selections while preventing ambiguous or stale routes from taking control. #84
+- Added autonomous broker route reconciliation, ownership-safe shared broker restart convergence, broker-aware status and doctor repair, and secret-safe recovery diagnostics for live sessions that incorrectly appear offline. #85
+
 ## 0.9.0 - 2026-07-11
 
 - Added safe, bounded tool-call progress cards with active, completed, and failed lifecycle aggregation, approval-aware publication, allowlisted intent summaries, redaction, and robust missing-ID correlation. #80
