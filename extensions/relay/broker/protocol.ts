@@ -21,7 +21,8 @@ export type BrokerRouteReconciliationRejectionCode =
   | "payload-too-large"
   | "too-many-routes"
   | "duplicate-route"
-  | "stale-epoch";
+  | "stale-epoch"
+  | "stale-owner";
 
 export interface BrokerRouteReconciliationRejection {
   index?: number;

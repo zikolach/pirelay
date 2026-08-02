@@ -164,7 +164,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isRejectionCode(value: unknown): value is BrokerRouteReconciliationRejection["code"] {
-  return value === "invalid-request" || value === "payload-too-large" || value === "too-many-routes" || value === "duplicate-route" || value === "stale-epoch";
+  return value === "invalid-request" || value === "payload-too-large" || value === "too-many-routes" || value === "duplicate-route" || value === "stale-epoch" || value === "stale-owner";
 }
 
 function isBoundedNonEmptyString(value: unknown, maxChars: number): value is string {

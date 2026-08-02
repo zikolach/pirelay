@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, Socket, type Server } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrokerTunnelRuntime } from "../extensions/relay/broker/tunnel-runtime.js";
 import type { SessionRoute, TelegramTunnelConfig } from "../extensions/relay/core/types.js";
@@ -102,6 +102,56 @@ describe("broker namespace isolation", () => {
     await runtime.stop();
   });
 
+  it("records reconciliation diagnostics without route payloads or secrets", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-diagnostics-"));
+    tempDirs.push(stateDir);
+    const logPath = join(stateDir, "communication.jsonl");
+    const runtime = new BrokerTunnelRuntime({
+      ...config(stateDir),
+      communicationDiagnostics: { enabled: true, logPath, maxFileBytes: 100_000, maxFiles: 2, includeContentPreview: false, previewChars: 0, redactionPatterns: [] },
+    });
+    await listenJsonBroker(socketPath(runtime), [], { brokerEpoch: "diagnostic-epoch" });
+    const sensitiveRoute = route("secret-session-key");
+    sensitiveRoute.notification.lastAssistantText = "sensitive assistant output";
+    await runtime.registerRoute(sensitiveRoute);
+    await waitForCondition(async () => readFile(logPath, "utf8").then((value) => value.includes("broker.reconcile"), () => false));
+    const diagnostics = await readFile(logPath, "utf8");
+    expect(diagnostics).toContain("broker.reconcile");
+    expect(diagnostics).not.toContain("secret-session-key");
+    expect(diagnostics).not.toContain("sensitive assistant output");
+    expect(diagnostics).not.toContain(config(stateDir).botToken);
+    await runtime.stop();
+  });
+
+  it("bounds a delayed reconciliation request instead of leaving recovery stuck", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-timeout-"));
+    tempDirs.push(stateDir);
+    const runtime = new BrokerTunnelRuntime(config(stateDir), { requestTimeoutMs: 25 });
+    await listenJsonBroker(socketPath(runtime), [], { dropReconciliationResponse: true });
+
+    await expect(runtime.registerRoute(route("timeout-session"))).rejects.toThrow("Broker reconcileRoutes request timed out.");
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ transport: "connected", routes: { "timeout-session": "pending" } });
+    await runtime.stop();
+  });
+
+  it("serializes overlapping reconciliation and route-map mutations", async () => {
+    const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-overlap-"));
+    tempDirs.push(stateDir);
+    const messages: Array<Record<string, unknown>> = [];
+    const runtime = new BrokerTunnelRuntime(config(stateDir));
+    await listenJsonBroker(socketPath(runtime), messages, { brokerEpoch: "epoch-1", reconciliationDelayMs: 30 });
+    await runtime.registerRoute(route("first-overlap"));
+
+    const earlier = runtime.reconcileBrokerRoutes();
+    const mutation = runtime.registerRoute(route("second-overlap"));
+    await Promise.all([earlier, mutation]);
+
+    const snapshots = messages.filter((message) => message.action === "reconcileRoutes").map((message) => (message.routes as Array<{ sessionKey: string }>).map((entry) => entry.sessionKey));
+    expect(snapshots.at(-1)).toEqual(["first-overlap", "second-overlap"]);
+    expect(runtime.getBrokerSynchronizationState()).toMatchObject({ routes: { "first-overlap": "synchronized", "second-overlap": "synchronized" } });
+    await runtime.stop();
+  });
+
   it("keeps routes pending until delayed acknowledgement and resets them for a new epoch", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-epoch-"));
     tempDirs.push(stateDir);
@@ -116,7 +166,8 @@ describe("broker namespace isolation", () => {
 
     broker.brokerEpoch = "epoch-2";
     const pendingEpoch = runtime.reconcileBrokerRoutes();
-    expect(runtime.getBrokerSynchronizationState().routes["epoch-session"]).toBe("pending");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(runtime.getBrokerSynchronizationState().routes["epoch-session"]).toBe("synchronized");
     await pendingEpoch;
     expect(runtime.getBrokerSynchronizationState()).toMatchObject({ brokerEpoch: "epoch-2", routes: { "epoch-session": "synchronized" } });
     await runtime.stop();
@@ -203,6 +254,39 @@ describe("broker namespace isolation", () => {
     expect(ensureConnected).not.toHaveBeenCalled();
   });
 
+  it("ignores a stale socket close after a replacement socket is attached", () => {
+    const runtime = new BrokerTunnelRuntime(config("/tmp/pirelay-stale-close"));
+    const stale = new Socket();
+    const replacement = new Socket();
+    (runtime as unknown as { attachSocket(socket: Socket): void }).attachSocket(stale);
+    (runtime as unknown as { attachSocket(socket: Socket): void }).attachSocket(replacement);
+
+    stale.emit("close");
+
+    expect((runtime as unknown as { socket?: Socket }).socket).toBe(replacement);
+    expect(runtime.getBrokerSynchronizationState().transport).toBe("connected");
+    stale.destroy();
+    replacement.destroy();
+  });
+
+  it("ignores late restart notices from a superseded client socket", async () => {
+    const runtime = new BrokerTunnelRuntime(config("/tmp/pirelay-stale-client-socket"));
+    const current = new Socket();
+    const stale = new Socket();
+    (runtime as unknown as { socket?: Socket }).socket = current;
+    const responses: Array<Record<string, unknown>> = [];
+    (runtime as unknown as { writeMessage(message: Record<string, unknown>): void }).writeMessage = (message) => { responses.push(message); };
+
+    await (runtime as unknown as { handleMessage(line: string, sourceSocket?: Socket): Promise<void> }).handleMessage(JSON.stringify({
+      type: "request", requestId: "stale-restart", action: "brokerRestartNotice",
+    }), stale);
+
+    expect(responses).toEqual([]);
+    expect(current.destroyed).toBe(false);
+    current.destroy();
+    stale.destroy();
+  });
+
   it("bridges stale skill command lookups as an empty metadata list", async () => {
     const stateDir = await mkdtemp(join(shortSocketTmpdir(), "pirelay-broker-skills-"));
     tempDirs.push(stateDir);
@@ -256,7 +340,7 @@ function socketPath(runtime: BrokerTunnelRuntime): string {
   return (runtime as unknown as { socketPath: string }).socketPath;
 }
 
-async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>, options: { rejectReconciliation?: boolean; brokerEpoch?: string; reconciliationDelayMs?: number } = {}): Promise<Server> {
+async function listenJsonBroker(path: string, messages: Array<Record<string, unknown>>, options: { rejectReconciliation?: boolean; brokerEpoch?: string; reconciliationDelayMs?: number; dropReconciliationResponse?: boolean } = {}): Promise<Server> {
   const server = createServer((socket) => {
     sockets.push(socket);
     socket.setEncoding("utf8");
@@ -270,6 +354,10 @@ async function listenJsonBroker(path: string, messages: Array<Record<string, unk
         if (line) {
           const message = JSON.parse(line) as Record<string, unknown>;
           messages.push(message);
+          if (message.action === "reconcileRoutes" && options.dropReconciliationResponse) {
+            newlineIndex = buffer.indexOf("\n");
+            continue;
+          }
           const unsupported = options.rejectReconciliation && message.action === "reconcileRoutes";
           const result = message.action === "reconcileRoutes" && options.brokerEpoch
             ? { brokerEpoch: options.brokerEpoch, acceptedSessionKeys: (message.routes as Array<{ sessionKey: string }> | undefined)?.map((route) => route.sessionKey) ?? [], rejected: [] }
@@ -299,10 +387,10 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitForCondition(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("Timed out waiting for condition.");

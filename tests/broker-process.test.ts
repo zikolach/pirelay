@@ -150,12 +150,16 @@ describe("telegram broker process", () => {
     const reconcile = (clientId: string, routes: Record<string, unknown>[]) => ({ type: "request", action: "reconcileRoutes", clientId, routes });
     const liveRoute = brokerRoute(activeBinding);
     const revokedRoute = brokerRoute({ ...revokedBinding, status: "active", revokedAt: undefined });
+    const missingBinding = { ...activeBinding, sessionKey: "missing-session:memory", sessionId: "missing-session", sessionLabel: "Missing" };
+    const missingRoute = brokerRoute(missingBinding);
 
-    const initial = await first.request(reconcile("first", [liveRoute, revokedRoute])) as { acceptedSessionKeys?: string[]; rejected?: unknown[] };
-    expect(initial.acceptedSessionKeys).toEqual([activeBinding.sessionKey, revokedBinding.sessionKey]);
+    const initial = await first.request(reconcile("first", [liveRoute, revokedRoute, missingRoute])) as { acceptedSessionKeys?: string[]; rejected?: unknown[] };
+    expect(initial.acceptedSessionKeys).toEqual([activeBinding.sessionKey, revokedBinding.sessionKey, missingBinding.sessionKey]);
     expect(initial.rejected).toEqual([]);
-    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 2 });
-    expect((JSON.parse(await readFile(statePath, "utf8")) as { bindings: Record<string, { status: string }> }).bindings[revokedBinding.sessionKey]?.status).toBe("revoked");
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 3 });
+    const persistedAfterReconciliation = (JSON.parse(await readFile(statePath, "utf8")) as { bindings: Record<string, { status: string }> }).bindings;
+    expect(persistedAfterReconciliation[revokedBinding.sessionKey]?.status).toBe("revoked");
+    expect(persistedAfterReconciliation[missingBinding.sessionKey]).toBeUndefined();
 
     await first.request(reconcile("first", [liveRoute]));
     expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
@@ -165,7 +169,9 @@ describe("telegram broker process", () => {
     expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
 
     await second.request(reconcile("second", [liveRoute]));
-    await first.request(reconcile("first", []));
+    const stale = await first.request(reconcile("first", [liveRoute])) as { acceptedSessionKeys?: string[]; rejected?: Array<{ code?: string }> };
+    expect(stale.acceptedSessionKeys).toEqual([]);
+    expect(stale.rejected).toEqual([{ index: 0, code: "stale-owner", safeMessage: "A newer broker client owns this route." }]);
     await first.close();
     expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
     await second.request(reconcile("second", []));

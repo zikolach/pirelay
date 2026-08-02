@@ -79,6 +79,7 @@ describe("broker route reconciliation contracts", () => {
 
   it("normalizes only bounded typed reconciliation responses", () => {
     expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: ["session-1"], rejected: [] })).toEqual({ brokerEpoch: "epoch-1", acceptedSessionKeys: ["session-1"], rejected: [] });
+    expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: [], rejected: [{ index: 0, code: "stale-owner", safeMessage: "A newer broker client owns this route." }] })).toMatchObject({ rejected: [{ code: "stale-owner" }] });
     expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: ["session-1", "session-1"], rejected: [] })).toBeUndefined();
     expect(normalizeBrokerReconciliationResponse({ brokerEpoch: "epoch-1", acceptedSessionKeys: [], rejected: [{ code: "unknown", safeMessage: "no" }] })).toBeUndefined();
   });

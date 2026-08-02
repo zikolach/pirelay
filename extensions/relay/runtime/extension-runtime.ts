@@ -1509,7 +1509,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const restartMessage = convergence
       ? convergence.status === "complete"
         ? `Shared PiRelay broker restarted; recovered ${convergence.connectedClientCount}/${convergence.expectedClientCount} client(s) and ${convergence.registeredRouteCount} route(s).`
-        : `Shared PiRelay broker restarted with ${convergence.status}: recovered ${convergence.connectedClientCount}/${convergence.expectedClientCount} client(s) and ${convergence.registeredRouteCount} route(s). Other live sessions will keep retrying automatically; use /relay doctor locally if one remains offline.`
+        : convergence.status === "failed"
+          ? "Shared PiRelay broker restart failed safely; automatic recovery remains active. Use /relay doctor if this session stays offline."
+          : convergence.status === "in-progress"
+            ? "A shared PiRelay broker restart is already in progress; active sessions will reconnect automatically."
+            : `Shared PiRelay broker restart reached a partial timeout: recovered ${convergence.connectedClientCount}/${convergence.expectedClientCount} client(s) and ${convergence.registeredRouteCount} route(s). Other live sessions will keep retrying automatically; use /relay doctor locally if one remains offline.`
       : stopped.brokerRestarted ? "Shared PiRelay broker and runtimes restarted for this session." : "PiRelay runtimes restarted for this session.";
     ctx.ui.notify(restartMessage, convergence && convergence.status !== "complete" ? "warning" : "info");
   }
@@ -1558,8 +1562,8 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
           brokerRepair = routeHealth === "synchronized"
             ? "Broker route repair: synchronized."
             : `Broker route repair: ${routeHealth}; automatic retry remains active.`;
-        } catch (error) {
-          brokerRepair = `Broker route repair: failed (${redactSecrets(error instanceof Error ? error.message : String(error))}). Automatic retry remains active.`;
+        } catch {
+          brokerRepair = "Broker route repair: failed; automatic retry remains active. Check opt-in communication diagnostics locally for metadata-only details.";
         }
       } else if (currentRoute && brokerState) {
         brokerRepair = `Broker route: ${brokerState.routes[currentRoute.sessionKey] ?? "unknown"}; transport: ${brokerState.transport}.`;

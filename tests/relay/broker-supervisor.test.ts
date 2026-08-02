@@ -211,6 +211,21 @@ describe("local broker supervisor", () => {
     expect(await readBrokerPid(paths.pidPath)).toBe(2222);
   });
 
+  it("does not signal a live pid when the scoped broker socket is not reachable", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-unproven-pid-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "1111\n", { mode: 0o600 });
+    let stopped = false;
+    const replacement = replaceScopedBroker({
+      stateDir, tokenHash: "abc123", selectedPid: 1111,
+      isAlive: () => true, probeSocket: async () => false,
+      stopBroker: async () => { stopped = true; },
+      startBroker: async () => ({ pid: 2222 }), waitForSocketReady: async () => undefined,
+    });
+    await expect(replacement).rejects.toThrow("refusing unsafe replacement");
+    expect(stopped).toBe(false);
+  });
+
   it("does not replace a reused pid belonging to a different broker epoch", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-epoch-"));
     const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });

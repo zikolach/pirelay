@@ -219,7 +219,12 @@ export async function replaceScopedBroker(options: ReplaceScopedBrokerOptions): 
     }
 
     const oldPid = options.selectedPid ?? authoritativePid;
-    if (oldPid && authoritativePid === oldPid && alive(oldPid)) await options.stopBroker(oldPid);
+    const selectedEpochMatches = Boolean(options.selectedEpoch && authoritativeEpoch === options.selectedEpoch);
+    const selectedBrokerProven = Boolean(oldPid && authoritativePid === oldPid && alive(oldPid) && (selectedEpochMatches || await options.probeSocket(paths)));
+    if (oldPid && authoritativePid === oldPid && alive(oldPid) && !selectedBrokerProven) {
+      throw new Error("PiRelay broker PID is live but its scoped socket is unavailable; refusing unsafe replacement.");
+    }
+    if (oldPid && authoritativePid === oldPid && selectedBrokerProven) await options.stopBroker(oldPid);
 
     authoritativePid = await readBrokerPid(paths.pidPath);
     if (authoritativePid && authoritativePid !== oldPid && alive(authoritativePid) && await options.probeSocket(paths)) {

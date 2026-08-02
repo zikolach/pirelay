@@ -23,8 +23,8 @@ describe("shared broker restart convergence", () => {
     process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING = "1";
     try {
       const config = testConfig(stateDir);
-      const target = new BrokerTunnelRuntime(config, { reconciliationIntervalMs: 25 });
-      const keeper = new BrokerTunnelRuntime(config, { reconciliationIntervalMs: 25 });
+      const target = new BrokerTunnelRuntime(config, { reconciliationIntervalMs: 100 });
+      const keeper = new BrokerTunnelRuntime(config, { reconciliationIntervalMs: 100 });
       runtimes.push(target, keeper);
       await Promise.all([target.start(), keeper.start()]);
       await target.registerRoute(route("target-session"));
@@ -38,7 +38,7 @@ describe("shared broker restart convergence", () => {
         const observer = await openClient(socketPath);
         try {
           const health = await observer.request({ type: "request", action: "getBrokerHealth" }) as { registeredRouteCount?: number };
-          return health.registeredRouteCount === 2;
+          return health.registeredRouteCount === 2 && target.getBrokerSynchronizationState().routes["target-session"] === "synchronized";
         } finally {
           await observer.close();
         }
@@ -64,9 +64,13 @@ describe("shared broker restart convergence", () => {
       await initiator.registerRoute(route("remaining-session"));
       await exiting.registerRoute(route("exiting-session"));
 
+      let stoppedAfterNotice: Promise<void> | undefined;
+      exiting.setBrokerSynchronizationListener((state) => {
+        if (state.transport === "reconnecting" && !stoppedAfterNotice) stoppedAfterNotice = exiting.stop();
+      });
       const restarting = initiator.restartBrokerProcess();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      await exiting.stop();
+      await waitFor(async () => Boolean(stoppedAfterNotice));
+      await stoppedAfterNotice;
       const result = await restarting;
 
       expect(result).toMatchObject({ status: "partial-timeout", expectedClientCount: 2, connectedClientCount: 1, registeredRouteCount: 1 });

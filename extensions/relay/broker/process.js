@@ -176,6 +176,8 @@ let hasRegisteredTelegramCommands = false;
 let hasAttemptedTelegramBotCommandRegistration = false;
 const api = new Api(config.botToken);
 const clients = new Map();
+const socketGenerations = new Map();
+let nextClientGeneration = 0;
 const routes = new Map();
 const brokerEpoch = randomUUID();
 const pendingClientRequests = new Map();
@@ -740,7 +742,7 @@ async function stripRevokedBindingFromRoute(route, state = undefined) {
   const snapshot = state ? bindingAuthorityStateFromData(state) : await loadStateSnapshot();
   const outcome = resolveTelegramBindingAuthority(
     snapshot,
-    { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: true },
+    { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: state === undefined },
     route.binding,
   );
   return authorityOutcomeAllowsDelivery(outcome) ? { ...route, binding: outcome.binding } : { ...route, binding: undefined };
@@ -2632,6 +2634,7 @@ async function pollLoop() {
 
 function removeClient(socket) {
   const client = clients.get(socket);
+  socketGenerations.delete(socket);
   if (!client) return;
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
@@ -2672,19 +2675,17 @@ async function handleClientRequest(socket, message) {
         const expectedClientCount = [...clients.values()].filter((client) => client.routes.size > 0).length;
         const expectedRouteCount = routes.size;
         recordDiagnostic({ component: 'broker', event: 'broker.restart.prepare', outcome: 'notified', details: { brokerEpoch, expectedClientCount, expectedRouteCount } });
+        for (const [clientSocket, client] of clients) {
+          if (clientSocket === socket || client.routes.size === 0 || clientSocket.destroyed) continue;
+          write(clientSocket, {
+            type: 'request',
+            requestId: `restart-${randomUUID()}`,
+            protocolVersion: BROKER_PROTOCOL_VERSION,
+            channel: 'telegram',
+            action: 'brokerRestartNotice',
+          });
+        }
         respond(true, { brokerEpoch, expectedClientCount, expectedRouteCount });
-        setImmediate(() => {
-          for (const [clientSocket, client] of clients) {
-            if (client.routes.size === 0 || clientSocket.destroyed) continue;
-            write(clientSocket, {
-              type: 'request',
-              requestId: `restart-${randomUUID()}`,
-              protocolVersion: BROKER_PROTOCOL_VERSION,
-              channel: 'telegram',
-              action: 'brokerRestartNotice',
-            });
-          }
-        });
         return;
       }
       case 'reconcileRoutes': {
@@ -2712,16 +2713,38 @@ async function handleClientRequest(socket, message) {
           preparedRoutes.push(await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(descriptor, state), state));
         }
 
-        if (!clients.has(socket)) clients.set(socket, { clientId: validation.request.clientId, routes: new Set() });
+        if (!clients.has(socket)) clients.set(socket, { clientId: validation.request.clientId, routes: new Set(), generation: socketGenerations.get(socket) });
         const client = clients.get(socket);
         const previouslyOwned = new Set(client.routes);
-        const acceptedSessionKeys = preparedRoutes.map((route) => route.sessionKey);
+        const acceptedRoutes = [];
+        const rejected = [];
+        for (let index = 0; index < preparedRoutes.length; index += 1) {
+          const route = preparedRoutes[index];
+          const previousRoute = routes.get(route.sessionKey);
+          if (previousRoute?.socket !== socket && previousRoute?.ownerGeneration > client.generation) {
+            rejected.push({ index, code: 'stale-owner', safeMessage: 'A newer broker client owns this route.' });
+            continue;
+          }
+          acceptedRoutes.push(route);
+        }
+        const acceptedSessionKeys = acceptedRoutes.map((route) => route.sessionKey);
         const accepted = new Set(acceptedSessionKeys);
 
-        for (const route of preparedRoutes) {
+        for (const route of acceptedRoutes) {
           const previousRoute = routes.get(route.sessionKey);
           if (previousRoute?.socket && previousRoute.socket !== socket) clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
-          routes.set(route.sessionKey, { ...route, socket });
+          const nextRoute = { ...route, socket, ownerGeneration: client.generation };
+          if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
+            clearActivityIndicator(previousRoute);
+            clearProgressState(previousRoute);
+          }
+          routes.set(route.sessionKey, nextRoute);
+          if (previousRoute && getCurrentTurnId(previousRoute) !== getCurrentTurnId(nextRoute)) {
+            clearAnswerStateForRoute(previousRoute);
+          } else if (!nextRoute.notification?.structuredAnswer && previousRoute) {
+            clearAnswerFlow(previousRoute);
+          }
+          clearStaleCustomAnswers(nextRoute);
           client.routes.add(route.sessionKey);
         }
         for (const sessionKey of previouslyOwned) {
@@ -2736,29 +2759,33 @@ async function handleClientRequest(socket, message) {
         }
         client.clientId = validation.request.clientId;
 
-        for (const route of preparedRoutes) {
+        for (const route of acceptedRoutes) {
           const nextRoute = routes.get(route.sessionKey);
           if (!nextRoute) continue;
           syncActivityIndicator(nextRoute);
           syncProgressDelivery(nextRoute);
           if (nextRoute.binding) await upsertBinding(nextRoute.binding);
         }
-        recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'ok', details: { clientId: validation.request.clientId, routeCount: acceptedSessionKeys.length, brokerEpoch } });
-        respond(true, { brokerEpoch, acceptedSessionKeys, rejected: [] });
+        recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: rejected.length > 0 ? acceptedSessionKeys.length > 0 ? 'partial' : 'rejected' : 'ok', details: { clientId: validation.request.clientId, routeCount: acceptedSessionKeys.length, rejectedCount: rejected.length, brokerEpoch } });
+        respond(true, { brokerEpoch, acceptedSessionKeys, rejected });
         return;
       }
       case 'registerRoute': {
         const state = await loadState();
         const route = await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(message.route, state));
-        if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set() });
+        if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set(), generation: socketGenerations.get(socket) });
         const client = clients.get(socket);
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
         const previousRoute = routes.get(route.sessionKey);
+        if (previousRoute?.socket !== socket && previousRoute?.ownerGeneration > client.generation) {
+          respond(false, undefined, 'A newer broker client owns this route.');
+          return;
+        }
         if (previousRoute?.socket && previousRoute.socket !== socket) {
           clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
         }
-        const nextRoute = { ...route, socket };
+        const nextRoute = { ...route, socket, ownerGeneration: client.generation };
         if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
           clearActivityIndicator(previousRoute);
           clearProgressState(previousRoute);
@@ -2850,6 +2877,7 @@ if (pidPath) await writeFile(pidPath, `${process.pid}\n`, { mode: 0o600 }).catch
 if (epochPath) await writeFile(epochPath, `${brokerEpoch}\n`, { mode: 0o600 }).catch(() => undefined);
 
 const server = net.createServer((socket) => {
+  socketGenerations.set(socket, ++nextClientGeneration);
   recordDiagnostic({ component: 'broker', event: 'socket.connect', outcome: 'accepted', details: { clients: clients.size + 1 } });
   socket.setEncoding('utf8');
   let buffer = '';
