@@ -326,9 +326,11 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
   }
 
   async function ensureRuntime(ctx?: ExtensionContext, interactiveNotice = false): Promise<TunnelRuntime> {
-    if (runtime) return runtime;
-    const config = await ensureConfig(ctx, interactiveNotice);
-    runtime = getOrCreateTunnelRuntime(config);
+    if (!runtime) {
+      const config = await ensureConfig(ctx, interactiveNotice);
+      runtime = getOrCreateTunnelRuntime(config);
+    }
+    runtime.setBrokerSynchronizationListener?.(() => refreshRelayStatusesSoon());
     return runtime;
   }
 
@@ -392,17 +394,18 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     return runtimes;
   }
 
-  async function stopAndClearRuntimes(ctx: ExtensionContext, options: { restartBrokerProcess?: boolean } = {}): Promise<{ telegramStopped: boolean; discordStopped: string[]; slackStopped: string[]; brokerRestarted: boolean }> {
+  async function stopAndClearRuntimes(ctx: ExtensionContext, options: { restartBrokerProcess?: boolean } = {}): Promise<{ telegramStopped: boolean; discordStopped: string[]; slackStopped: string[]; brokerRestarted: boolean; brokerRestartResult?: Awaited<ReturnType<NonNullable<TunnelRuntime["restartBrokerProcess"]>>> }> {
     resetToolProgress();
     let telegramStopped = false;
     let brokerRestarted = false;
+    let brokerRestartResult: Awaited<ReturnType<NonNullable<TunnelRuntime["restartBrokerProcess"]>>> | undefined;
     const discordStopped: string[] = [];
     const slackStopped: string[] = [];
     const failures: unknown[] = [];
     if (runtime) {
       try {
         if (options.restartBrokerProcess && runtime.restartBrokerProcess) {
-          await runtime.restartBrokerProcess();
+          brokerRestartResult = await runtime.restartBrokerProcess();
           brokerRestarted = true;
         } else {
           await runtime.stop();
@@ -437,7 +440,7 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const message = first instanceof Error ? first.message : String(first);
       ctx.ui.notify(`Stopped PiRelay runtimes with ${failures.length} warning(s): ${redactSecrets(message)}`, "warning");
     }
-    return { telegramStopped, discordStopped, slackStopped, brokerRestarted };
+    return { telegramStopped, discordStopped, slackStopped, brokerRestarted, brokerRestartResult };
   }
 
   function statusKeyForChannel(channel: RelayStatusLineChannel, instanceId = "default"): string {
@@ -512,11 +515,13 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     const config = await ensureConfig(ctx, false);
     const configured = statusConfiguredForChannel(config, channel, instanceId);
     const binding = runtimeStatus?.error ? undefined : await currentStatusBinding(config, channel, instanceId);
+    const brokerState = channel === "telegram" ? runtime?.getBrokerSynchronizationState?.() : undefined;
     await setMessengerStatus(ctx, channel, {
       configured,
       runtimeStarted: channel === "telegram" ? Boolean(runtime) : runtimeStatus?.started,
       error: runtimeStatus?.error ? redactSecrets(runtimeStatus.error) : undefined,
       binding,
+      broker: brokerState && currentRoute ? { transport: brokerState.transport, route: brokerState.routes[currentRoute.sessionKey] ?? "unknown" } : undefined,
     }, instanceId);
   }
 
@@ -1500,7 +1505,17 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
     configCache = undefined;
     await resetStoppedRuntimeStatuses(ctx, stopped);
     await syncRoute(ctx);
-    ctx.ui.notify(stopped.brokerRestarted ? "PiRelay broker process and runtimes restarted for this session." : "PiRelay runtimes restarted for this session.", "info");
+    const convergence = stopped.brokerRestartResult || undefined;
+    const restartMessage = convergence
+      ? convergence.status === "complete"
+        ? `Shared PiRelay broker restarted; recovered ${convergence.connectedClientCount}/${convergence.expectedClientCount} client(s) and ${convergence.registeredRouteCount} route(s).`
+        : convergence.status === "failed"
+          ? "Shared PiRelay broker restart failed safely; automatic recovery remains active. Use /relay doctor if this session stays offline."
+          : convergence.status === "in-progress"
+            ? "A shared PiRelay broker restart is already in progress; active sessions will reconnect automatically."
+            : `Shared PiRelay broker restart reached a partial timeout: recovered ${convergence.connectedClientCount}/${convergence.expectedClientCount} client(s) and ${convergence.registeredRouteCount} route(s). Other live sessions will keep retrying automatically; use /relay doctor locally if one remains offline.`
+      : stopped.brokerRestarted ? "Shared PiRelay broker and runtimes restarted for this session." : "PiRelay runtimes restarted for this session.";
+    ctx.ui.notify(restartMessage, convergence && convergence.status !== "complete" ? "warning" : "info");
   }
 
   function renderRelayStatusDiagnostics(): string | undefined {
@@ -1537,7 +1552,23 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       const config = await ensureConfig(ctx, true);
       const facts = await collectRelaySetupFacts(config);
       const diagnostics = renderRelayStatusDiagnostics();
-      ctx.ui.notify([renderRelayDoctorReport(config, relaySetupDiagnostics(config, facts)), diagnostics].filter(Boolean).join("\n\n"), "info");
+      let brokerRepair: string | undefined;
+      const brokerState = runtime?.getBrokerSynchronizationState?.();
+      const authoritativeBinding = currentRoute ? await currentStatusBinding(config, "telegram") : undefined;
+      if (currentRoute && authoritativeBinding && brokerState?.routes[currentRoute.sessionKey] !== "synchronized") {
+        try {
+          const repaired = await runtime?.reconcileBrokerRoutes?.();
+          const routeHealth = repaired?.routes[currentRoute.sessionKey] ?? "unknown";
+          brokerRepair = routeHealth === "synchronized"
+            ? "Broker route repair: synchronized."
+            : `Broker route repair: ${routeHealth}; automatic retry remains active.`;
+        } catch {
+          brokerRepair = "Broker route repair: failed; automatic retry remains active. Check opt-in communication diagnostics locally for metadata-only details.";
+        }
+      } else if (currentRoute && brokerState) {
+        brokerRepair = `Broker route: ${brokerState.routes[currentRoute.sessionKey] ?? "unknown"}; transport: ${brokerState.transport}.`;
+      }
+      ctx.ui.notify([renderRelayDoctorReport(config, relaySetupDiagnostics(config, facts)), brokerRepair, diagnostics].filter(Boolean).join("\n\n"), "info");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(redactSecrets([
@@ -2032,16 +2063,19 @@ export default function telegramTunnelExtension(pi: ExtensionAPI): void {
       return;
     }
     const busy = !ctx.isIdle();
-    const binding = currentRoute.binding;
+    const config = await ensureConfig(ctx, false);
+    const binding = await currentStatusBinding(config, "telegram");
+    const brokerState = runtime?.getBrokerSynchronizationState?.();
+    const routeState = brokerState?.routes[currentRoute.sessionKey] ?? "unknown";
     const lines = [
       `Session: ${currentRoute.sessionLabel}`,
-      `Session key: ${currentRoute.sessionKey}`,
       `Busy: ${busy ? "yes" : "no"}`,
-      `Binding: ${binding ? `${binding.chatId}/${binding.userId}` : "not paired"}`,
-      `Paused: ${binding?.paused ? "yes" : "no"}`,
+      `Binding: ${binding ? binding.paused ? "paused" : "active" : "not paired"}`,
+      `Broker transport: ${brokerState?.transport ?? "unknown"}`,
+      `Broker route: ${routeState}`,
       `Last status: ${currentRoute.notification.lastStatus ?? "unknown"}`,
     ];
-    ctx.ui.notify(lines.join("\n"), "info");
+    ctx.ui.notify(lines.join("\n"), routeState === "synchronized" || !binding ? "info" : "warning");
   }
 
   type LocalRelayCommand = Parameters<ExtensionAPI["registerCommand"]>[1];

@@ -389,11 +389,28 @@ export interface TelegramOutboundChunk {
   total: number;
 }
 
+export interface BrokerRestartResult {
+  status: "complete" | "partial-timeout" | "in-progress" | "failed";
+  expectedClientCount: number;
+  connectedClientCount: number;
+  registeredRouteCount: number;
+  safeMessage?: string;
+}
+
+export interface BrokerSynchronizationSnapshot {
+  transport: "disconnected" | "connecting" | "connected" | "reconnecting" | "unavailable";
+  brokerEpoch?: string;
+  routes: Readonly<Record<string, "unknown" | "pending" | "synchronized" | "missing" | "rejected">>;
+}
+
 export interface TunnelRuntime {
   readonly setup?: SetupCache;
   start(): Promise<void>;
   stop(): Promise<void>;
-  restartBrokerProcess?(): Promise<void>;
+  restartBrokerProcess?(): Promise<BrokerRestartResult | void>;
+  getBrokerSynchronizationState?(): BrokerSynchronizationSnapshot;
+  reconcileBrokerRoutes?(): Promise<BrokerSynchronizationSnapshot>;
+  setBrokerSynchronizationListener?(listener: (state: BrokerSynchronizationSnapshot) => void): void;
   ensureSetup(): Promise<SetupCache>;
   registerRoute(route: SessionRoute): Promise<void>;
   unregisterRoute(sessionKey: string): Promise<void>;

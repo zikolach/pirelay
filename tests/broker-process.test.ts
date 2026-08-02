@@ -122,6 +122,65 @@ describe("telegram broker process", () => {
     expect(updated.bindings?.["revoked-session:memory"]).toMatchObject({ status: "revoked", revokedAt: revokedBinding.revokedAt, lastSeenAt: revokedBinding.lastSeenAt });
   });
 
+  it("reconciles route snapshots atomically with binding and replacement-socket safety", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-reconcile-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    const activeBinding = {
+      sessionKey: "live-session:memory", sessionId: "live-session", sessionLabel: "Live", chatId: 123, userId: 456,
+      boundAt: new Date(0).toISOString(), lastSeenAt: new Date(1).toISOString(), status: "active",
+    };
+    const revokedBinding = {
+      sessionKey: "revoked-session:memory", sessionId: "revoked-session", sessionLabel: "Revoked", chatId: 123, userId: 456,
+      boundAt: new Date(0).toISOString(), lastSeenAt: new Date(2).toISOString(), revokedAt: new Date(3).toISOString(), status: "revoked",
+    };
+    await writeFile(statePath, JSON.stringify({ pendingPairings: {}, bindings: { [activeBinding.sessionKey]: activeBinding, [revokedBinding.sessionKey]: revokedBinding }, channelBindings: {} }));
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], { env: {
+      ...process.env,
+      TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+      TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1 }),
+      TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+    } });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const first = await openBrokerClient(socketPath);
+    const second = await openBrokerClient(socketPath);
+    const reconcile = (clientId: string, routes: Record<string, unknown>[]) => ({ type: "request", action: "reconcileRoutes", clientId, routes });
+    const liveRoute = brokerRoute(activeBinding);
+    const revokedRoute = brokerRoute({ ...revokedBinding, status: "active", revokedAt: undefined });
+    const missingBinding = { ...activeBinding, sessionKey: "missing-session:memory", sessionId: "missing-session", sessionLabel: "Missing" };
+    const missingRoute = brokerRoute(missingBinding);
+
+    const initial = await first.request(reconcile("first", [liveRoute, revokedRoute, missingRoute])) as { acceptedSessionKeys?: string[]; rejected?: unknown[] };
+    expect(initial.acceptedSessionKeys).toEqual([activeBinding.sessionKey, revokedBinding.sessionKey, missingBinding.sessionKey]);
+    expect(initial.rejected).toEqual([]);
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 3 });
+    const persistedAfterReconciliation = (JSON.parse(await readFile(statePath, "utf8")) as { bindings: Record<string, { status: string }> }).bindings;
+    expect(persistedAfterReconciliation[revokedBinding.sessionKey]?.status).toBe("revoked");
+    expect(persistedAfterReconciliation[missingBinding.sessionKey]).toBeUndefined();
+
+    await first.request(reconcile("first", [liveRoute]));
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+    const malformed = await first.request(reconcile("first", [liveRoute, { sessionKey: "invalid" }])) as { acceptedSessionKeys?: string[]; rejected?: Array<{ index?: number }> };
+    expect(malformed.acceptedSessionKeys).toEqual([]);
+    expect(malformed.rejected?.[0]?.index).toBe(1);
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+
+    await second.request(reconcile("second", [liveRoute]));
+    const stale = await first.request(reconcile("first", [liveRoute])) as { acceptedSessionKeys?: string[]; rejected?: Array<{ code?: string }> };
+    expect(stale.acceptedSessionKeys).toEqual([]);
+    expect(stale.rejected).toEqual([{ index: 0, code: "stale-owner", safeMessage: "A newer broker client owns this route." }]);
+    await first.close();
+    expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+    await second.request(reconcile("second", []));
+    expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 0 });
+    await second.request(reconcile("second", [liveRoute]));
+    expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+    await second.close();
+  });
+
   it("preserves concurrent store updates while registering routes", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -293,7 +352,8 @@ describe("telegram broker process", () => {
     children.push(child);
 
     await waitForSocket(socketPath, child);
-    await sendBrokerRequest(socketPath, {
+    const client = await openBrokerClient(socketPath);
+    await client.request({
       type: "request",
       requestId: "corrupt-state-route",
       action: "registerRoute",
@@ -317,7 +377,14 @@ describe("telegram broker process", () => {
       },
     });
 
+    const reconciliation = await client.request({
+      type: "request", requestId: "corrupt-state-reconcile", action: "reconcileRoutes", clientId: "test-client",
+      routes: [{ channel: "telegram", sessionKey: "corrupt-session:memory", sessionId: "corrupt-session", sessionLabel: "Corrupt Docs", busy: false, notification: {} }],
+    }) as { acceptedSessionKeys?: string[]; rejected?: Array<{ code?: string; safeMessage?: string }> };
+    expect(reconciliation.acceptedSessionKeys).toEqual([]);
+    expect(reconciliation.rejected).toEqual([{ code: "invalid-request", safeMessage: "Broker binding authority is temporarily unavailable." }]);
     expect(await readFile(statePath, "utf8")).toBe("{not-json");
+    await client.close();
   });
 
   it("hydrates registered routes with persisted Telegram bindings when the client route is stale", async () => {
@@ -1511,6 +1578,7 @@ function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams
 function brokerRoute(binding: Record<string, unknown>): Record<string, unknown> {
   return {
     sessionKey: binding.sessionKey,
+    channel: "telegram",
     sessionId: binding.sessionId,
     sessionLabel: binding.sessionLabel,
     online: true,

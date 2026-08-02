@@ -12,6 +12,10 @@ export interface RelayStatusLineState {
   runtimeStarted?: boolean;
   error?: string;
   binding?: RelayStatusLineBindingState;
+  broker?: {
+    transport: "disconnected" | "connecting" | "connected" | "reconnecting" | "unavailable";
+    route?: "unknown" | "pending" | "synchronized" | "missing" | "rejected";
+  };
 }
 
 export interface RelayStatusLineFormatOptions {
@@ -35,6 +39,11 @@ export function conversationKindIcon(kind: string | undefined): "✉" | "◉" | 
 function relayStatusLineSegment(state: RelayStatusLineState): { icon: string; detail?: string; tone: RelayStatusLineTone } {
   if (!state.configured) return { icon: "○", tone: "dim" };
   if (state.error) return { icon: "✖", tone: "error" };
+  if (state.binding && state.broker && (state.broker.transport !== "connected" || state.broker.route !== "synchronized")) {
+    return state.broker.route === "rejected" || state.broker.route === "missing"
+      ? { icon: "!", tone: "warning" }
+      : { icon: "◌", tone: "warning" };
+  }
   if (state.binding) {
     const detail = conversationKindIcon(state.binding.conversationKind);
     return state.binding.paused

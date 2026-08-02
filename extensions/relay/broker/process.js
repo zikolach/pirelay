@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import lockfile from 'proper-lockfile';
@@ -24,6 +25,7 @@ const [
   telegramRouteBindingModule,
   approvalGatesModule,
   communicationDiagnosticsModule,
+  brokerReconciliationModule,
   skillInvocationModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
@@ -43,6 +45,7 @@ const [
   jiti.import('./telegram-route-binding.ts'),
   jiti.import('../core/approval-gates.ts'),
   jiti.import('../diagnostics/communication.ts'),
+  jiti.import('./reconciliation.ts'),
   jiti.import('../core/skill-invocation.ts'),
 ]);
 
@@ -144,9 +147,11 @@ const isPendingSkillInputExpired = requiredFunction(skillInvocationModule, './sk
 const pendingSkillInputKey = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'pendingSkillInputKey');
 const resolveRemoteSkill = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'resolveRemoteSkill');
 const skillConfigForRelay = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'skillConfigForRelay');
+const normalizeBrokerReconciliationRequest = requiredFunction(brokerReconciliationModule, './reconciliation.ts', 'normalizeBrokerReconciliationRequest');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
+const epochPath = process.env.PI_RELAY_BROKER_EPOCH_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
@@ -171,7 +176,10 @@ let hasRegisteredTelegramCommands = false;
 let hasAttemptedTelegramBotCommandRegistration = false;
 const api = new Api(config.botToken);
 const clients = new Map();
+const socketGenerations = new Map();
+let nextClientGeneration = 0;
 const routes = new Map();
+const brokerEpoch = randomUUID();
 const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
 const answerFlows = new Map();
@@ -729,12 +737,12 @@ async function activeBindingForRoute(route, options = {}) {
   return authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
 }
 
-async function stripRevokedBindingFromRoute(route) {
+async function stripRevokedBindingFromRoute(route, state = undefined) {
   if (!route?.binding) return route;
-  const snapshot = await loadStateSnapshot();
+  const snapshot = state ? bindingAuthorityStateFromData(state) : await loadStateSnapshot();
   const outcome = resolveTelegramBindingAuthority(
     snapshot,
-    { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: true },
+    { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: state === undefined },
     route.binding,
   );
   return authorityOutcomeAllowsDelivery(outcome) ? { ...route, binding: outcome.binding } : { ...route, binding: undefined };
@@ -2626,6 +2634,7 @@ async function pollLoop() {
 
 function removeClient(socket) {
   const client = clients.get(socket);
+  socketGenerations.delete(socket);
   if (!client) return;
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
@@ -2657,18 +2666,126 @@ async function handleClientRequest(socket, message) {
         respond(true, setup);
         return;
       }
+      case 'getBrokerHealth': {
+        recordDiagnostic({ component: 'broker', event: 'broker.health', outcome: 'reported', details: { brokerEpoch, connectedClientCount: [...clients.values()].filter((client) => client.routes.size > 0).length, registeredRouteCount: routes.size } });
+        respond(true, { brokerEpoch, connectedClientCount: [...clients.values()].filter((client) => client.routes.size > 0).length, registeredRouteCount: routes.size });
+        return;
+      }
+      case 'prepareBrokerRestart': {
+        const expectedClientCount = [...clients.values()].filter((client) => client.routes.size > 0).length;
+        const expectedRouteCount = routes.size;
+        recordDiagnostic({ component: 'broker', event: 'broker.restart.prepare', outcome: 'notified', details: { brokerEpoch, expectedClientCount, expectedRouteCount } });
+        for (const [clientSocket, client] of clients) {
+          if (clientSocket === socket || client.routes.size === 0 || clientSocket.destroyed) continue;
+          write(clientSocket, {
+            type: 'request',
+            requestId: `restart-${randomUUID()}`,
+            protocolVersion: BROKER_PROTOCOL_VERSION,
+            channel: 'telegram',
+            action: 'brokerRestartNotice',
+          });
+        }
+        respond(true, { brokerEpoch, expectedClientCount, expectedRouteCount });
+        return;
+      }
+      case 'reconcileRoutes': {
+        const validation = normalizeBrokerReconciliationRequest({
+          clientId: message.clientId,
+          observedBrokerEpoch: message.observedBrokerEpoch,
+          routes: message.routes,
+        }, brokerEpoch);
+        if (!validation.ok) {
+          recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'rejected', details: { brokerEpoch, code: validation.rejection.code } });
+          respond(true, { brokerEpoch, acceptedSessionKeys: [], rejected: [validation.rejection] });
+          return;
+        }
+
+        const authoritySnapshot = await loadStateSnapshot();
+        if (authoritySnapshot.kind === 'state-unavailable') {
+          const rejection = { code: 'invalid-request', safeMessage: 'Broker binding authority is temporarily unavailable.' };
+          recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'rejected', details: { brokerEpoch, code: rejection.code, category: 'state-unavailable' } });
+          respond(true, { brokerEpoch, acceptedSessionKeys: [], rejected: [rejection] });
+          return;
+        }
+        const state = authoritySnapshot.data;
+        const preparedRoutes = [];
+        for (const descriptor of validation.request.routes) {
+          preparedRoutes.push(await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(descriptor, state), state));
+        }
+
+        if (!clients.has(socket)) clients.set(socket, { clientId: validation.request.clientId, routes: new Set(), generation: socketGenerations.get(socket) });
+        const client = clients.get(socket);
+        const previouslyOwned = new Set(client.routes);
+        const acceptedRoutes = [];
+        const rejected = [];
+        for (let index = 0; index < preparedRoutes.length; index += 1) {
+          const route = preparedRoutes[index];
+          const previousRoute = routes.get(route.sessionKey);
+          if (previousRoute?.socket !== socket && previousRoute?.ownerGeneration > client.generation) {
+            rejected.push({ index, code: 'stale-owner', safeMessage: 'A newer broker client owns this route.' });
+            continue;
+          }
+          acceptedRoutes.push(route);
+        }
+        const acceptedSessionKeys = acceptedRoutes.map((route) => route.sessionKey);
+        const accepted = new Set(acceptedSessionKeys);
+
+        for (const route of acceptedRoutes) {
+          const previousRoute = routes.get(route.sessionKey);
+          if (previousRoute?.socket && previousRoute.socket !== socket) clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
+          const nextRoute = { ...route, socket, ownerGeneration: client.generation };
+          if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
+            clearActivityIndicator(previousRoute);
+            clearProgressState(previousRoute);
+          }
+          routes.set(route.sessionKey, nextRoute);
+          if (previousRoute && getCurrentTurnId(previousRoute) !== getCurrentTurnId(nextRoute)) {
+            clearAnswerStateForRoute(previousRoute);
+          } else if (!nextRoute.notification?.structuredAnswer && previousRoute) {
+            clearAnswerFlow(previousRoute);
+          }
+          clearStaleCustomAnswers(nextRoute);
+          client.routes.add(route.sessionKey);
+        }
+        for (const sessionKey of previouslyOwned) {
+          if (accepted.has(sessionKey)) continue;
+          client.routes.delete(sessionKey);
+          const existing = routes.get(sessionKey);
+          if (existing?.socket !== socket) continue;
+          clearAnswerStateForRoute(existing);
+          clearActivityIndicator(existing);
+          clearProgressState(existing);
+          routes.delete(sessionKey);
+        }
+        client.clientId = validation.request.clientId;
+
+        for (const route of acceptedRoutes) {
+          const nextRoute = routes.get(route.sessionKey);
+          if (!nextRoute) continue;
+          syncActivityIndicator(nextRoute);
+          syncProgressDelivery(nextRoute);
+          if (nextRoute.binding) await upsertBinding(nextRoute.binding);
+        }
+        recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: rejected.length > 0 ? acceptedSessionKeys.length > 0 ? 'partial' : 'rejected' : 'ok', details: { clientId: validation.request.clientId, routeCount: acceptedSessionKeys.length, rejectedCount: rejected.length, brokerEpoch } });
+        respond(true, { brokerEpoch, acceptedSessionKeys, rejected });
+        return;
+      }
       case 'registerRoute': {
         const state = await loadState();
         const route = await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(message.route, state));
-        if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set() });
+        if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set(), generation: socketGenerations.get(socket) });
         const client = clients.get(socket);
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
         const previousRoute = routes.get(route.sessionKey);
+        if (previousRoute?.socket !== socket && previousRoute?.ownerGeneration > client.generation) {
+          respond(false, undefined, 'A newer broker client owns this route.');
+          return;
+        }
         if (previousRoute?.socket && previousRoute.socket !== socket) {
           clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
         }
-        const nextRoute = { ...route, socket };
+        const nextRoute = { ...route, socket, ownerGeneration: client.generation };
         if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
           clearActivityIndicator(previousRoute);
           clearProgressState(previousRoute);
@@ -2757,8 +2874,10 @@ async function handleClientRequest(socket, message) {
 await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
 try { await unlink(socketPath); } catch {}
 if (pidPath) await writeFile(pidPath, `${process.pid}\n`, { mode: 0o600 }).catch(() => undefined);
+if (epochPath) await writeFile(epochPath, `${brokerEpoch}\n`, { mode: 0o600 }).catch(() => undefined);
 
 const server = net.createServer((socket) => {
+  socketGenerations.set(socket, ++nextClientGeneration);
   recordDiagnostic({ component: 'broker', event: 'socket.connect', outcome: 'accepted', details: { clients: clients.size + 1 } });
   socket.setEncoding('utf8');
   let buffer = '';
@@ -2798,8 +2917,9 @@ const shutdown = async () => {
   clearAllActivityIndicators();
   clearAllProgressStates();
   server.close();
-  try { await unlink(socketPath); } catch {}
-  if (pidPath) { try { await unlink(pidPath); } catch {} }
+  // Scope control files are supervisor-owned. Leaving stale files is safer
+  // than an old/orphan broker unlinking a replacement broker's live files;
+  // the next supervised startup removes files after PID/epoch verification.
   process.exit(0);
 };
 

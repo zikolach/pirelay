@@ -465,6 +465,12 @@ pkill -f 'extensions/relay/broker/process.js'
 
 Then restart Pi or reload the package from the updated checkout.
 
+### A running Pi session appears offline in `/sessions`
+
+PiRelay tracks binding authority, broker transport, and broker route synchronization separately. A live Pi process and active binding do not by themselves prove that remote routing is online. Broker clients reconcile their complete live route map after connection and periodically, so a missing in-memory route should repair automatically within about 30 seconds. Local `/relay status` reports `Broker transport` and `Broker route` separately; `/relay doctor` can request the same safe idempotent repair for a proven live route. If recovery remains pending, temporarily enable communication diagnostics and inspect metadata-only `broker.connect`, `broker.reconcile`, and `broker.retry` events without sharing tokens, destinations, socket paths, or route payloads.
+
+`/relay restart` replaces the broker shared by all same-scope local Pi sessions. Clients reconnect autonomously, and the command reports recovered client/route counts. A partial timeout leaves recovered sessions available while missing clients continue bounded retries; run `/relay doctor` in a missing live session rather than re-pairing it.
+
 ### `/sessions` shows stale or offline duplicates
 
 When a newer online session exists for the same machine/workspace, PiRelay hides older offline same-workspace pairings from the default session list. Use `/sessions all` (or `relay sessions all` on Discord/Slack) to reveal hidden stale entries for diagnostics and cleanup, then run the appropriate forget command for your messenger to remove an offline pairing. PiRelay does not delete transcript files or automatically revoke live bindings when it hides superseded entries.
