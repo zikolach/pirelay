@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { unlink, readFile, writeFile, mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import lockfile from 'proper-lockfile';
@@ -24,6 +25,7 @@ const [
   telegramRouteBindingModule,
   approvalGatesModule,
   communicationDiagnosticsModule,
+  brokerReconciliationModule,
   skillInvocationModule,
 ] = await Promise.all([
   jiti.import('../core/guided-answer.ts'),
@@ -43,6 +45,7 @@ const [
   jiti.import('./telegram-route-binding.ts'),
   jiti.import('../core/approval-gates.ts'),
   jiti.import('../diagnostics/communication.ts'),
+  jiti.import('./reconciliation.ts'),
   jiti.import('../core/skill-invocation.ts'),
 ]);
 
@@ -102,11 +105,14 @@ const isAcceptedInboundImageMimeType = requiredFunction(mediaModule, './media/in
 const isAllowedImageMimeType = requiredFunction(utilsModule, './utils.ts', 'isAllowedImageMimeType');
 const prepareInboundImagePromptContent = requiredFunction(mediaModule, './media/index.ts', 'prepareInboundImagePromptContent');
 const normalizeImageMimeType = requiredFunction(utilsModule, './utils.ts', 'normalizeImageMimeType');
+const parseIsoTimestampToMs = requiredFunction(utilsModule, './utils.ts', 'parseIsoTimestampToMs');
 const safeTelegramImageFilename = requiredFunction(utilsModule, './utils.ts', 'safeTelegramImageFilename');
 const formatSessionList = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'formatSessionList');
 const resolveSessionSelector = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionSelector');
 const resolveSessionTargetArgs = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'resolveSessionTargetArgs');
 const sessionSourcePrefixForRoute = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionSourcePrefixForRoute');
+const sessionsIncludeSuperseded = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'sessionsIncludeSuperseded');
+const visibleSessionEntries = requiredFunction(sessionMultiplexingModule, './session-multiplexing.ts', 'visibleSessionEntries');
 const commandIntentFromPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'commandIntentFromPipeline');
 const runTelegramIngressPipeline = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'runTelegramIngressPipeline');
 const telegramActionFromPipelineResult = requiredFunction(relayTelegramMiddlewareModule, './relay-telegram-middleware.ts', 'telegramActionFromPipelineResult');
@@ -141,9 +147,11 @@ const isPendingSkillInputExpired = requiredFunction(skillInvocationModule, './sk
 const pendingSkillInputKey = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'pendingSkillInputKey');
 const resolveRemoteSkill = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'resolveRemoteSkill');
 const skillConfigForRelay = requiredFunction(skillInvocationModule, './skill-invocation.ts', 'skillConfigForRelay');
+const normalizeBrokerReconciliationRequest = requiredFunction(brokerReconciliationModule, './reconciliation.ts', 'normalizeBrokerReconciliationRequest');
 
 const socketPath = process.env.TELEGRAM_TUNNEL_BROKER_SOCKET_PATH;
 const pidPath = process.env.TELEGRAM_TUNNEL_BROKER_PID_PATH;
+const epochPath = process.env.PI_RELAY_BROKER_EPOCH_PATH;
 const config = JSON.parse(process.env.TELEGRAM_TUNNEL_BROKER_CONFIG_JSON || '{}');
 const diagnosticsConfig = JSON.parse(process.env.PI_RELAY_COMMUNICATION_DIAGNOSTICS_CONFIG_JSON || JSON.stringify(config.communicationDiagnostics || { enabled: false }));
 const skipPolling = process.env.TELEGRAM_TUNNEL_BROKER_SKIP_POLLING === '1';
@@ -168,7 +176,10 @@ let hasRegisteredTelegramCommands = false;
 let hasAttemptedTelegramBotCommandRegistration = false;
 const api = new Api(config.botToken);
 const clients = new Map();
+const socketGenerations = new Map();
+let nextClientGeneration = 0;
 const routes = new Map();
+const brokerEpoch = randomUUID();
 const pendingClientRequests = new Map();
 const activeSessionByChatId = new Map();
 const answerFlows = new Map();
@@ -674,6 +685,7 @@ function bindingToSessionEntry(binding) {
     online: false,
     busy: false,
     paused: Boolean(binding.paused),
+    lastActivityAt: parseIsoTimestampToMs(binding.lastSeenAt),
   };
 }
 
@@ -725,26 +737,27 @@ async function activeBindingForRoute(route, options = {}) {
   return authorityOutcomeAllowsDelivery(outcome) ? outcome.binding : undefined;
 }
 
-async function stripRevokedBindingFromRoute(route) {
+async function stripRevokedBindingFromRoute(route, state = undefined) {
   if (!route?.binding) return route;
-  const snapshot = await loadStateSnapshot();
+  const snapshot = state ? bindingAuthorityStateFromData(state) : await loadStateSnapshot();
   const outcome = resolveTelegramBindingAuthority(
     snapshot,
-    { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: true },
+    { sessionKey: route.sessionKey, chatId: route.binding.chatId, userId: route.binding.userId, includePaused: true, allowVolatileFallback: state === undefined },
     route.binding,
   );
   return authorityOutcomeAllowsDelivery(outcome) ? { ...route, binding: outcome.binding } : { ...route, binding: undefined };
 }
 
-async function getSessionEntriesForChat(chatId, userId) {
+async function getSessionEntriesForChat(chatId, userId, options = {}) {
   const state = await loadState();
   const live = await getActiveLiveRoutesForChat(chatId, userId, state);
   const persisted = await getPersistedBindingsForChat(chatId, userId, state) ?? [];
   const seen = new Set(live.map((route) => route.sessionKey));
-  return [
+  const entries = [
     ...live.map(routeToSessionEntry),
     ...persisted.filter((binding) => !seen.has(binding.sessionKey)).map(bindingToSessionEntry),
   ];
+  return visibleSessionEntries(entries, { includeSuperseded: Boolean(options.includeSuperseded) });
 }
 
 function sourcePrefixForRoute(route) {
@@ -1240,7 +1253,7 @@ function syncProgressDelivery(route) {
   if (state.timer) return;
   const interval = progressIntervalMsFor(mode, config);
   const elapsed = state.lastSentAt ? Date.now() - state.lastSentAt : interval;
-  const delay = Math.max(0, interval - elapsed);
+  const delay = Math.max(1, interval - elapsed);
   state.timer = setTimeout(() => {
     void flushProgress(route.sessionKey, route.binding.chatId, route.binding.userId, key);
   }, delay);
@@ -1434,8 +1447,8 @@ async function handlePairStart(message, nonce) {
   await sendPlainText(message.chat.id, `Connected to Pi session ${route.sessionLabel}. Send text prompts directly, or use /help for tunnel commands.`);
 }
 
-async function handleSessionsCommand(message) {
-  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+async function handleSessionsCommand(message, args = '') {
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: sessionsIncludeSuperseded(args) });
   await sendPlainText(message.chat.id, formatSessionList(entries, activeSessionByChatId.get(String(message.chat.id))), buildSessionListDashboardKeyboard(entries));
 }
 
@@ -1488,7 +1501,7 @@ async function handleForgetCommand(message, args) {
     return;
   }
 
-  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id);
+  const entries = await getSessionEntriesForChat(message.chat.id, message.user.id, { includeSuperseded: true });
   const result = resolveSessionSelector(entries, selector);
   switch (result.kind) {
     case 'empty':
@@ -1789,7 +1802,7 @@ function statusTextForRoute(route) {
     `Busy: ${isEffectivelyBusy(route) ? 'yes' : 'no'}`,
     `Model: ${route.modelId || 'unknown'}`,
     `Progress mode: ${displayProgressMode(route.binding?.progressMode || config.progressMode)}`,
-    `Last activity: ${route.lastActivityAt ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
+    `Last activity: ${route.lastActivityAt !== undefined && Number.isFinite(route.lastActivityAt) ? new Date(route.lastActivityAt).toLocaleString() : 'unknown'}`,
     `Paused: ${route.binding?.paused ? 'yes' : 'no'}`,
   ].filter(Boolean).join('\n');
 }
@@ -1871,7 +1884,7 @@ async function handleAuthorizedCommand(message, route, command, args) {
     return;
   }
   if (command === 'sessions') {
-    await handleSessionsCommand(message);
+    await handleSessionsCommand(message, args);
     return;
   }
   if (command === 'use') {
@@ -1903,6 +1916,26 @@ async function handleAuthorizedCommand(message, route, command, args) {
   }
 
   switch (command) {
+    case 'new': {
+      if (isEffectivelyBusy(route)) {
+        await sendPlainText(message.chat.id, 'Pi is busy. Use /abort or wait for the active work to finish before starting a new session.');
+        return;
+      }
+      try {
+        const outcome = await requestClient(route, 'newSession', { requester: requesterForMessage(route, message) });
+        if (outcome?.kind === 'success') {
+          await sendPlainText(message.chat.id, 'New Pi session started. Relay control is moving to the replacement session.');
+          return;
+        }
+        const text = outcome?.kind === 'failed'
+          ? typeof outcome.safeMessage === 'string' ? outcome.safeMessage : 'Could not start a new Pi session.'
+          : typeof outcome?.message === 'string' ? outcome.message : 'The Pi session is unavailable. Resume it locally, then try again.';
+        await sendPlainText(message.chat.id, text);
+      } catch {
+        await sendPlainText(message.chat.id, 'The Pi session became unavailable before a new session could be started. Use /sessions to check its status.');
+      }
+      return;
+    }
     case 'status': {
       await sendPlainText(message.chat.id, statusTextForRoute(route), dashboardKeyboardForRoute(route));
       return;
@@ -2309,6 +2342,10 @@ async function handleDashboardAction(callback, route, action) {
       await answerCallbackQuery(callback.callbackQueryId, 'Compaction requested.');
       await sendPlainText(callback.chat.id, 'Compaction requested.');
       return;
+    case 'forget':
+      await answerCallbackQuery(callback.callbackQueryId, 'Session is online.');
+      await sendPlainText(callback.chat.id, `Pi session ${route.binding.alias || route.sessionLabel} is online. Use /disconnect to revoke the active session.`);
+      return;
     default:
       await answerCallbackQuery(callback.callbackQueryId, 'Unknown dashboard action.');
   }
@@ -2351,7 +2388,7 @@ async function processCallback(callback) {
   const live = await getActiveLiveRoutesForChat(callback.chat.id, callback.user.id);
   let route;
   if (action.kind === 'dashboard' && action.sessionRef !== 'current') {
-    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id);
+    const entries = await getSessionEntriesForChat(callback.chat.id, callback.user.id, { includeSuperseded: true });
     const entry = isIndexedSessionDashboardRef(action.sessionRef)
       ? entries[Number(action.sessionRef.slice(1)) - 1]
       : entries.find((candidate) => sessionDashboardRef(candidate.sessionKey) === action.sessionRef);
@@ -2362,6 +2399,13 @@ async function processCallback(callback) {
     }
     route = entry.online ? routes.get(entry.sessionKey) : undefined;
     if (!route) {
+      if (action.action === 'forget') {
+        const revoked = await revokeBindingForChat(entry.sessionKey, callback.chat.id, callback.user.id);
+        if (revoked && activeSessionByChatId.get(String(callback.chat.id)) === entry.sessionKey) activeSessionByChatId.delete(String(callback.chat.id));
+        await answerCallbackQuery(callback.callbackQueryId, revoked ? 'Offline session forgotten.' : 'No matching offline session.');
+        await sendPlainText(callback.chat.id, revoked ? `Forgot offline Pi session ${entry.alias || entry.sessionLabel}.` : 'No matching offline session found. Use /sessions for the latest list.');
+        return;
+      }
       await answerCallbackQuery(callback.callbackQueryId, 'Pi session is offline.');
       await sendPlainText(callback.chat.id, `Pi session ${entry.alias || entry.sessionLabel} is offline. Resume it locally, then try again.`);
       return;
@@ -2590,14 +2634,14 @@ async function pollLoop() {
 
 function removeClient(socket) {
   const client = clients.get(socket);
+  socketGenerations.delete(socket);
   if (!client) return;
   for (const sessionKey of client.routes) {
     const existing = routes.get(sessionKey);
-    if (existing) {
-      clearAnswerStateForRoute(existing);
-      clearActivityIndicator(existing);
-      clearProgressState(existing);
-    }
+    if (!existing || existing.socket !== socket) continue;
+    clearAnswerStateForRoute(existing);
+    clearActivityIndicator(existing);
+    clearProgressState(existing);
     routes.delete(sessionKey);
   }
   clients.delete(socket);
@@ -2622,15 +2666,126 @@ async function handleClientRequest(socket, message) {
         respond(true, setup);
         return;
       }
+      case 'getBrokerHealth': {
+        recordDiagnostic({ component: 'broker', event: 'broker.health', outcome: 'reported', details: { brokerEpoch, connectedClientCount: [...clients.values()].filter((client) => client.routes.size > 0).length, registeredRouteCount: routes.size } });
+        respond(true, { brokerEpoch, connectedClientCount: [...clients.values()].filter((client) => client.routes.size > 0).length, registeredRouteCount: routes.size });
+        return;
+      }
+      case 'prepareBrokerRestart': {
+        const expectedClientCount = [...clients.values()].filter((client) => client.routes.size > 0).length;
+        const expectedRouteCount = routes.size;
+        recordDiagnostic({ component: 'broker', event: 'broker.restart.prepare', outcome: 'notified', details: { brokerEpoch, expectedClientCount, expectedRouteCount } });
+        for (const [clientSocket, client] of clients) {
+          if (clientSocket === socket || client.routes.size === 0 || clientSocket.destroyed) continue;
+          write(clientSocket, {
+            type: 'request',
+            requestId: `restart-${randomUUID()}`,
+            protocolVersion: BROKER_PROTOCOL_VERSION,
+            channel: 'telegram',
+            action: 'brokerRestartNotice',
+          });
+        }
+        respond(true, { brokerEpoch, expectedClientCount, expectedRouteCount });
+        return;
+      }
+      case 'reconcileRoutes': {
+        const validation = normalizeBrokerReconciliationRequest({
+          clientId: message.clientId,
+          observedBrokerEpoch: message.observedBrokerEpoch,
+          routes: message.routes,
+        }, brokerEpoch);
+        if (!validation.ok) {
+          recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'rejected', details: { brokerEpoch, code: validation.rejection.code } });
+          respond(true, { brokerEpoch, acceptedSessionKeys: [], rejected: [validation.rejection] });
+          return;
+        }
+
+        const authoritySnapshot = await loadStateSnapshot();
+        if (authoritySnapshot.kind === 'state-unavailable') {
+          const rejection = { code: 'invalid-request', safeMessage: 'Broker binding authority is temporarily unavailable.' };
+          recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: 'rejected', details: { brokerEpoch, code: rejection.code, category: 'state-unavailable' } });
+          respond(true, { brokerEpoch, acceptedSessionKeys: [], rejected: [rejection] });
+          return;
+        }
+        const state = authoritySnapshot.data;
+        const preparedRoutes = [];
+        for (const descriptor of validation.request.routes) {
+          preparedRoutes.push(await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(descriptor, state), state));
+        }
+
+        if (!clients.has(socket)) clients.set(socket, { clientId: validation.request.clientId, routes: new Set(), generation: socketGenerations.get(socket) });
+        const client = clients.get(socket);
+        const previouslyOwned = new Set(client.routes);
+        const acceptedRoutes = [];
+        const rejected = [];
+        for (let index = 0; index < preparedRoutes.length; index += 1) {
+          const route = preparedRoutes[index];
+          const previousRoute = routes.get(route.sessionKey);
+          if (previousRoute?.socket !== socket && previousRoute?.ownerGeneration > client.generation) {
+            rejected.push({ index, code: 'stale-owner', safeMessage: 'A newer broker client owns this route.' });
+            continue;
+          }
+          acceptedRoutes.push(route);
+        }
+        const acceptedSessionKeys = acceptedRoutes.map((route) => route.sessionKey);
+        const accepted = new Set(acceptedSessionKeys);
+
+        for (const route of acceptedRoutes) {
+          const previousRoute = routes.get(route.sessionKey);
+          if (previousRoute?.socket && previousRoute.socket !== socket) clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
+          const nextRoute = { ...route, socket, ownerGeneration: client.generation };
+          if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
+            clearActivityIndicator(previousRoute);
+            clearProgressState(previousRoute);
+          }
+          routes.set(route.sessionKey, nextRoute);
+          if (previousRoute && getCurrentTurnId(previousRoute) !== getCurrentTurnId(nextRoute)) {
+            clearAnswerStateForRoute(previousRoute);
+          } else if (!nextRoute.notification?.structuredAnswer && previousRoute) {
+            clearAnswerFlow(previousRoute);
+          }
+          clearStaleCustomAnswers(nextRoute);
+          client.routes.add(route.sessionKey);
+        }
+        for (const sessionKey of previouslyOwned) {
+          if (accepted.has(sessionKey)) continue;
+          client.routes.delete(sessionKey);
+          const existing = routes.get(sessionKey);
+          if (existing?.socket !== socket) continue;
+          clearAnswerStateForRoute(existing);
+          clearActivityIndicator(existing);
+          clearProgressState(existing);
+          routes.delete(sessionKey);
+        }
+        client.clientId = validation.request.clientId;
+
+        for (const route of acceptedRoutes) {
+          const nextRoute = routes.get(route.sessionKey);
+          if (!nextRoute) continue;
+          syncActivityIndicator(nextRoute);
+          syncProgressDelivery(nextRoute);
+          if (nextRoute.binding) await upsertBinding(nextRoute.binding);
+        }
+        recordDiagnostic({ component: 'broker', event: 'route.reconcile', outcome: rejected.length > 0 ? acceptedSessionKeys.length > 0 ? 'partial' : 'rejected' : 'ok', details: { clientId: validation.request.clientId, routeCount: acceptedSessionKeys.length, rejectedCount: rejected.length, brokerEpoch } });
+        respond(true, { brokerEpoch, acceptedSessionKeys, rejected });
+        return;
+      }
       case 'registerRoute': {
         const state = await loadState();
         const route = await stripRevokedBindingFromRoute(routeWithPersistedTelegramBinding(message.route, state));
-        if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set() });
+        if (!clients.has(socket)) clients.set(socket, { clientId: message.clientId, routes: new Set(), generation: socketGenerations.get(socket) });
         const client = clients.get(socket);
         client.clientId = message.clientId;
         client.routes.add(route.sessionKey);
         const previousRoute = routes.get(route.sessionKey);
-        const nextRoute = { ...route, socket };
+        if (previousRoute?.socket !== socket && previousRoute?.ownerGeneration > client.generation) {
+          respond(false, undefined, 'A newer broker client owns this route.');
+          return;
+        }
+        if (previousRoute?.socket && previousRoute.socket !== socket) {
+          clients.get(previousRoute.socket)?.routes.delete(route.sessionKey);
+        }
+        const nextRoute = { ...route, socket, ownerGeneration: client.generation };
         if (previousRoute?.binding?.chatId !== nextRoute.binding?.chatId && previousRoute?.binding) {
           clearActivityIndicator(previousRoute);
           clearProgressState(previousRoute);
@@ -2656,13 +2811,14 @@ async function handleClientRequest(socket, message) {
         const client = clients.get(socket);
         client?.routes.delete(message.sessionKey);
         const existing = routes.get(message.sessionKey);
-        if (existing) {
+        const ownsRoute = existing?.socket === socket;
+        if (ownsRoute) {
           clearAnswerStateForRoute(existing);
           clearActivityIndicator(existing);
           clearProgressState(existing);
+          routes.delete(message.sessionKey);
         }
-        routes.delete(message.sessionKey);
-        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: existing ? 'removed' : 'missing', sessionKey: message.sessionKey });
+        recordDiagnostic({ component: 'broker', event: 'route.unregister', outcome: ownsRoute ? 'removed' : existing ? 'stale-owner' : 'missing', sessionKey: message.sessionKey });
         respond(true, true);
         return;
       }
@@ -2718,8 +2874,10 @@ async function handleClientRequest(socket, message) {
 await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
 try { await unlink(socketPath); } catch {}
 if (pidPath) await writeFile(pidPath, `${process.pid}\n`, { mode: 0o600 }).catch(() => undefined);
+if (epochPath) await writeFile(epochPath, `${brokerEpoch}\n`, { mode: 0o600 }).catch(() => undefined);
 
 const server = net.createServer((socket) => {
+  socketGenerations.set(socket, ++nextClientGeneration);
   recordDiagnostic({ component: 'broker', event: 'socket.connect', outcome: 'accepted', details: { clients: clients.size + 1 } });
   socket.setEncoding('utf8');
   let buffer = '';
@@ -2759,8 +2917,9 @@ const shutdown = async () => {
   clearAllActivityIndicators();
   clearAllProgressStates();
   server.close();
-  try { await unlink(socketPath); } catch {}
-  if (pidPath) { try { await unlink(pidPath); } catch {} }
+  // Scope control files are supervisor-owned. Leaving stale files is safer
+  // than an old/orphan broker unlinking a replacement broker's live files;
+  // the next supervised startup removes files after PID/epoch verification.
   process.exit(0);
 };
 

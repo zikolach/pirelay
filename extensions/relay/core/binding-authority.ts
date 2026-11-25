@@ -107,6 +107,7 @@ export function bindingAuthorityDiagnostic(outcome: BindingAuthorityOutcome<unkn
 }
 
 function classifyTelegramPersisted(binding: PersistedBindingRecord, expected: TelegramBindingAuthorityExpected): BindingAuthorityOutcome<PersistedBindingRecord> {
+  if (binding.movedToSessionKey) return { kind: "moved", binding };
   if (binding.status === "revoked" || binding.revokedAt) return { kind: "revoked", binding };
   if (!telegramMatches(binding, expected)) return { kind: "moved", binding };
   if (binding.paused && !expected.includePaused) return { kind: "paused", binding };
@@ -114,6 +115,7 @@ function classifyTelegramPersisted(binding: PersistedBindingRecord, expected: Te
 }
 
 function classifyChannelPersisted(binding: ChannelPersistedBindingRecord, expected: ChannelBindingAuthorityExpected): BindingAuthorityOutcome<ChannelPersistedBindingRecord> {
+  if (binding.movedToSessionKey) return { kind: "moved", binding };
   const instanceId = expected.instanceId ?? "default";
   if (binding.status === "revoked" || binding.revokedAt) return { kind: "revoked", binding };
   if (binding.channel !== expected.channel || (binding.instanceId ?? "default") !== instanceId || binding.sessionKey !== expected.sessionKey) return { kind: "moved", binding };

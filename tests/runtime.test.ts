@@ -2357,6 +2357,70 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent).toContain("The Pi session is unavailable. Resume it locally, then try again.");
   });
 
+  it("routes authorized Telegram /new through typed route outcomes", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-new:/tmp/session-new.jsonl",
+      sessionId: "session-new",
+      sessionFile: "/tmp/session-new.jsonl",
+      sessionLabel: "new.jsonl",
+      chatId: 1017,
+      userId: 37,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    const { route, setIdle } = createRoute(binding, true);
+    const newSession = vi.fn(async () => ({ cancelled: false }));
+    route.actions.newSession = newSession;
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+
+    await (runtime as any).processInbound({ updateId: 46, messageId: 46, text: "/new", chat: { id: 1017, type: "private" }, user: { id: 37, username: "owner" } });
+    expect(newSession).toHaveBeenCalledWith(expect.objectContaining({ channel: "telegram", conversationId: "1017", userId: "37" }));
+    expect(sent.at(-1)).toContain("New Pi session started");
+
+    setIdle(false);
+    await (runtime as any).processInbound({ updateId: 47, messageId: 47, text: "/new", chat: { id: 1017, type: "private" }, user: { id: 37, username: "owner" } });
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(sent.at(-1)).toContain("Pi is busy");
+
+    await (runtime as any).processInbound({ updateId: 48, messageId: 48, text: "/new", chat: { id: 1017, type: "private" }, user: { id: 99, username: "stranger" } });
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(sent.at(-1)).toContain("Unauthorized");
+  });
+
+  it("renders unsupported, cancelled, failed, and unavailable Telegram /new outcomes", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-new-outcomes:/tmp/session-new-outcomes.jsonl", sessionId: "session-new-outcomes", sessionFile: "/tmp/session-new-outcomes.jsonl", sessionLabel: "outcomes.jsonl", chatId: 1018, userId: 38, boundAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
+    };
+    const { route } = createRoute(binding, true);
+    await store.upsertBinding(binding);
+    (runtime as any).routes.set(route.sessionKey, route);
+    const sent: string[] = [];
+    (runtime as any).api = { sendPlainText: async (_chatId: number, text: string) => sent.push(text) };
+    const message = { updateId: 49, messageId: 49, text: "/new", chat: { id: 1018, type: "private" }, user: { id: 38, username: "owner" } };
+
+    await (runtime as any).processInbound(message);
+    expect(sent.at(-1)).toContain("cannot start a new session remotely");
+    route.actions.newSession = async () => ({ cancelled: true });
+    await (runtime as any).processInbound({ ...message, updateId: 50 });
+    expect(sent.at(-1)).toContain("cancelled locally");
+    route.actions.newSession = async () => { throw new Error("secret internal failure"); };
+    await (runtime as any).processInbound({ ...message, updateId: 51 });
+    expect(sent.at(-1)).toBe("Could not start a new Pi session.");
+    route.actions.isIdle = () => undefined;
+    await (runtime as any).processInbound({ ...message, updateId: 52 });
+    expect(sent.at(-1)).toContain("unavailable");
+  });
+
   it("supports text /use, /to, and /forget session controls in-process", async () => {
     const config = await createRuntimeConfig();
     const store = new TunnelStateStore(config.stateDir);
@@ -2491,6 +2555,82 @@ describe("InProcessTunnelRuntime", () => {
     expect(sent.join("\n")).toContain("online.jsonl");
     expect(sent.join("\n")).toContain("offline.jsonl");
     expect(sent.join("\n")).toContain("offline");
+  });
+
+  it("clears active in-memory selection when a dashboard forgets an offline session", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-forget-callback:/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionId: "session-forget-callback",
+      sessionFile: "/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    await store.upsertBinding(binding);
+    const selectionKey = (runtime as any).activeSessionKey(binding.chatId, binding.userId);
+    (runtime as any).activeSessionByChatUser.set(selectionKey, binding.sessionKey);
+    const callbacks: string[] = [];
+    const sent: string[] = [];
+    (runtime as any).api = {
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      callbackQueryId: "forget-offline-1",
+      data: buildDashboardCallbackData(sessionDashboardRef(binding.sessionKey), "forget"),
+      chat: { id: binding.chatId, type: "private" },
+      user: { id: binding.userId, username: "owner" },
+    });
+
+    expect(callbacks).toEqual(["Offline session forgotten."]);
+    expect(sent.join("\n")).toContain("Forgot offline session offline.jsonl.");
+    expect((runtime as any).activeSessionByChatUser.has(selectionKey)).toBe(false);
+  });
+
+  it("reports stale dashboard forget callbacks when no offline binding is revoked", async () => {
+    const config = await createRuntimeConfig();
+    const store = new TunnelStateStore(config.stateDir);
+    const runtime = new InProcessTunnelRuntime(config, store);
+    const binding: TelegramBindingMetadata = {
+      sessionKey: "session-stale-forget-callback:/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionId: "session-stale-forget-callback",
+      sessionFile: "/sessions/--Users-user-Projects-pirelay--/offline.jsonl",
+      sessionLabel: "offline.jsonl",
+      chatId: 1010,
+      userId: 30,
+      username: "owner",
+      boundAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    await store.upsertBinding(binding);
+    const revoke = vi.spyOn(store, "revokeBinding").mockResolvedValue(undefined);
+    const callbacks: string[] = [];
+    const sent: string[] = [];
+    (runtime as any).api = {
+      answerCallbackQuery: async (_id: string, text?: string) => callbacks.push(text ?? ""),
+      sendPlainText: async (_chatId: number, text: string) => sent.push(text),
+    };
+
+    await (runtime as any).processInbound({
+      kind: "callback",
+      callbackQueryId: "forget-offline-stale-1",
+      data: buildDashboardCallbackData(sessionDashboardRef(binding.sessionKey), "forget"),
+      chat: { id: binding.chatId, type: "private" },
+      user: { id: binding.userId, username: "owner" },
+    });
+
+    expect(revoke).toHaveBeenCalledWith(binding.sessionKey);
+    expect(callbacks).toEqual(["No matching offline session."]);
+    expect(sent.join("\n")).toContain("No matching offline session found. Use /sessions for the latest list.");
+    revoke.mockRestore();
   });
 
   it("does not list a stale in-memory route after its persisted Telegram binding is revoked", async () => {
@@ -2992,18 +3132,19 @@ describe("InProcessTunnelRuntime", () => {
       sendPlainText: async () => undefined,
     };
 
-    route.notification.progressEvent = createProgressActivity({ id: "edit-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "edit-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sends).toHaveLength(1));
-    expect(sends[0]).toContain("Running tests");
+    expect(sends[0]).toContain("Tool progress");
+    expect(sends[0]).toContain("npm test");
 
-    route.notification.progressEvent = createProgressActivity({ id: "edit-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "edit-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/runtime.test.ts · tools: bash×1 edit×1", semanticKey: "tool-progress", at: Date.now() + 1 }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
 
     await vi.waitFor(() => expect(edits).toHaveLength(1));
-    expect(edits[0]).toEqual(expect.objectContaining({ messageId: 77, text: expect.stringContaining("Editing files") }));
+    expect(edits[0]).toEqual(expect.objectContaining({ messageId: 77, text: expect.stringContaining("edit: tests/runtime.test.ts") }));
   });
 
   it("falls back to a new Telegram progress snapshot when editing fails", async () => {
@@ -3040,17 +3181,17 @@ describe("InProcessTunnelRuntime", () => {
       sendPlainText: async () => undefined,
     };
 
-    route.notification.progressEvent = createProgressActivity({ id: "fallback-1", kind: "tool", text: "Running tests", at: Date.now() }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "fallback-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sends).toHaveLength(1));
 
-    route.notification.progressEvent = createProgressActivity({ id: "fallback-2", kind: "tool", text: "Editing files", at: Date.now() + 1 }, config);
+    route.notification.progressEvent = createProgressActivity({ id: "fallback-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/runtime.test.ts", semanticKey: "tool-progress", at: Date.now() + 1 }, config);
     (runtime as any).syncProgressDelivery(route);
     await vi.runOnlyPendingTimersAsync();
 
     await vi.waitFor(() => expect(sends).toHaveLength(2));
-    expect(sends[1]).toContain("Editing files");
+    expect(sends[1]).toContain("edit: tests/runtime.test.ts");
   });
 
   it("clears Telegram progress state when queued progress becomes non-deliverable", async () => {

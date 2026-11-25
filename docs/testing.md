@@ -91,6 +91,8 @@ Check:
 8. Use `/use docs`, then set `/alias phone`, and verify `/sessions` and selectors use the alias while retaining the original label for disambiguation.
 9. Use `/progress quiet`, `/progress verbose`, and `/recent` during a run and verify safe progress noise changes without suppressing terminal completion/failure/abort notifications.
 10. Reconnect the disconnected session and verify local prompts still work there too.
+11. Run local `/new` from a paired idle session and verify the old route unregisters immediately, no false offline notification is sent, the same-workspace replacement receives the binding/active selection, old buttons become stale, and the messenger receives a moved notification.
+12. From authorized Telegram, send `/new` to an online idle selected route and verify relay control moves to the replacement session; repeat while busy, offline, ambiguous, paused, and unsupported, and verify no unsafe session replacement or binding mutation occurs.
 
 ## 5. Image bridge behavior
 
@@ -126,7 +128,7 @@ These adapter foundations are DM-first and use channel-specific credentials/conf
 9. Run `/relay connect discord docs`, scan the QR bot profile/DM link when `discord.applicationId` is configured, then DM the bot `relay pair <pin>` before expiry (`/start <pin>` remains a compatibility alias). Confirm the pairing locally in Pi, optionally choosing to trust the Discord user. If the bot cannot be DM'd, check shared-server membership, server member DM privacy settings, and that the bot was already invited with the `bot` scope during setup.
 10. After pairing, send `relay status` and `relay sessions` in the Discord DM and verify the same core fields/semantics as Telegram: safe session label, online state, busy state, model, progress mode, last activity, active marker, and no raw session file path or binding storage key. If Discord command sync has completed, also try `/relay status`; bare `/status` and `/sessions` may work when Discord delivers them as text, but smoke tests should not depend on those aliases.
 11. Send a normal Discord DM prompt while Pi is idle and verify it reaches the current Pi session and the final Pi completion returns to Discord; repeat while busy and verify the configured busy delivery acknowledgement plus terminal completion/failure/abort notification.
-12. Exercise Discord command parity using the reliable prefix forms: `relay use`, `relay to`, `relay alias`, `relay progress`, `relay recent`, `relay summary`, `relay full`, `relay skills`, `relay skill`, `relay cancel`, `relay images`, `relay send-image`, `relay send-file`, `relay steer`, `relay followup`, `relay abort`, `relay compact`, `relay pause`, `relay resume`, and `relay disconnect`; verify commands either work with Telegram-equivalent semantics or return an explicit capability/configuration limitation, not generic unsupported-command help.
+12. Exercise Discord command parity using the reliable prefix forms: `relay use`, `relay to`, `relay new`, `relay alias`, `relay progress`, `relay recent`, `relay summary`, `relay full`, `relay skills`, `relay skill`, `relay cancel`, `relay images`, `relay send-image`, `relay send-file`, `relay steer`, `relay followup`, `relay abort`, `relay compact`, `relay pause`, `relay resume`, and `relay disconnect`; verify commands either work with Telegram-equivalent semantics or return an explicit capability/configuration limitation, not generic unsupported-command help.
 13. Enable Discord guild-channel control without `allowGuildIds`; verify `/relay doctor` reports an actionable warning/error and `/relay connect discord` refuses pairing until fixed.
 14. Run `/relay setup slack` for `eventMode: "socket"` and verify it recommends Socket Mode, requires an app-level token with `connections:write`, exposes a copyable App manifest tab/action, includes interactivity and `/relay`, explains App Home Messages Tab plus `message.im`/`im:history`/`im:read` for DMs, `reactions:write` for thinking indicators, and `files:write` for image/file delivery, and warns when workspace, App ID, or bot-user identity cannot be established; switch to `eventMode: "webhook"` without a signing secret and verify doctor reports the webhook signing requirement.
 15. Run `/relay connect slack docs` with enabled mock config and verify the displayed pairing instruction is time-limited, channel-specific, short PIN-style, highlighted in the QR dialog, and copyable with `c`; when `slack.appId` is configured or discovered from `auth.test`, verify the TUI renders a Slack App Home QR/open link and clearly offers both paths: open App Home DM via QR/link or paste the command directly in an invited Slack channel/thread after enabling `slack.allowChannelMessages`.
@@ -175,6 +177,17 @@ When a test fails, record:
 - whether the broker had been restarted after code changes
 - whether the failure affects only local Pi input, only Telegram behavior, or both
 - the exact final assistant output if answer parsing behaved incorrectly
+
+## 9. Broker route recovery and shared restart
+
+1. Start three same-scope Pi sessions and verify all appear online in `/sessions`.
+2. Remove one route from broker memory without closing its client socket in the automated real-socket harness; verify periodic reconciliation restores it without `/reload`, `/relay status`, or another command.
+3. Run `/relay restart` from one session and verify the output explains shared impact and reports all three clients/routes recovered.
+4. Verify the pid/socket control files identify one broker, delayed clients can join later, and no old broker retains messenger ingress.
+5. While transport is reconnecting or a route is pending/missing, verify `/relay status`, `/relay doctor`, and the concise Telegram status segment do not imply full remote reachability.
+6. Revoke a binding during reconciliation and verify it is not resurrected, retargeted, or unpaused.
+
+Automated lifecycle tests must use public runtime behavior and real socket close/recreation. Do not invoke private `ensureConnected()` or rely on `/reload` as the recovery mechanism.
 
 ## 9. Optional communication diagnostics troubleshooting
 

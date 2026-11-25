@@ -24,7 +24,7 @@ export function formatRelayStatus(snapshot: SessionStatusSnapshot, options: Rela
     `Busy: ${snapshot.busy ? "yes" : "no"}`,
     `Model: ${snapshot.modelId ?? "unknown"}`,
     `Progress mode: ${displayProgressMode(options.progressMode)}`,
-    `Last activity: ${snapshot.lastActivityAt ? new Date(snapshot.lastActivityAt).toLocaleString() : "unknown"}`,
+    `Last activity: ${snapshot.lastActivityAt !== undefined && Number.isFinite(snapshot.lastActivityAt) ? new Date(snapshot.lastActivityAt).toLocaleString() : "unknown"}`,
     options.includeLastStatus ? `Last status: ${snapshot.notification.lastStatus ?? "unknown"}` : undefined,
   ].filter(Boolean).join("\n");
 }

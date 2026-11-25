@@ -342,3 +342,49 @@ describe("TunnelStateStore", () => {
     expect(await store.getActiveChannelBindingForSession("slack", "session-1", { instanceId: "work", conversationId: "C1", userId: "U1" })).toBeUndefined();
   });
 });
+
+describe("session binding migration", () => {
+  it("moves active bindings and selections while making old bindings stale", async () => {
+    const store = await createStore();
+    await store.upsertBinding({ sessionKey: "old", sessionId: "old-id", sessionLabel: "old", chatId: 10, userId: 20, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertChannelBinding({ channel: "discord", instanceId: "default", conversationId: "C1", userId: "U1", sessionKey: "old", sessionId: "old-id", sessionLabel: "old", boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z", paused: true });
+    await store.setActiveChannelSelection("discord", "C1", "U1", "old");
+
+    const result = await store.migrateSessionBindings({ oldSessionKey: "old", newSessionKey: "new", newSessionId: "new-id", newSessionFile: "/sessions/new.jsonl", newSessionLabel: "new", now: "2026-01-02T00:00:00.000Z" });
+    expect(result).toMatchObject({ telegram: [{ sessionKey: "new", status: "active" }], channels: [{ sessionKey: "new", status: "active", paused: true }], movedSelections: 2 });
+    expect(await store.getBindingBySessionKey("old")).toMatchObject({ status: "revoked", movedToSessionKey: "new" });
+    expect(await store.getChannelBindingRecordBySessionKey("discord", "old")).toMatchObject({ status: "revoked", movedToSessionKey: "new" });
+    expect(await store.getActiveChannelSelection("telegram", "10", "20")).toMatchObject({ sessionKey: "new" });
+    expect(await store.getActiveChannelSelection("discord", "C1", "U1")).toMatchObject({ sessionKey: "new" });
+  });
+
+  it("does not overwrite revoked target records belonging to another identity", async () => {
+    const store = await createStore();
+    await store.upsertBinding({ sessionKey: "old", sessionId: "old-id", sessionLabel: "old", chatId: 10, userId: 20, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertBinding({ sessionKey: "new", sessionId: "new-id", sessionLabel: "new", chatId: 99, userId: 98, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.revokeBinding("new");
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C-old", userId: "U-old", sessionKey: "old", sessionId: "old-id", sessionLabel: "old", boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C-other", userId: "U-other", sessionKey: "new", sessionId: "new-id", sessionLabel: "new", boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.revokeChannelBinding("slack", "new");
+
+    const result = await store.migrateSessionBindings({ oldSessionKey: "old", newSessionKey: "new", newSessionId: "new-id", newSessionLabel: "new" });
+    expect(result).toEqual({ telegram: [], channels: [], movedSelections: 0 });
+    expect(await store.getBindingBySessionKey("new")).toMatchObject({ chatId: 99, userId: 98, status: "revoked" });
+    expect(await store.getChannelBindingRecordBySessionKey("slack", "new")).toMatchObject({ conversationId: "C-other", userId: "U-other", status: "revoked" });
+  });
+
+  it("fails closed for revoked bindings, conflicting target bindings, and requester mismatch", async () => {
+    const store = await createStore();
+    await store.upsertBinding({ sessionKey: "old", sessionId: "old-id", sessionLabel: "old", chatId: 10, userId: 20, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertBinding({ sessionKey: "new", sessionId: "new-id", sessionLabel: "new", chatId: 99, userId: 99, boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+    await store.upsertChannelBinding({ channel: "slack", instanceId: "default", conversationId: "C1", userId: "U1", sessionKey: "old", sessionId: "old-id", sessionLabel: "old", boundAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:00:00.000Z" });
+
+    const result = await store.migrateSessionBindings({ oldSessionKey: "old", newSessionKey: "new", newSessionId: "new-id", newSessionLabel: "new", requester: { channel: "slack", conversationId: "other", userId: "U1" } });
+    expect(result).toEqual({ telegram: [], channels: [], movedSelections: 0 });
+    expect(await store.getBindingBySessionKey("old")).toMatchObject({ status: "active" });
+
+    await store.revokeChannelBinding("slack", "old");
+    const revoked = await store.migrateSessionBindings({ oldSessionKey: "old", newSessionKey: "new-2", newSessionId: "new-2", newSessionLabel: "new-2", requester: { channel: "slack", conversationId: "C1", userId: "U1" } });
+    expect(revoked.channels).toEqual([]);
+  });
+});

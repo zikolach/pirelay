@@ -2,8 +2,8 @@ import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
+import { base64ByteLength, chunkTelegramText, deriveSessionLabel, extractLocalImagePaths, isAllowedImageMimeType, latestImageFileCandidatesFromText, loadWorkspaceImageFile, modelSupportsImages, normalizeSessionLabel, parseIsoTimestampToMs, parseTelegramCommand, resolveBusyDeliveryMode, safeTelegramImageFilename } from "../extensions/relay/core/utils.js";
+import { annotateSupersededSessionEntries, formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionMarkerFor, sessionMarkersFor, sessionSourcePrefixForRoute, sessionsIncludeSuperseded, visibleSessionEntries, type BoundSessionIdentity, type SessionListEntry } from "../extensions/relay/core/session-selection.js";
 
 const tempDirs: string[] = [];
 
@@ -12,6 +12,13 @@ afterEach(async () => {
 });
 
 describe("telegram utils", () => {
+  it("parses ISO timestamps while preserving epoch zero and rejecting invalid values", () => {
+    expect(parseIsoTimestampToMs("1970-01-01T00:00:00.000Z")).toBe(0);
+    expect(parseIsoTimestampToMs("2026-07-11T08:00:00.000Z")).toBe(Date.parse("2026-07-11T08:00:00.000Z"));
+    expect(parseIsoTimestampToMs("invalid")).toBeUndefined();
+    expect(parseIsoTimestampToMs(undefined)).toBeUndefined();
+  });
+
   it("parses slash commands and strips bot usernames", () => {
     expect(parseTelegramCommand("/status")).toEqual({ command: "status", args: "" });
     expect(parseTelegramCommand("/followup@mybot fix the failing test")).toEqual({
@@ -57,12 +64,55 @@ describe("telegram utils", () => {
     expect(resolveSessionSelector(entries, "1e2")).toMatchObject({ kind: "no-match" });
   });
 
+  it("parses the shared all-sessions flag consistently", () => {
+    expect(sessionsIncludeSuperseded("all")).toBe(true);
+    expect(sessionsIncludeSuperseded(" --ALL ")).toBe(true);
+    expect(sessionsIncludeSuperseded(undefined)).toBe(false);
+    expect(sessionsIncludeSuperseded("stale")).toBe(false);
+  });
+
+  it("hides older offline sessions from the same workspace by default", () => {
+    const entries: SessionListEntry[] = [
+      { sessionKey: "old:/sessions/--Users-user-Projects-pirelay--/old.jsonl", sessionId: "old11111", sessionLabel: "pirelay", sessionFile: "/sessions/--Users-user-Projects-pirelay--/old.jsonl", online: false, lastActivityAt: 1 },
+      { sessionKey: "new:/sessions/--Users-user-Projects-pirelay--/new.jsonl", sessionId: "new22222", sessionLabel: "pirelay", sessionFile: "/sessions/--Users-user-Projects-pirelay--/new.jsonl", online: true, busy: false, lastActivityAt: 2 },
+      { sessionKey: "other:/sessions/--Users-user-Projects-sigma--/old.jsonl", sessionId: "other333", sessionLabel: "sigma", sessionFile: "/sessions/--Users-user-Projects-sigma--/old.jsonl", online: false, lastActivityAt: 1 },
+      { sessionKey: "unknown", sessionId: "unknown", sessionLabel: "pirelay", online: false },
+    ];
+
+    const annotated = annotateSupersededSessionEntries(entries);
+    expect(annotated[0]?.superseded).toBe(true);
+    expect(annotated[2]?.superseded).toBeUndefined();
+    expect(annotated[3]?.superseded).toBeUndefined();
+    expect(visibleSessionEntries(entries).map((entry) => entry.sessionKey)).toEqual([entries[1]!.sessionKey, entries[2]!.sessionKey, entries[3]!.sessionKey]);
+    expect(visibleSessionEntries(entries, { includeSuperseded: true })).toHaveLength(4);
+    expect(formatSessionList(annotated)).toContain("offline — superseded");
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: 1 },
+      { ...entries[1]!, lastActivityAt: undefined },
+    ])).toHaveLength(2);
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: 0 },
+      { ...entries[1]!, lastActivityAt: undefined },
+    ])).toHaveLength(2);
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: 0 },
+      { ...entries[1]!, lastActivityAt: 0 },
+    ])).toHaveLength(1);
+    expect(visibleSessionEntries([
+      { ...entries[0]!, lastActivityAt: undefined },
+      entries[1]!,
+    ])).toHaveLength(1);
+  });
+
   it("uses aliases in session lists and selectors", () => {
     const entries: SessionListEntry[] = [
       { sessionKey: "a:/tmp/a", sessionId: "abcdef111111", sessionLabel: "long local label", alias: "phone", online: true, busy: false, modelId: "gpt-test", lastActivityAt: 0 },
     ];
     const list = formatSessionList(entries, entries[0]!.sessionKey);
     expect(list).toContain("phone (long local label) — online — idle — gpt-test");
+    expect(list).toContain(new Date(0).toLocaleString());
+    expect(formatSessionList([{ ...entries[0]!, lastActivityAt: Number.NaN }])).not.toContain("Invalid Date");
+    expect(formatSessionList(entries, undefined, { footer: "Use relay sessions all." })).toContain("Use relay sessions all.");
     expect(resolveSessionSelector(entries, "phone")).toMatchObject({ kind: "matched", index: 0 });
   });
 

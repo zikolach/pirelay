@@ -230,14 +230,15 @@ describe("DiscordRuntime", () => {
 
     await runtime.start();
 
-    session.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Running tests", at: Date.now() };
+    session.notification.progressEvent = { id: "tool-progress", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(session);
     session.notification.progressEvent = { id: "assistant-progress", kind: "assistant", text: "Drafting response", at: Date.now() };
     await runtime.registerRoute(session);
     await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
 
     expect(ops.messages).toHaveLength(1);
-    expect(ops.messages[0]?.content).toContain("Running tests");
+    expect(ops.messages[0]?.content).toContain("Tool progress");
+    expect(ops.messages[0]?.content).toContain("npm test");
     expect(ops.messages[0]?.content).not.toContain("Pi progress");
     expect(ops.messages[0]?.content).not.toContain("Drafting response");
   });
@@ -264,17 +265,17 @@ describe("DiscordRuntime", () => {
     });
 
     await runtime.start();
-    session.notification.progressEvent = { id: "discord-live-progress-1", kind: "tool", text: "Compile", at: Date.now() };
+    session.notification.progressEvent = { id: "discord-live-progress-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(session);
     await vi.waitFor(() => expect(ops.messages).toHaveLength(1));
 
     const firstMessageId = ops.messageIds.at(-1);
-    session.notification.progressEvent = { id: "discord-live-progress-2", kind: "tool", text: "Compile tests", at: Date.now() };
+    session.notification.progressEvent = { id: "discord-live-progress-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/discord-runtime.test.ts", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(session);
     await vi.waitFor(() => expect(ops.edits).toHaveLength(1));
 
     expect(ops.messages).toHaveLength(1);
-    expect(ops.edits[0]).toMatchObject({ channelId: "dm1", messageId: firstMessageId, content: expect.stringContaining("Compile tests") });
+    expect(ops.edits[0]).toMatchObject({ channelId: "dm1", messageId: firstMessageId, content: expect.stringContaining("edit: tests/discord-runtime.test.ts") });
   });
 
   it("falls back to a new Discord progress snapshot when edit updates fail", async () => {
@@ -1587,6 +1588,8 @@ describe("DiscordRuntime", () => {
     session.notification.recentActivity = [{ id: "p1", kind: "tool", text: "Ran tests", at: Date.now() }];
     session.notification.latestImages = { turnId: "turn-1", count: 1, skipped: 0, contentCount: 1 };
     session.actions.getLatestImages = async () => [{ id: "img1", turnId: "turn-1", fileName: "render.png", mimeType: "image/png", data: Buffer.from([1, 2, 3]).toString("base64"), byteSize: 3 }];
+    const newSession = vi.fn(async () => ({ cancelled: false }));
+    session.actions.newSession = newSession;
     session.actions.getImageByPath = async (path) => path === "outputs/render.png"
       ? { ok: true, image: { id: "img2", turnId: "turn-2", fileName: "render-path.png", mimeType: "image/png", data: Buffer.from([4, 5, 6]).toString("base64"), byteSize: 3 } }
       : { ok: false, error: "Image file not found." };
@@ -1606,8 +1609,12 @@ describe("DiscordRuntime", () => {
       identity: { displayName: "zikolach" },
     });
 
-    for (const command of ["relay help", "relay status", "relay sessions", "relay full", "relay summary", "relay recent", "relay progress", "relay alias phone", "relay progress verbose", "relay images", "relay send-image outputs/render.png", "relay send-file report.md Report", "relay steer go", "relay followup next", "relay to phone one shot", "relay use phone", "relay forget missing", "relay abort", "relay compact", "relay pause", "relay resume", "relay disconnect"] as const) {
+    for (const command of ["relay help", "relay status", "relay sessions", "relay full", "relay summary", "relay recent", "relay progress", "relay alias phone", "relay progress verbose", "relay images", "relay send-image outputs/render.png", "relay send-file report.md Report", "relay steer go", "relay followup next", "relay to phone one shot", "relay use phone", "relay forget missing", "relay abort", "relay compact", "relay new", "relay pause", "relay resume", "relay disconnect"] as const) {
       await ops.handler?.(discordMessage(command));
+      if (command === "relay new") {
+        session.actions.newSession = undefined;
+        await ops.handler?.(discordMessage("relay new"));
+      }
     }
 
     const text = ops.messages.map((message) => message.content).join("\n");
@@ -1628,6 +1635,9 @@ describe("DiscordRuntime", () => {
     expect(sendUserMessage).toHaveBeenCalledWith("go", undefined);
     expect(sendUserMessage).toHaveBeenCalledWith("next", undefined);
     expect(sendUserMessage).toHaveBeenCalledWith("one shot", undefined);
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(text).toContain("New Pi session started");
+    expect(text).toContain("cannot start a new session remotely");
     expect(ops.files.map((file) => file.fileName)).toEqual(["render.png", "render-path.png", "report.md"]);
     expect(ops.files.at(-1)).toMatchObject({ caption: "Report", mimeType: "text/markdown" });
   });
@@ -1718,7 +1728,7 @@ describe("DiscordRuntime", () => {
       busy: false,
       paused: false,
       lastActivityAt: first.lastActivityAt,
-    }], first.sessionKey);
+    }], first.sessionKey, { footer: "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, relay forget <session> to remove an offline session, or relay sessions all to show hidden stale sessions." });
     expect(ops.messages.at(-1)?.content).toBe(expected);
     expect(ops.messages.at(-1)?.content).toMatch(/[🔵🟢🟠🟣🟡🔴⚪⚫]/u);
     expect(ops.messages.at(-1)?.content).toContain("— active");

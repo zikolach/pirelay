@@ -48,6 +48,8 @@ The legacy Telegram-tunnel extension path has been removed; do not add compatibi
 - Add unit tests for pure helpers.
 - Add runtime/integration tests for authorization, prompt routing, persisted state, media handling, and broker parity.
 - For Telegram UX changes, cover both happy path and ambiguous/error states.
+- For event-driven changes, define lifecycle states and safety invariants before implementation. Cover identifiers present and missing, repeated calls, partial or delayed events, authorization denial, and delivery failure where applicable.
+- When multiple handlers participate in one lifecycle, test complete event sequences and assert that fallback paths preserve the same authorization, redaction, correlation, and deduplication invariants.
 - Prefer small targeted tests over brittle transcript snapshots.
 
 ## OpenSpec workflow
@@ -59,6 +61,14 @@ When implementing an OpenSpec change:
 3. Mark tasks complete only after code, docs, and tests are done.
 4. Validate the change with `openspec validate <change> --strict`.
 5. Archive only after implementation is complete and specs are synced.
+
+## Review feedback workflow
+
+1. Verify each comment against the current code before changing it.
+2. When feedback exposes a shared invariant or lifecycle flaw, audit adjacent handlers and equivalent paths instead of patching only the cited line.
+3. Add focused regression tests plus a complete lifecycle test for systemic fixes.
+4. Batch related feedback, run the required checks, and perform a structured pre-review before requesting another review.
+5. Re-fetch unresolved threads after pushing. Avoid repeated automated review requests after individual micro-fixes; request review once the related batch is complete and validated.
 
 ## Git workflow
 

@@ -4,6 +4,17 @@
 
 - Require Pi 1.6 or later in the 1.x series and Node.js 22.19 or newer. Telegram LLM summaries now use the active Pi session’s provider registry. Existing bindings do not require migration.
 
+## 0.10.0 - 2026-08-02
+
+- Added authorized remote new-session handoff across Telegram, Discord, and Slack, preserving eligible bindings and active selections while preventing ambiguous or stale routes from taking control. #84
+- Added autonomous broker route reconciliation, ownership-safe shared broker restart convergence, broker-aware status and doctor repair, and secret-safe recovery diagnostics for live sessions that incorrectly appear offline. #85
+
+## 0.9.0 - 2026-07-11
+
+- Added safe, bounded tool-call progress cards with active, completed, and failed lifecycle aggregation, approval-aware publication, allowlisted intent summaries, redaction, and robust missing-ID correlation. #80
+- Stabilized scoped broker startup, route ownership, and reconnect registration, including migration of legacy lock files that could stall startup with `ENOTDIR`. #81 #83
+- Improved session cleanup and selection across messengers by hiding superseded same-workspace sessions by default, adding `/sessions all`, and providing Telegram `Use` and `Forget` actions. #81
+
 ## 0.8.0 - 2026-06-14
 
 - Added cross-messenger live progress updates so supported Slack, Discord, and Telegram destinations update an existing progress message where possible instead of posting repeated snapshots. #78

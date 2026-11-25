@@ -122,6 +122,65 @@ describe("telegram broker process", () => {
     expect(updated.bindings?.["revoked-session:memory"]).toMatchObject({ status: "revoked", revokedAt: revokedBinding.revokedAt, lastSeenAt: revokedBinding.lastSeenAt });
   });
 
+  it("reconciles route snapshots atomically with binding and replacement-socket safety", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-reconcile-"));
+    tempDirs.push(stateDir);
+    const statePath = join(stateDir, "state.json");
+    const activeBinding = {
+      sessionKey: "live-session:memory", sessionId: "live-session", sessionLabel: "Live", chatId: 123, userId: 456,
+      boundAt: new Date(0).toISOString(), lastSeenAt: new Date(1).toISOString(), status: "active",
+    };
+    const revokedBinding = {
+      sessionKey: "revoked-session:memory", sessionId: "revoked-session", sessionLabel: "Revoked", chatId: 123, userId: 456,
+      boundAt: new Date(0).toISOString(), lastSeenAt: new Date(2).toISOString(), revokedAt: new Date(3).toISOString(), status: "revoked",
+    };
+    await writeFile(statePath, JSON.stringify({ pendingPairings: {}, bindings: { [activeBinding.sessionKey]: activeBinding, [revokedBinding.sessionKey]: revokedBinding }, channelBindings: {} }));
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], { env: {
+      ...process.env,
+      TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+      TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({ botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", stateDir, pollingTimeoutSeconds: 1 }),
+      TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+    } });
+    children.push(child);
+    await waitForSocket(socketPath, child);
+    const first = await openBrokerClient(socketPath);
+    const second = await openBrokerClient(socketPath);
+    const reconcile = (clientId: string, routes: Record<string, unknown>[]) => ({ type: "request", action: "reconcileRoutes", clientId, routes });
+    const liveRoute = brokerRoute(activeBinding);
+    const revokedRoute = brokerRoute({ ...revokedBinding, status: "active", revokedAt: undefined });
+    const missingBinding = { ...activeBinding, sessionKey: "missing-session:memory", sessionId: "missing-session", sessionLabel: "Missing" };
+    const missingRoute = brokerRoute(missingBinding);
+
+    const initial = await first.request(reconcile("first", [liveRoute, revokedRoute, missingRoute])) as { acceptedSessionKeys?: string[]; rejected?: unknown[] };
+    expect(initial.acceptedSessionKeys).toEqual([activeBinding.sessionKey, revokedBinding.sessionKey, missingBinding.sessionKey]);
+    expect(initial.rejected).toEqual([]);
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 3 });
+    const persistedAfterReconciliation = (JSON.parse(await readFile(statePath, "utf8")) as { bindings: Record<string, { status: string }> }).bindings;
+    expect(persistedAfterReconciliation[revokedBinding.sessionKey]?.status).toBe("revoked");
+    expect(persistedAfterReconciliation[missingBinding.sessionKey]).toBeUndefined();
+
+    await first.request(reconcile("first", [liveRoute]));
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+    const malformed = await first.request(reconcile("first", [liveRoute, { sessionKey: "invalid" }])) as { acceptedSessionKeys?: string[]; rejected?: Array<{ index?: number }> };
+    expect(malformed.acceptedSessionKeys).toEqual([]);
+    expect(malformed.rejected?.[0]?.index).toBe(1);
+    expect(await first.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+
+    await second.request(reconcile("second", [liveRoute]));
+    const stale = await first.request(reconcile("first", [liveRoute])) as { acceptedSessionKeys?: string[]; rejected?: Array<{ code?: string }> };
+    expect(stale.acceptedSessionKeys).toEqual([]);
+    expect(stale.rejected).toEqual([{ index: 0, code: "stale-owner", safeMessage: "A newer broker client owns this route." }]);
+    await first.close();
+    expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+    await second.request(reconcile("second", []));
+    expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 0 });
+    await second.request(reconcile("second", [liveRoute]));
+    expect(await second.request({ type: "request", action: "getBrokerHealth" })).toMatchObject({ registeredRouteCount: 1 });
+    await second.close();
+  });
+
   it("preserves concurrent store updates while registering routes", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-process-"));
     tempDirs.push(stateDir);
@@ -293,7 +352,8 @@ describe("telegram broker process", () => {
     children.push(child);
 
     await waitForSocket(socketPath, child);
-    await sendBrokerRequest(socketPath, {
+    const client = await openBrokerClient(socketPath);
+    await client.request({
       type: "request",
       requestId: "corrupt-state-route",
       action: "registerRoute",
@@ -317,7 +377,14 @@ describe("telegram broker process", () => {
       },
     });
 
+    const reconciliation = await client.request({
+      type: "request", requestId: "corrupt-state-reconcile", action: "reconcileRoutes", clientId: "test-client",
+      routes: [{ channel: "telegram", sessionKey: "corrupt-session:memory", sessionId: "corrupt-session", sessionLabel: "Corrupt Docs", busy: false, notification: {} }],
+    }) as { acceptedSessionKeys?: string[]; rejected?: Array<{ code?: string; safeMessage?: string }> };
+    expect(reconciliation.acceptedSessionKeys).toEqual([]);
+    expect(reconciliation.rejected).toEqual([{ code: "invalid-request", safeMessage: "Broker binding authority is temporarily unavailable." }]);
     expect(await readFile(statePath, "utf8")).toBe("{not-json");
+    await client.close();
   });
 
   it("hydrates registered routes with persisted Telegram bindings when the client route is stale", async () => {
@@ -509,13 +576,97 @@ describe("telegram broker process", () => {
         message: telegramMessage("hello while route is reconnecting", binding),
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const texts = parseOutbox(await readFile(outboxPath, "utf8"))
       .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
       .map((entry) => entry.text);
     expect(texts).toEqual(["The selected Pi session is currently offline. Resume it locally, then try again."]);
+  });
+
+  it("keeps a replacement route online when the previous client unregisters and disconnects", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-broker-route-owner-"));
+    tempDirs.push(stateDir);
+    const outboxPath = join(stateDir, "telegram-outbox.jsonl");
+    const testIngressSecret = "route-owner-secret";
+    const binding = {
+      sessionKey: "broker-route-owner:memory",
+      sessionId: "broker-route-owner",
+      sessionLabel: "Broker Route Owner",
+      chatId: 123,
+      userId: 456,
+      boundAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(1).toISOString(),
+      status: "active",
+    };
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({
+      setup: {
+        botId: 1,
+        botUsername: "dummy_bot",
+        botDisplayName: "Dummy",
+        validatedAt: new Date(0).toISOString(),
+      },
+      pendingPairings: {},
+      bindings: { [binding.sessionKey]: binding },
+      channelBindings: {},
+    }));
+
+    const socketPath = join(stateDir, "broker.sock");
+    const brokerPath = fileURLToPath(new URL("../extensions/relay/broker/entry.js", import.meta.url));
+    const child = spawn(process.execPath, [brokerPath], {
+      env: {
+        ...process.env,
+        TELEGRAM_TUNNEL_BROKER_SOCKET_PATH: socketPath,
+        TELEGRAM_TUNNEL_BROKER_CONFIG_JSON: JSON.stringify({
+          botToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+          stateDir,
+          pollingTimeoutSeconds: 1,
+        }),
+        TELEGRAM_TUNNEL_BROKER_SKIP_POLLING: "1",
+        PI_RELAY_BROKER_TEST_TELEGRAM_OUTBOX_PATH: outboxPath,
+        PI_RELAY_BROKER_TEST_INGRESS_SECRET: testIngressSecret,
+      },
+    });
+    children.push(child);
+
+    await waitForSocket(socketPath, child);
+    const previousClient = await openBrokerClient(socketPath);
+    const replacementClient = await openBrokerClient(socketPath);
+    try {
+      await previousClient.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "previous-client",
+        route: brokerRoute(binding),
+      });
+      await replacementClient.request({
+        type: "request",
+        action: "registerRoute",
+        clientId: "replacement-client",
+        route: brokerRoute(binding),
+      });
+      await previousClient.request({
+        type: "request",
+        action: "unregisterRoute",
+        clientId: "previous-client",
+        sessionKey: binding.sessionKey,
+      });
+      await previousClient.close();
+      await replacementClient.request({
+        type: "request",
+        action: "testProcessInbound",
+        testIngressSecret,
+        message: telegramMessage("/sessions", binding),
+      });
+    } finally {
+      await replacementClient.close();
+    }
+
+    const texts = parseOutbox(await readFile(outboxPath, "utf8"))
+      .filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage")
+      .map((entry) => entry.text);
+    expect(texts.at(-1)).toContain("Broker Route Owner — online — idle");
   });
 
   it("delivers broker-owned full-output chunks before structured answer actions", async () => {
@@ -605,7 +756,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -698,7 +849,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -804,7 +955,7 @@ describe("telegram broker process", () => {
         terminalStatus: "completed",
       });
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -824,7 +975,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github inspect repo", harness.binding),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -849,7 +1000,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github inspect repo", harness.binding),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -879,7 +1030,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("inspect later", harness.binding, 2),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.deliveries).toHaveLength(1);
@@ -910,7 +1061,7 @@ describe("telegram broker process", () => {
         message: telegramMessage("/skill github", harness.binding, 2),
       });
     } finally {
-      harness.client.close();
+      await harness.client.close();
     }
 
     expect(harness.counters.skillMetadataRequests).toBe(0);
@@ -985,7 +1136,7 @@ describe("telegram broker process", () => {
           sessionLabel: binding.sessionLabel,
           online: true,
           busy: true,
-          notification: { lastStatus: "running", progressEvent: { id: "tool", kind: "tool", text: "Tool completed", detail: "bash", at: Date.now() } },
+          notification: { lastStatus: "running", progressEvent: { id: "tool", kind: "tool", text: "Tool progress", detail: "✓ bash: npm test", semanticKey: "tool-progress", at: Date.now() } },
           binding,
         },
       });
@@ -1000,20 +1151,21 @@ describe("telegram broker process", () => {
           sessionLabel: binding.sessionLabel,
           online: true,
           busy: true,
-          notification: { lastStatus: "running", progressEvent: { id: "tool-2", kind: "tool", text: "Tool completed", detail: "read", at: Date.now() + 1 } },
+          notification: { lastStatus: "running", progressEvent: { id: "tool-2", kind: "tool", text: "Tool progress", detail: "✓ read: extensions/relay/runtime/extension-runtime.ts · tools: bash×1 read×1", semanticKey: "tool-progress", at: Date.now() + 1 } },
           binding,
         },
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
     const sends = outbox.filter((entry): entry is TestOutboxMessage => entry.method === "sendMessage");
     const edits = outbox.filter((entry): entry is TestOutboxEditMessage => entry.method === "editMessageText");
     expect(sends).toHaveLength(1);
-    expect(sends[0]?.text).toContain("Tool completed");
+    expect(sends[0]?.text).toContain("Tool progress");
+    expect(sends[0]?.text).toContain("npm test");
     expect(sends[0]?.text).not.toContain("Pi progress");
     expect(sends[0]?.text).not.toContain("Processed tool result");
     expect(edits).toHaveLength(1);
@@ -1074,7 +1226,7 @@ describe("telegram broker process", () => {
       });
       await waitForFileToContain(outboxPath, "Fallback progress");
     } finally {
-      client.close();
+      await client.close();
     }
 
     const outbox = parseOutbox(await readFile(outboxPath, "utf8"));
@@ -1154,7 +1306,7 @@ describe("telegram broker process", () => {
       await registerProgress("tool-3", "Resumed progress");
       await waitForFileToContain(outboxPath, "Resumed progress", 250);
     } finally {
-      client.close();
+      await client.close();
     }
   });
 
@@ -1423,29 +1575,35 @@ function waitForSocket(socketPath: string, child: ChildProcessWithoutNullStreams
   });
 }
 
+function brokerRoute(binding: Record<string, unknown>): Record<string, unknown> {
+  return {
+    sessionKey: binding.sessionKey,
+    channel: "telegram",
+    sessionId: binding.sessionId,
+    sessionLabel: binding.sessionLabel,
+    online: true,
+    busy: false,
+    notification: {},
+    binding,
+  };
+}
+
 function registerRouteRequest(sessionKey: string, sessionLabel: string): Record<string, unknown> {
+  const binding = {
+    sessionKey,
+    sessionId: sessionKey.split(":")[0],
+    sessionLabel,
+    chatId: 123,
+    userId: 456,
+    boundAt: new Date(0).toISOString(),
+    lastSeenAt: new Date(3).toISOString(),
+  };
   return {
     type: "request",
     requestId: `register-${sessionKey}`,
     action: "registerRoute",
     clientId: "test-client",
-    route: {
-      sessionKey,
-      sessionId: sessionKey.split(":")[0],
-      sessionLabel,
-      online: true,
-      busy: false,
-      notification: {},
-      binding: {
-        sessionKey,
-        sessionId: sessionKey.split(":")[0],
-        sessionLabel,
-        chatId: 123,
-        userId: 456,
-        boundAt: new Date(0).toISOString(),
-        lastSeenAt: new Date(3).toISOString(),
-      },
-    },
+    route: brokerRoute(binding),
   };
 }
 
@@ -1471,7 +1629,7 @@ function sendBrokerRequest(socketPath: string, payload: Record<string, unknown>)
   });
 }
 
-async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: Record<string, unknown>) => unknown | Promise<unknown>): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): void }> {
+async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: Record<string, unknown>) => unknown | Promise<unknown>): Promise<{ request(payload: Record<string, unknown>): Promise<unknown>; close(): Promise<void> }> {
   const socket = net.createConnection(socketPath);
   socket.setEncoding("utf8");
   await new Promise<void>((resolve, reject) => {
@@ -1524,8 +1682,12 @@ async function openBrokerClient(socketPath: string, onBrokerRequest?: (payload: 
         socket.write(`${JSON.stringify(request)}\n`);
       });
     },
-    close() {
-      socket.end();
+    close(): Promise<void> {
+      if (socket.destroyed) return Promise.resolve();
+      return new Promise((resolve) => {
+        socket.once("close", resolve);
+        socket.end();
+      });
     },
   };
 }

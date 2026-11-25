@@ -142,7 +142,13 @@ export function coalesceLiveProgressEntries(entries: ProgressActivityEntry[]): P
     const existing = milestones.get(key);
     if (existing) {
       existing.count = (existing.count ?? 1) + 1;
-      existing.at = Math.max(existing.at, entry.at);
+      if (entry.at >= existing.at) {
+        existing.text = entry.text;
+        existing.detail = entry.detail;
+        existing.delivery = entry.delivery;
+        existing.semanticKey = entry.semanticKey;
+        existing.at = entry.at;
+      }
       continue;
     }
     milestones.set(key, { ...entry });
@@ -152,7 +158,7 @@ export function coalesceLiveProgressEntries(entries: ProgressActivityEntry[]): P
   return ([...milestones.values(), ...latestVolatile] as CountedProgressActivityEntry[])
     .sort((left, right) => left.at - right.at)
     .slice(-5)
-    .map((entry) => entry.count && entry.count > 1 ? { ...entry, text: `${entry.text} (${entry.count}×)` } : entry);
+    .map((entry) => entry.count && entry.count > 1 && entry.semanticKey !== "tool-progress" ? { ...entry, text: `${entry.text} (${entry.count}×)` } : entry);
 }
 
 export function formatProgressUpdate(entries: ProgressActivityEntry[], config: Pick<TelegramTunnelConfig, "maxProgressMessageChars">, options: { header?: boolean; marker?: string } = {}): string | undefined {

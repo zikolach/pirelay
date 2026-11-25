@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { brokerControlPaths, cleanupStaleBrokerControlFiles, ensureLocalBroker, normalizeBrokerNamespace, readBrokerPid } from "../../extensions/relay/broker/index.js";
+import { brokerControlPaths, brokerScopeControlPaths, cleanupStaleBrokerControlFiles, ensureLocalBroker, ensureScopedBroker, normalizeBrokerNamespace, readBrokerPid, replaceScopedBroker } from "../../extensions/relay/broker/index.js";
 
 describe("local broker supervisor", () => {
   it("starts a broker when no live pid exists", async () => {
@@ -67,6 +67,203 @@ describe("local broker supervisor", () => {
       lockPath: join(stateDir, "relay-broker-Slack-Live-A.lock"),
     });
     expect(normalizeBrokerNamespace(" ../../secret ")).toBe("..-..-secret");
+  });
+
+  it("serializes scoped startup so concurrent clients spawn one broker", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-"));
+    let socketReady = false;
+    let starts = 0;
+    const options = {
+      stateDir,
+      tokenHash: "abc123",
+      startBroker: async () => {
+        starts += 1;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        socketReady = true;
+        return { pid: 4444 };
+      },
+      probeSocket: async () => socketReady,
+      waitForSocketReady: async () => {
+        socketReady = true;
+      },
+      isAlive: (pid: number) => pid === 4444,
+    };
+
+    await Promise.all([
+      ensureScopedBroker(options),
+      ensureScopedBroker(options),
+    ]);
+
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    expect(starts).toBe(1);
+    expect(await readBrokerPid(paths.pidPath)).toBe(4444);
+    await expect(stat(paths.lockPath)).rejects.toThrow();
+  });
+
+  it("replaces a legacy regular lock file with the directory lock format", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.lockPath, "", { mode: 0o600 });
+    let observedDirectoryLock = false;
+
+    const result = await ensureScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      startBroker: async () => {
+        observedDirectoryLock = (await stat(paths.lockPath)).isDirectory();
+        return { pid: 4567 };
+      },
+      probeSocket: async () => false,
+      waitForSocketReady: async () => undefined,
+      isAlive: () => false,
+    });
+
+    expect(result).toMatchObject({ status: "started", pid: 4567 });
+    expect(observedDirectoryLock).toBe(true);
+    await expect(stat(paths.lockPath)).rejects.toThrow();
+  });
+
+  it("does not return pid zero when a socket is ready before its pid file", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-"));
+    let starts = 0;
+    const result = await ensureScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      startBroker: async () => {
+        starts += 1;
+        return { pid: 7777 };
+      },
+      probeSocket: async () => true,
+      waitForSocketReady: async () => undefined,
+      isAlive: () => false,
+    });
+
+    expect(result).toMatchObject({ status: "started", pid: 7777 });
+    expect(starts).toBe(1);
+  });
+
+  it("reuses a socket-ready scoped broker only when its pid file is available", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "8888\n", { mode: 0o600 });
+    let starts = 0;
+    const result = await ensureScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      startBroker: async () => {
+        starts += 1;
+        return { pid: 9999 };
+      },
+      probeSocket: async () => true,
+      waitForSocketReady: async () => undefined,
+      isAlive: () => true,
+    });
+
+    expect(result).toMatchObject({ status: "existing", pid: 8888 });
+    expect(starts).toBe(0);
+  });
+
+  it("waits for a live scoped broker pid instead of spawning a competitor", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "5555\n", { mode: 0o600 });
+    let socketReady = false;
+    let starts = 0;
+    const result = await ensureScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      startBroker: async () => {
+        starts += 1;
+        return { pid: 6666 };
+      },
+      probeSocket: async () => socketReady,
+      waitForSocketReady: async () => {
+        socketReady = true;
+      },
+      isAlive: (pid) => pid === 5555,
+    });
+
+    expect(result).toMatchObject({ status: "existing", pid: 5555 });
+    expect(starts).toBe(0);
+  });
+
+  it("joins a replacement instead of killing a different authoritative broker", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-replace-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "2222\n", { mode: 0o600 });
+    let stopped: number | undefined;
+    let starts = 0;
+
+    const result = await replaceScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      selectedPid: 1111,
+      isAlive: (pid) => pid === 2222,
+      probeSocket: async () => true,
+      stopBroker: async (pid) => { stopped = pid; },
+      startBroker: async () => { starts += 1; return { pid: 3333 }; },
+      waitForSocketReady: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ status: "joined", pid: 2222 });
+    expect(stopped).toBeUndefined();
+    expect(starts).toBe(0);
+    expect(await readBrokerPid(paths.pidPath)).toBe(2222);
+  });
+
+  it("does not signal a live pid when the scoped broker socket is not reachable", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-unproven-pid-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "1111\n", { mode: 0o600 });
+    let stopped = false;
+    const replacement = replaceScopedBroker({
+      stateDir, tokenHash: "abc123", selectedPid: 1111,
+      isAlive: () => true, probeSocket: async () => false,
+      stopBroker: async () => { stopped = true; },
+      startBroker: async () => ({ pid: 2222 }), waitForSocketReady: async () => undefined,
+    });
+    await expect(replacement).rejects.toThrow("refusing unsafe replacement");
+    expect(stopped).toBe(false);
+  });
+
+  it("does not replace a reused pid belonging to a different broker epoch", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-epoch-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "1111\n", { mode: 0o600 });
+    await writeFile(paths.epochPath, "new-epoch\n", { mode: 0o600 });
+    let stopped = false;
+    const result = await replaceScopedBroker({
+      stateDir, tokenHash: "abc123", selectedPid: 1111, selectedEpoch: "old-epoch",
+      isAlive: () => true, probeSocket: async () => true,
+      stopBroker: async () => { stopped = true; },
+      startBroker: async () => ({ pid: 2222 }), waitForSocketReady: async () => undefined,
+    });
+    expect(result).toMatchObject({ status: "joined", pid: 1111 });
+    expect(stopped).toBe(false);
+  });
+
+  it("serializes replacement cleanup and publishes one authoritative pid", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "pirelay-supervisor-replace-"));
+    const paths = brokerScopeControlPaths({ stateDir, tokenHash: "abc123" });
+    await writeFile(paths.pidPath, "1111\n", { mode: 0o600 });
+    let livePid = 1111;
+    let nextPid = 2000;
+    let starts = 0;
+    const replace = () => replaceScopedBroker({
+      stateDir,
+      tokenHash: "abc123",
+      selectedPid: 1111,
+      isAlive: (pid) => pid === livePid,
+      probeSocket: async () => true,
+      stopBroker: async (pid) => { if (livePid === pid) livePid = 0; },
+      startBroker: async () => { starts += 1; livePid = ++nextPid; return { pid: livePid }; },
+      waitForSocketReady: async () => undefined,
+    });
+
+    const [first, second] = await Promise.all([replace(), replace()]);
+    expect(starts).toBe(1);
+    expect([first.status, second.status].sort()).toEqual(["joined", "replaced"]);
+    expect(await readBrokerPid(paths.pidPath)).toBe(livePid);
   });
 
   it("reuses and cleans up only the selected namespace", async () => {

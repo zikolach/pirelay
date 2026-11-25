@@ -649,6 +649,8 @@ describe("SlackRuntime foundations", () => {
     const testRoute = route();
     testRoute.notification.lastAssistantText = "full output";
     testRoute.notification.lastSummary = "summary output";
+    const newSession = vi.fn(async () => ({ cancelled: false }));
+    testRoute.actions.newSession = newSession;
     const store = new TunnelStateStore(runtimeConfig.stateDir);
     await store.upsertChannelBinding({
       channel: "slack",
@@ -695,6 +697,8 @@ describe("SlackRuntime foundations", () => {
     expect(operations.posts.at(-1)?.text).toContain("Progress mode: verbose");
     await send("/sessions", "42");
     expect(operations.posts.at(-1)?.text).toContain("Docs");
+    await send("/sessions all", "42.1");
+    expect(operations.posts.at(-1)?.text).toContain("Docs");
     await send("/use Docs", "42.5");
     expect(operations.posts.at(-1)?.text).toContain("Active session set");
     await send("/summary", "43");
@@ -707,6 +711,12 @@ describe("SlackRuntime foundations", () => {
     await send("/to Docs hello there", "45");
     expect(testRoute.actions.sendUserMessage).toHaveBeenCalledWith("hello there", undefined);
     expect(operations.ephemeral.at(-1)).toMatchObject({ channel: "D1", user: "U_DRIVER", text: "Pi is working…", threadTs: "45" });
+    await send("/new", "45.5");
+    expect(newSession).toHaveBeenCalledOnce();
+    expect(operations.posts.at(-1)?.text).toContain("New Pi session started");
+    testRoute.actions.newSession = undefined;
+    await send("/new", "45.6");
+    expect(operations.posts.at(-1)?.text).toContain("cannot start a new session remotely");
     await send("/pause", "46");
     expect(operations.posts.at(-1)?.text).toContain("paused");
     await send("ordinary while paused", "47");
@@ -802,11 +812,12 @@ describe("SlackRuntime foundations", () => {
     });
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
-    testRoute.notification.progressEvent = { id: "progress-1", kind: "tool", text: "Running tests", at: Date.now() };
+    testRoute.notification.progressEvent = { id: "progress-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
-    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Running tests") });
+    expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress", text: expect.stringContaining("Tool progress") });
+    expect(operations.posts.at(-1)?.text).toContain("npm test");
     expect(operations.posts.at(-1)?.text).not.toContain("Pi progress");
   });
 
@@ -831,18 +842,18 @@ describe("SlackRuntime foundations", () => {
     });
     const runtime = new SlackRuntime(runtimeConfig, { operations });
 
-    testRoute.notification.progressEvent = { id: "progress-live-1", kind: "tool", text: "Compiling", at: Date.now() };
+    testRoute.notification.progressEvent = { id: "progress-live-1", kind: "tool", text: "Tool progress", detail: "▶ bash: npm test", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.posts.length > 0);
 
     expect(operations.posts.at(-1)).toMatchObject({ channel: "D1", threadTs: "parent-progress" });
-    testRoute.notification.progressEvent = { id: "progress-live-2", kind: "tool", text: "Running tests", at: Date.now() };
+    testRoute.notification.progressEvent = { id: "progress-live-2", kind: "tool", text: "Tool progress", detail: "▶ edit: tests/slack-runtime.test.ts", semanticKey: "tool-progress", at: Date.now() };
     await runtime.registerRoute(testRoute);
     await waitForSlackRuntimeCondition(() => operations.updates.length > 0);
 
     expect(operations.posts).toHaveLength(1);
     expect(operations.updates).toHaveLength(1);
-    expect(operations.updates[0]).toMatchObject({ channel: "D1", ts: "100.1", text: expect.stringContaining("Running tests") });
+    expect(operations.updates[0]).toMatchObject({ channel: "D1", ts: "100.1", text: expect.stringContaining("edit: tests/slack-runtime.test.ts") });
   });
 
   it("falls back to a new Slack progress snapshot when edit updates fail", async () => {

@@ -8,12 +8,12 @@ import { TunnelStateStore } from "../../state/tunnel-store.js";
 import { buildHelpText, commandAllowsWhilePaused, normalizeAliasArg, parseRemoteCommandInvocation } from "../../commands/remote.js";
 import { delegationTaskActionButtons, parseDelegationInvocation, renderDelegationTaskCard } from "../../commands/delegation.js";
 import { formatFullOutput, formatLatestImageEmptyMessage, formatRelayRecentActivity, formatRelayStatusForRoute, formatSessionSelectorError, formatSummaryOutput, sessionEntryForRoute } from "../../formatting/presenters.js";
-import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, type SessionListEntry } from "../../core/session-selection.js";
+import { formatSessionList, resolveSessionSelector, resolveSessionTargetArgs, sessionsIncludeSuperseded, visibleSessionEntries, type SessionListEntry } from "../../core/session-selection.js";
 import { displayProgressMode, formatProgressUpdate, normalizeProgressMode, progressIntervalMsFor, progressModeFor, shouldSendProgressActivity } from "../../notifications/progress.js";
 import { deliverLiveProgress, type LiveProgressDeliveryState } from "../../notifications/progress-delivery.js";
 import { sendFinalOutputWithFallback } from "../../core/final-output.js";
 import { deliverWorkspaceFileToRequester, formatRequesterFileDeliveryResult, parseRemoteSendFileArgs, type RelayFileDeliveryRequester } from "../../core/requester-file-delivery.js";
-import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
+import { abortRouteSafely, compactRouteSafely, deliverRoutePrompt, latestRouteImagesSafely, newSessionRouteActionMessage, newSessionRouteSafely, probeRouteAvailability, routeActionDisplayMessage, routeIdleState, routeImageByPathSafely, routeModelState, routeSkillCommandsSafely, routeWorkspaceRootSafely, unavailableRouteMessage } from "../../core/route-actions.js";
 import { statusSnapshotForRoute } from "../../core/relay-core.js";
 import { authorityOutcomeAllowsDelivery, bindingAuthorityDiagnostic, channelDestinationKey, resolveChannelBindingAuthority } from "../../core/binding-authority.js";
 import { formatRelayLifecycleNotification, type RelayLifecycleEventKind } from "../../notifications/lifecycle.js";
@@ -46,6 +46,7 @@ const SLACK_HELP_TEXT = buildHelpText({
 });
 const SLACK_THINKING_REACTION = "thinking_face";
 const SLACK_RESPONSE_URL_TTL_MS = 30 * 60 * 1000;
+const SLACK_SESSION_LIST_FOOTER = "Use relay use <number|alias|label> to switch, relay to <session> <prompt> for a one-shot prompt, relay alias <name> to rename the active session, or relay sessions all to show hidden stale sessions.";
 
 function slackRouteAvailability(route: SessionRoute): { online: boolean; busy: boolean } {
   const probe = probeRouteAvailability(route);
@@ -955,13 +956,22 @@ export class SlackRuntime {
       case "help":
         await this.sendText(message, SLACK_HELP_TEXT);
         return;
+      case "new": {
+        const outcome = await newSessionRouteSafely(route, this.slackRequester(route, message));
+        if (outcome.kind !== "success") {
+          await this.sendText(message, newSessionRouteActionMessage(outcome));
+          return;
+        }
+        await this.sendText(message, "New Pi session started. Relay control is moving to the replacement session.");
+        return;
+      }
       case "status": {
         const availability = slackRouteAvailability(route);
         await this.sendText(message, formatRelayStatusForRoute(route, { online: availability.online, busy: availability.busy, binding }));
         return;
       }
       case "sessions":
-        await this.sendText(message, formatSessionList(await this.sessionEntriesForMessage(message), await this.activeSelectionForMessage(message)));
+        await this.sendText(message, formatSessionList(await this.sessionEntriesForMessage(message, { includeSuperseded: sessionsIncludeSuperseded(command.args) }), await this.activeSelectionForMessage(message), { footer: SLACK_SESSION_LIST_FOOTER }));
         return;
       case "use": {
         const entries = await this.sessionEntriesForMessage(message);
@@ -1433,7 +1443,7 @@ export class SlackRuntime {
     }
   }
 
-  private async sessionEntriesForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<SessionListEntry[]> {
+  private async sessionEntriesForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">, options: { includeSuperseded?: boolean } = {}): Promise<SessionListEntry[]> {
     const entries: SessionListEntry[] = [];
     for (const route of this.routes.values()) {
       const binding = await this.activeBindingForRoute(route, { includePaused: true });
@@ -1442,7 +1452,7 @@ export class SlackRuntime {
       const snapshot = statusSnapshotForRoute(route, availability);
       entries.push(sessionEntryForRoute(route, { online: snapshot.online, busy: snapshot.busy, binding, modelId: snapshot.modelId }));
     }
-    return entries;
+    return visibleSessionEntries(entries, { includeSuperseded: Boolean(options.includeSuperseded) });
   }
 
   private async activeSelectionForMessage(message: Pick<ChannelInboundMessage, "conversation" | "sender">): Promise<string | undefined> {

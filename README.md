@@ -42,8 +42,8 @@ Discord and Slack still document text prefixes first because native slash comman
 - closes the local pairing QR/dialog automatically when pairing completes
 - shows local pairing completion notifications consistently across messengers
 - restores non-secret binding metadata when a Pi session resumes with `pi --continue`
-- supports multiple concurrently registered Pi sessions through a local broker
-- exposes session selection commands when more than one session is paired to the same chat
+- supports multiple concurrently registered Pi sessions through one local broker per `{stateDir, bot token hash, brokerNamespace}` scope
+- exposes session selection commands when more than one session is paired to the same chat and hides superseded same-workspace offline sessions by default
 
 ### Remote prompting and control
 
@@ -254,6 +254,7 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 | select session | `/use <session>` | `relay use <session>` | `/relay use <session>` |
 | forget offline session | `/forget <session>` | `relay forget <session>` | `/relay forget <session>` |
 | one-shot prompt | `/to <session> <prompt>` | `relay to <session> <prompt>` | `/relay to <session> <prompt>` |
+| start replacement session | `/new` | `relay new` | `/relay new` |
 | progress mode | `/progress <mode>` | `relay progress <mode>` | `/relay progress <mode>` |
 | current progress mode | `/progress` | `relay progress` | `/relay progress` |
 | alias current session | `/alias <name\|clear>` | `relay alias <name\|clear>` | `/relay alias <name\|clear>` |
@@ -276,9 +277,11 @@ Then invite the app to the channel and pair in that channel/thread with `relay p
 | create delegation task (opt-in shared rooms) | `/delegate <machine\|#capability> <goal>` | `relay delegate <machine\|#capability> <goal>` | `/relay delegate <machine\|#capability> <goal>` |
 | control delegation task | `/task@<bot_username> <claim\|decline\|cancel\|status\|history> [task-id]` (or `/task <claim\|decline\|cancel\|status\|history> [task-id]` in private/other clients) | `relay task <claim\|decline\|cancel\|status\|history> [task-id]` | `/relay task <claim\|decline\|cancel\|status\|history> [task-id]` |
 
-`quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. Progress mode controls non-terminal progress noise: quiet suppresses progress updates, completion-only sends final results plus safe compaction notifications, normal sends coalesced milestone progress, and verbose additionally includes safe visible model/tool snapshots at a shorter interval. Progress updates are deduplicated/coalesced, and supported messengers update the same live progress message in place where possible instead of posting every raw Pi stream event. Terminal notifications still deliver the final assistant answer when it fits safe platform limits, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
+`quiet`, `normal`, `verbose`, and `completion-only` are valid progress modes. Progress mode controls non-terminal progress noise: quiet suppresses progress updates, completion-only sends final results plus safe compaction notifications, normal sends coalesced milestone progress, and verbose additionally includes safe visible model/tool snapshots at a shorter interval. Tool progress in normal/verbose modes is summarized as a bounded live card with safe intent labels such as `▶ bash: npm test`, `✓ read: extensions/relay/runtime/extension-runtime.ts`, or `✕ rg: pattern in extensions`, plus aggregate counts like `tools: bash×2 read×4`; it never includes tool output, file contents, replacement text, raw transcripts, or arbitrary custom-tool arguments. Progress updates are deduplicated/coalesced, and supported messengers update the same live progress message in place where possible instead of posting every raw Pi stream event. Terminal notifications still deliver the final assistant answer when it fits safe platform limits, splitting by paragraphs within platform limits and falling back to a Markdown document when an adapter supports files and the output is too large for a reasonable chat burst.
 
 Remote `/disconnect` is scoped to the requesting chat/conversation only: it revokes that Telegram, Discord, or Slack binding and suppresses future session output/buttons there, without disconnecting other messengers that remain paired to the same Pi session. Local `/relay disconnect` is broader and disconnects the current session from all paired messenger bindings.
+
+Remote `/new` starts a replacement session only for the selected online, idle Pi route; it does not start or resume an offline Pi process. Busy routes refuse the request and suggest waiting or using `/abort`. When Pi provides safe command-capable session control, eligible requester bindings and active selections move to the replacement session automatically; unsupported routes return an explicit limitation. Local `/new` uses the same short, strict same-machine/same-workspace handoff and otherwise falls back to normal offline/reconnect behavior.
 
 Remote `send-file` is requester-scoped: an authorized Telegram/Discord/Slack user may request a workspace-relative, validated path and PiRelay uploads it only back to that same conversation/thread. Targeted fan-out remains local-only via `/relay send-file <messenger|messenger:instance|all> <relative-path> [caption]`; remote forms must not include messenger targets such as `all` or `slack`.
 
@@ -338,7 +341,7 @@ PiRelay can track multiple live Pi sessions through a local broker. Pair session
 /relay connect slack release
 ```
 
-Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions.
+Use `/sessions` in Telegram or `relay sessions` in Discord/Slack to list targets. Use `/use` or `relay use` to select an active target. Use `/to` or `relay to` for one-shot prompts without switching sessions. Older offline pairings from the same machine/workspace are treated as superseded when a newer online session exists; use `/sessions all` or `relay sessions all` when you need to inspect or clean up those hidden stale entries, then run the messenger-appropriate forget command from the command table above.
 
 If the same bot/app is configured on multiple machines, use one ingress owner plus broker federation so other machines register routes instead of polling the same messenger concurrently.
 
@@ -456,13 +459,23 @@ If you continue the same Pi session and PiRelay uses the same state directory, y
 
 ### You changed code but behavior looks stale
 
-Restart the running Pi session/extension process. If a detached broker is still running, stop it before retesting:
+Restart the running Pi session/extension process. PiRelay normally supervises one local broker per `{stateDir, bot token hash, brokerNamespace}` scope and same-scope Pi sessions reconnect/register routes with that broker. If you are testing broker startup changes and need a hard reset, stop the detached broker before retesting:
 
 ```bash
 pkill -f 'extensions/relay/broker/process.js'
 ```
 
 Then restart Pi or reload the package from the updated checkout.
+
+### A running Pi session appears offline in `/sessions`
+
+PiRelay tracks binding authority, broker transport, and broker route synchronization separately. A live Pi process and active binding do not by themselves prove that remote routing is online. Broker clients reconcile their complete live route map after connection and periodically, so a missing in-memory route should repair automatically within about 30 seconds. Local `/relay status` reports `Broker transport` and `Broker route` separately; `/relay doctor` can request the same safe idempotent repair for a proven live route. If recovery remains pending, temporarily enable communication diagnostics and inspect metadata-only `broker.connect`, `broker.reconcile`, and `broker.retry` events without sharing tokens, destinations, socket paths, or route payloads.
+
+`/relay restart` replaces the broker shared by all same-scope local Pi sessions. Clients reconnect autonomously, and the command reports recovered client/route counts. A partial timeout leaves recovered sessions available while missing clients continue bounded retries; run `/relay doctor` in a missing live session rather than re-pairing it.
+
+### `/sessions` shows stale or offline duplicates
+
+When a newer online session exists for the same machine/workspace, PiRelay hides older offline same-workspace pairings from the default session list. Use `/sessions all` (or `relay sessions all` on Discord/Slack) to reveal hidden stale entries for diagnostics and cleanup, then run the appropriate forget command for your messenger to remove an offline pairing. PiRelay does not delete transcript files or automatically revoke live bindings when it hides superseded entries.
 
 ## Architecture overview
 

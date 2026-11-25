@@ -16,6 +16,12 @@ describe("relay status line formatting", () => {
     expect(formatRelayStatusLine({ channel: "slack", configured: true, runtimeStarted: true, binding: { conversationKind: "C123456" } })).toBe("sl ●");
   });
 
+  it("does not present an active binding as reachable while broker synchronization is unhealthy", () => {
+    expect(formatRelayStatusLine({ channel: "telegram", configured: true, binding: {}, broker: { transport: "reconnecting", route: "unknown" } })).toBe("tg ◌");
+    expect(formatRelayStatusLine({ channel: "telegram", configured: true, binding: {}, broker: { transport: "connected", route: "missing" } })).toBe("tg !");
+    expect(formatRelayStatusLine({ channel: "telegram", configured: true, binding: {}, broker: { transport: "connected", route: "synchronized" } })).toBe("tg ●");
+  });
+
   it("applies status tones to the full segment", () => {
     const colorize = (tone: string, text: string) => `<${tone}>${text}</${tone}>`;
 

@@ -149,6 +149,34 @@ export async function deliverRoutePrompt(route: SessionRoute, options: RouteProm
   return routeActionSuccess({ idle: probe.idle, deliverAs });
 }
 
+export type NewSessionRouteActionOutcome =
+  | { kind: "success"; result: { started: true } }
+  | { kind: "unavailable"; message: string }
+  | { kind: "busy"; message: string }
+  | { kind: "unsupported"; message: string }
+  | { kind: "cancelled"; message: string }
+  | { kind: "failed"; error: unknown; safeMessage: string };
+
+export async function newSessionRouteSafely(route: SessionRoute, requester?: RelayFileDeliveryRequester): Promise<NewSessionRouteActionOutcome> {
+  const probe = probeRouteAvailability(route);
+  if (probe.kind === "unavailable") return probe;
+  if (probe.busy) return { kind: "busy", message: "Pi is busy. Use /abort or wait for the active work to finish before starting a new session." };
+  if (!route.actions.newSession) return { kind: "unsupported", message: "This Pi route cannot start a new session remotely. Run /new locally instead." };
+
+  try {
+    const result = await route.actions.newSession(requester);
+    if (result.cancelled) return { kind: "cancelled", message: "The new-session request was cancelled locally." };
+    return { kind: "success", result: { started: true } };
+  } catch (error) {
+    const outcome = routeActionOutcomeFromError(error, "Could not start a new Pi session.");
+    return outcome.kind === "unavailable" ? outcome : { kind: "failed", error: outcome.error, safeMessage: outcome.safeMessage };
+  }
+}
+
+export function newSessionRouteActionMessage(outcome: Exclude<NewSessionRouteActionOutcome, { kind: "success" }>): string {
+  return outcome.kind === "failed" ? outcome.safeMessage : outcome.message;
+}
+
 export type RouteControlOperationOutcome = RouteActionOutcome<void>;
 
 export function abortRouteSafely(route: SessionRoute, options: { alreadyIdleMessage?: string; safeFailureMessage?: string } = {}): RouteControlOperationOutcome {

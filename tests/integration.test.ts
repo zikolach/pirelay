@@ -651,9 +651,15 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("agent_start", {}, context);
     registeredRoute!.remoteRequester = undefined;
 
-    const results = await pi.emitResults("tool_call", { toolName: "bash", toolCallId: "tc-remote-missing", input: { command: "git push origin main" } }, context);
+    const lifecycleProgress = { ...registeredRoute!.notification.progressEvent };
+    await pi.emit("tool_execution_start", { toolName: "bash", args: { command: "git push origin main" } }, context);
+    expect(registeredRoute!.notification.progressEvent).toEqual(lifecycleProgress);
+    const results = await pi.emitResults("tool_call", { toolName: "bash", input: { command: "git push origin main" } }, context);
+    await pi.emit("tool_execution_end", { toolName: "bash", result: {}, isError: true }, context);
+    await pi.emit("message_end", { message: { role: "toolResult", toolName: "bash", content: [], isError: true } }, context);
 
     expect(results).toEqual([{ block: true, reason: "Approval required, but no active remote requester is available." }]);
+    expect(registeredRoute!.notification.progressEvent).toEqual(lifecycleProgress);
     await expect(new TunnelStateStore(config.stateDir).listApprovalAudit()).resolves.toEqual([
       expect.objectContaining({ kind: "failed", detail: "No active remote requester for approval target." }),
     ]);
@@ -752,8 +758,146 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("session_start", {}, context);
     expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("back online"));
 
+    const handoffs = await import("../extensions/relay/core/session-handoff.js");
+    handoffs.registerPendingSessionHandoff(handoffs.createPendingSessionHandoff({
+      oldSessionKey: binding.sessionKey, oldSessionId: binding.sessionId, oldSessionFile: binding.sessionFile, oldSessionLabel: binding.sessionLabel,
+      runtimeInstanceId: handoffs.relayRuntimeInstanceId, machineId: config.machineId ?? "local", workspaceRoot: process.cwd(), reason: "local-new",
+      bindings: [{ channel: "telegram", instanceId: "default", conversationId: String(binding.chatId), userId: String(binding.userId), paused: false }], activeSelections: [],
+    }));
     await pi.runCommand("relay", "disconnect", context);
     expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("disconnected locally"));
+    expect(handoffs.listPendingSessionHandoffs().filter((pending) => pending.oldSessionKey === binding.sessionKey)).toEqual([]);
+  });
+
+  it("exposes remote new-session capability only after a command-capable context is captured", async () => {
+    const config = await createRuntimeConfig("pi-new-command-context-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const binding = createBinding("new-command-context", 557, 44);
+    await new TunnelStateStore(config.stateDir).upsertBinding(binding);
+    const registerRoute = vi.fn(async (_route: SessionRoute) => undefined);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), restartBrokerProcess: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute, unregisterRoute: vi.fn(async () => undefined), getStatus: vi.fn(() => undefined), sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({ getOrCreateTunnelRuntime: () => fakeRuntime, sendSessionNotification: vi.fn(async () => undefined) }));
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("new-command-context");
+    context.newSession = vi.fn(async () => ({ cancelled: false }));
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = registerRoute.mock.calls.at(-1)?.[0] as SessionRoute;
+    expect(route.actions.newSession).toBeUndefined();
+    route.actions.getWorkspaceRoot = undefined;
+
+    await pi.runCommand("relay", "status", context);
+    expect(route.actions.newSession).toBeTypeOf("function");
+    await expect(route.actions.newSession?.()).resolves.toEqual({ cancelled: false });
+    expect(context.newSession).toHaveBeenCalledWith(expect.objectContaining({ parentSession: binding.sessionFile, withSession: expect.any(Function) }));
+  });
+
+  it("hands an active binding to a local replacement session without a false offline notification", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-handoff-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const oldBinding = createBinding("handoff-old", 556, 43);
+    await new TunnelStateStore(config.stateDir).upsertBinding(oldBinding);
+
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const oldContext = createMockContext("handoff-old").context;
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "startup" }, oldContext);
+    await pi.runCommand("relay", "status", oldContext);
+    const oldRoute = (fakeRuntime.registerRoute as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as SessionRoute;
+    expect(oldRoute.actions.newSession).toBeTypeOf("function");
+    await pi.emit("session_shutdown", { reason: "new" }, oldContext);
+
+    expect(fakeRuntime.unregisterRoute).toHaveBeenCalledWith(oldBinding.sessionKey);
+    expect(fakeRuntime.sendToBoundChat).not.toHaveBeenCalledWith(oldBinding.sessionKey, expect.stringContaining("went offline"));
+
+    const newContext = createMockContext("handoff-new").context;
+    await pi.emit("session_start", { reason: "new", previousSessionFile: oldBinding.sessionFile }, newContext);
+    const newKey = sessionKeyOf("handoff-new", "/tmp/handoff-new.jsonl");
+    const store = new TunnelStateStore(config.stateDir);
+    expect(await store.getBindingBySessionKey(oldBinding.sessionKey)).toMatchObject({ status: "revoked", movedToSessionKey: newKey });
+    expect(await store.getBindingBySessionKey(newKey)).toMatchObject({ status: "active", chatId: 556, userId: 43 });
+    expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(newKey, expect.stringContaining("Relay control moved here automatically"));
+    await expect(oldRoute.actions.newSession?.()).rejects.toThrow("unavailable");
+  });
+
+  it("flushes the offline lifecycle notification when a new-session handoff expires", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-handoff-expiry-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const binding = createBinding("handoff-expiry", 558, 45);
+    await new TunnelStateStore(config.stateDir).upsertBinding(binding);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined, start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined), unregisterRoute: vi.fn(async () => undefined), getStatus: vi.fn(() => undefined), sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({ getOrCreateTunnelRuntime: () => fakeRuntime, sendSessionNotification: vi.fn(async () => undefined) }));
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("handoff-expiry");
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "startup" }, context);
+    vi.useFakeTimers();
+    await pi.emit("session_shutdown", { reason: "new" }, context);
+    expect(fakeRuntime.sendToBoundChat).not.toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("went offline"));
+    vi.setSystemTime(Date.now() + 5_000);
+    await (await import("../extensions/relay/core/session-handoff.js")).expirePendingSessionHandoffs();
+    expect(fakeRuntime.sendToBoundChat).toHaveBeenCalledWith(binding.sessionKey, expect.stringContaining("went offline locally"));
+  });
+
+  it("fails a same-workspace ambiguous handoff closed without migrating bindings", async () => {
+    const config = await createRuntimeConfig("pi-lifecycle-handoff-ambiguous-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    const first = createBinding("handoff-ambiguous-a", 559, 46);
+    const second = createBinding("handoff-ambiguous-b", 560, 47);
+    const store = new TunnelStateStore(config.stateDir);
+    await store.upsertBinding(first);
+    await store.upsertBinding(second);
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined, start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined), ensureSetup: vi.fn(async () => ({ botId: 1, botUsername: "bot", botDisplayName: "Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async () => undefined), unregisterRoute: vi.fn(async () => undefined), getStatus: vi.fn(() => undefined), sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({ getOrCreateTunnelRuntime: () => fakeRuntime, sendSessionNotification: vi.fn(async () => undefined) }));
+    const handoffs = await import("../extensions/relay/core/session-handoff.js");
+    for (const binding of [first, second]) {
+      handoffs.registerPendingSessionHandoff(handoffs.createPendingSessionHandoff({
+        oldSessionKey: binding.sessionKey, oldSessionId: binding.sessionId, oldSessionFile: binding.sessionFile, oldSessionLabel: binding.sessionLabel,
+        runtimeInstanceId: handoffs.relayRuntimeInstanceId, machineId: config.machineId ?? "local", workspaceRoot: process.cwd(), reason: "local-new",
+        bindings: [{ channel: "telegram", instanceId: "default", conversationId: String(binding.chatId), userId: String(binding.userId), paused: false }], activeSelections: [],
+      }));
+    }
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", { reason: "new" }, createMockContext("handoff-ambiguous-new").context);
+    expect(await store.getBindingBySessionKey(first.sessionKey)).toMatchObject({ status: "active" });
+    expect(await store.getBindingBySessionKey(second.sessionKey)).toMatchObject({ status: "active" });
+    expect(await store.getBindingBySessionKey(sessionKeyOf("handoff-ambiguous-new", "/tmp/handoff-ambiguous-new.jsonl"))).toBeUndefined();
+    for (const pending of handoffs.listPendingSessionHandoffs()) handoffs.removePendingSessionHandoff(pending.id);
   });
 
   it("does not mark restored binding online when Telegram registration fails", async () => {
@@ -1282,9 +1426,59 @@ describe("PiRelay integration behavior", () => {
     expect(fakeSlackRuntime.stop).toHaveBeenCalledTimes(1);
     expect(fakeRuntime.registerRoute).toHaveBeenCalledTimes(2);
     expect(fakeSlackRuntime.start).toHaveBeenCalledTimes(2);
-    expect(notifications.at(-1)?.message).toBe("PiRelay broker process and runtimes restarted for this session.");
+    expect(notifications.at(-1)?.message).toBe("Shared PiRelay broker and runtimes restarted for this session.");
     expect(statuses).toContainEqual({ key: "relay", value: "tg ◌" });
     expect(statuses).toContainEqual({ key: "slack-relay", value: "sl ◌" });
+  });
+
+  it("reports and repairs broker route health without exposing routing identifiers", async () => {
+    const config = await createRuntimeConfig("pi-relay-broker-health-");
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+    let registeredRoute: SessionRoute | undefined;
+    let health = "missing" as "missing" | "synchronized";
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({ botId: 123456, botUsername: "pi_test_bot", botDisplayName: "Pi Test Bot", validatedAt: new Date().toISOString() })),
+      registerRoute: vi.fn(async (route) => {
+        registeredRoute = route;
+        route.binding = createBinding(route.sessionId, 987654, 456789);
+        route.binding.sessionKey = route.sessionKey;
+        await new TunnelStateStore(config.stateDir).upsertBinding(route.binding);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      getBrokerSynchronizationState: vi.fn(() => ({ transport: "connected" as const, routes: registeredRoute ? { [registeredRoute.sessionKey]: health } : {} })),
+      reconcileBrokerRoutes: vi.fn(async () => {
+        health = "synchronized";
+        return { transport: "connected" as const, routes: registeredRoute ? { [registeredRoute.sessionKey]: health } : {} };
+      }),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context, notifications } = createMockContext("broker-health-session");
+    relayExtension(pi.api as any);
+    await pi.emit("session_start", {}, context);
+
+    await pi.runCommand("relay", "status", context);
+    const status = notifications.at(-1)?.message ?? "";
+    expect(status).toContain("Binding: active");
+    expect(status).toContain("Broker transport: connected");
+    expect(status).toContain("Broker route: missing");
+    expect(status).not.toContain("987654");
+    expect(status).not.toContain("456789");
+    expect(status).not.toContain(registeredRoute!.sessionKey);
+
+    await pi.runCommand("relay", "doctor", context);
+    expect(fakeRuntime.reconcileBrokerRoutes).toHaveBeenCalledTimes(1);
+    expect(notifications.at(-1)?.message).toContain("Broker route repair: synchronized.");
   });
 
   it("does not show Slack ready when required credentials are incomplete", async () => {
@@ -2902,19 +3096,124 @@ describe("PiRelay integration behavior", () => {
     await pi.emit("tool_execution_end", { toolCallId: "tool-1", toolName: "bash", result: {}, isError: false }, context);
     expect(route.notification.progressEvent).toMatchObject({
       kind: "tool",
-      text: "Tool completed",
-      detail: "bash",
+      text: "Tool progress",
+      detail: expect.stringContaining("✓ bash"),
       delivery: "milestone",
-      semanticKey: "tool-completed:tool-1",
+      semanticKey: "tool-progress",
     });
 
     await pi.emit("tool_execution_end", { toolName: "read", result: {}, isError: false }, context);
     const missingIdKey = route.notification.progressEvent?.semanticKey;
-    expect(missingIdKey).toMatch(/^tool-completed:missing-/);
+    expect(missingIdKey).toBe("tool-progress");
     expect(missingIdKey).not.toContain("undefined");
     await pi.emit("tool_execution_end", { toolName: "read", result: {}, isError: false }, context);
-    expect(route.notification.progressEvent?.semanticKey).toMatch(/^tool-completed:missing-/);
-    expect(route.notification.progressEvent?.semanticKey).not.toBe(missingIdKey);
+    expect(route.notification.progressEvent?.semanticKey).toBe("tool-progress");
+    expect(route.notification.progressEvent?.semanticKey).toBe(missingIdKey);
+    expect(route.notification.progressEvent?.detail).toContain("read×2");
+  });
+
+  it("records safe aggregated tool progress for built-in tool lifecycle events", async () => {
+    const config = await createRuntimeConfig("pi-tool-progress-summary-");
+    await writeFile(config.configPath!, JSON.stringify({
+      botToken: config.botToken,
+      stateDir: config.stateDir,
+      redactionPatterns: ["SECRET_[A-Z]+", "123456789"],
+      recentActivityLimit: 30,
+    }));
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", config.botToken);
+    vi.stubEnv("PI_TELEGRAM_TUNNEL_STATE_DIR", config.stateDir);
+
+    const registeredRoutes = new Map<string, SessionRoute>();
+    const fakeRuntime: TunnelRuntime = {
+      setup: undefined,
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      ensureSetup: vi.fn(async () => ({
+        botId: 123456,
+        botUsername: "pi_test_bot",
+        botDisplayName: "Pi Test Bot",
+        validatedAt: new Date().toISOString(),
+      })),
+      registerRoute: vi.fn(async (route: SessionRoute) => {
+        registeredRoutes.set(route.sessionKey, route);
+      }),
+      unregisterRoute: vi.fn(async () => undefined),
+      getStatus: vi.fn(() => undefined),
+      sendToBoundChat: vi.fn(async () => undefined),
+    };
+
+    vi.doMock("../extensions/relay/adapters/telegram/runtime.js", () => ({
+      getOrCreateTunnelRuntime: () => fakeRuntime,
+      sendSessionNotification: vi.fn(async () => undefined),
+    }));
+
+    const { default: relayExtension } = await import("../extensions/relay/index.js");
+    const pi = createMockPi();
+    const { context } = createMockContext("tool-progress-summary");
+    relayExtension(pi.api as any);
+
+    await pi.emit("session_start", { reason: "startup" }, context);
+    const route = [...registeredRoutes.values()][0]!;
+    await pi.emit("agent_start", {}, context);
+
+    const lifecycleProgress = { ...route.notification.progressEvent };
+    await pi.emit("tool_execution_start", { toolName: "bash", toolCallId: "bash-1", args: { command: "npm test\necho SECRET_TOKEN", output: "raw output" } }, context);
+    expect(route.notification.progressEvent).toEqual(lifecycleProgress);
+
+    await pi.emit("tool_call", { toolName: "bash", toolCallId: "bash-1", input: { command: "npm test\necho SECRET_TOKEN", output: "raw output" } }, context);
+    expect(route.notification.progressEvent).toMatchObject({ text: "Tool progress", detail: expect.stringContaining("▶ bash: npm test") });
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_TOKEN");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("raw output");
+
+    await pi.emit("tool_execution_end", { toolName: "bash", toolCallId: "bash-1", result: "SECRET_RESULT", isError: false }, context);
+    expect(route.notification.progressEvent?.detail).toContain("✓ bash: npm test");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_RESULT");
+
+    await pi.emit("tool_execution_start", { toolName: "read", args: { path: "README.md", content: "SECRET_LIFECYCLE_CONTENT" } }, context);
+    await pi.emit("tool_execution_end", { toolName: "read", result: "SECRET_LIFECYCLE_RESULT", isError: false }, context);
+    expect(route.notification.progressEvent?.detail).toContain("✓ read: README.md");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_LIFECYCLE_CONTENT");
+    expect(JSON.stringify(route.notification.progressEvent)).not.toContain("SECRET_LIFECYCLE_RESULT");
+    const lifecycleOnlyProgress = { ...route.notification.progressEvent };
+    await pi.emit("message_end", { message: { role: "toolResult", toolName: "read", content: [], isError: false } }, context);
+    expect(route.notification.progressEvent).toEqual(lifecycleOnlyProgress);
+
+    await pi.emit("tool_call", { toolName: "read", toolCallId: "read-1", input: { path: "extensions/relay/runtime/extension-runtime.ts", content: "SECRET_FILE" } }, context);
+    await pi.emit("tool_call", { toolName: "edit", toolCallId: "edit-1", input: { path: "tests/integration.test.ts", oldText: "SECRET_OLD", newText: "SECRET_NEW" } }, context);
+    await pi.emit("tool_call", { toolName: "write", toolCallId: "write-1", input: { path: "README.md", content: "SECRET_CONTENT" } }, context);
+    await pi.emit("tool_call", { toolName: "rg", toolCallId: "rg-1", input: { pattern: "SECRET_PATTERN", path: "extensions" } }, context);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await pi.emit("tool_call", { toolName: "find", toolCallId: "find-1", input: { path: "src", chatId: "123456789" } }, context);
+    expect(route.notification.progressEvent?.detail).toContain("find: src");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await pi.emit("tool_call", { toolName: "ls", toolCallId: "ls-1", input: { dir: "docs", transcript: "raw transcript" } }, context);
+    expect(route.notification.progressEvent?.detail).toContain("ls: docs");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await pi.emit("tool_call", { toolName: "customTool", toolCallId: "custom-1", input: { prompt: "SECRET_PROMPT", destinationId: "123456789" } }, context);
+    expect(route.notification.progressEvent?.detail).toContain("customtool");
+    await pi.emit("tool_execution_end", { toolName: "rg", toolCallId: "rg-1", isError: true, result: "SECRET_ERROR" }, context);
+    await pi.emit("tool_execution_end", { toolName: "read", isError: false, result: "missing id 1" }, context);
+    await pi.emit("tool_execution_end", { toolName: "read", isError: false, result: "missing id 2" }, context);
+
+    const serialized = JSON.stringify(route.notification.recentActivity);
+    expect(serialized).toContain("edit: tests/integration.test.ts");
+    expect(serialized).toContain("write: README.md");
+    expect(serialized).toContain("rg: [redacted] in extensions");
+    expect(serialized).toContain("customtool");
+    expect(route.notification.progressEvent?.detail).toContain("read×");
+    expect(serialized).not.toContain("SECRET_TOKEN");
+    expect(serialized).not.toContain("SECRET_FILE");
+    expect(serialized).not.toContain("SECRET_CONTENT");
+    expect(serialized).not.toContain("SECRET_PROMPT");
+    expect(serialized).not.toContain("SECRET_ERROR");
+    expect(serialized).not.toContain("123456789");
+    expect(serialized).not.toContain("raw transcript");
+
+    await pi.emit("agent_end", { messages: [] }, context);
+    expect(route.notification.lastStatus).toBe("failed");
+    const terminalProgress = { ...route.notification.progressEvent };
+    await pi.emit("tool_execution_end", { toolName: "bash", toolCallId: "late-tool", result: "late output", isError: false }, context);
+    expect(route.notification.progressEvent).toEqual(terminalProgress);
   });
 
   it("does not use stream-only drafts as final-output fallback", async () => {
@@ -3384,6 +3683,26 @@ describe("PiRelay integration behavior", () => {
       await waitFor(() => clientResponses.some((message) => message.requestId === "broker-missing-pipeline-version"));
       expect(clientResponses.find((message) => message.requestId === "broker-missing-pipeline-version")).toMatchObject({ ok: false, error: "Invalid relay pipeline protocol version." });
 
+      setIdle(true);
+      const newSession = vi.fn(async () => ({ cancelled: false }));
+      route.actions.newSession = newSession;
+      sockets[0]!.write(`${JSON.stringify({
+        type: "request",
+        requestId: "broker-new-session-1",
+        action: "newSession",
+        sessionKey: route.sessionKey,
+        requester: { channel: "telegram", instanceId: "default", conversationId: "8001", userId: "9001", sessionKey: route.sessionKey, safeLabel: "Telegram owner", createdAt: Date.now() },
+      })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-new-session-1"));
+      expect(clientResponses.find((message) => message.requestId === "broker-new-session-1")).toMatchObject({ ok: true, result: { kind: "success", result: { started: true } } });
+      expect(newSession).toHaveBeenCalledWith(expect.objectContaining({ channel: "telegram", conversationId: "8001", userId: "9001" }));
+
+      route.actions.newSession = undefined;
+      sockets[0]!.write(`${JSON.stringify({ type: "request", requestId: "broker-new-session-unsupported", action: "newSession", sessionKey: route.sessionKey })}\n`);
+      await waitFor(() => clientResponses.some((message) => message.requestId === "broker-new-session-unsupported"));
+      expect(clientResponses.find((message) => message.requestId === "broker-new-session-unsupported")).toMatchObject({ ok: true, result: { kind: "unsupported" } });
+
+      setIdle(false);
       const multimodalContent = [
         { type: "text", text: "look at this" },
         { type: "image", data: Buffer.from("img").toString("base64"), mimeType: "image/png" },

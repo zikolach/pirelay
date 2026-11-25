@@ -21,6 +21,12 @@ export function sessionKeyOf(sessionId: string, sessionFile?: string): string {
   return `${sessionId}:${sessionFile ?? "memory"}`;
 }
 
+export function parseIsoTimestampToMs(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 export const MAX_SESSION_LABEL_LENGTH = 48;
 
 export function normalizeSessionLabel(label: string | undefined | null, fallback = "Pi session"): string {
