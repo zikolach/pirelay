@@ -1,4 +1,4 @@
-import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
+import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import type { RelaySetupWizardActionId, RelaySetupWizardModel, RelaySetupWizardPanel } from "../config/setup-wizard.js";
 import { renderQrLines } from "./qr.js";
 

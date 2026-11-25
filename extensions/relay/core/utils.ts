@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { realpath, stat, readFile } from "node:fs/promises";
 import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { ImageFileLoadResult, LatestTurnImage, LatestTurnImageFileCandidate } from "./types.js";
 import type { DeliveryMode, ParsedTelegramCommand, TelegramBindingMetadata, TelegramOutboundChunk, TelegramUserSummary } from "./types.js";
 

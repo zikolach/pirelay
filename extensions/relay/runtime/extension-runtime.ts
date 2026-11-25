@@ -1,7 +1,8 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { Type, type ImageContent } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
-import { matchesKey, visibleWidth } from "@mariozechner/pi-tui";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { loadTelegramTunnelConfig, ConfigError } from "../config/tunnel-config.js";
 import { renderQrLines } from "../ui/qr.js";
 import { RelaySetupWizardScreen } from "../ui/setup-wizard.js";

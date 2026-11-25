@@ -1,4 +1,4 @@
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { appendFileSync } from "node:fs";
 import { assertKnownInboundFileSizeWithinLimit, type ChannelButtonLayout, type ChannelInboundAction, type ChannelInboundEvent, type ChannelInboundMessage, type ChannelOutboundFile, type ChannelRouteAddress } from "../../core/channel-adapter.js";
 import type { ChannelPersistedBindingRecord, LatestTurnImage, PairingApprovalDecision, ProgressMode, SessionRoute, TelegramTunnelConfig } from "../../core/types.js";

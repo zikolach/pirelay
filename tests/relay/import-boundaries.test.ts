@@ -13,7 +13,7 @@ const forbiddenImportFragments = [
   "./broker/entry",
   "../runtime/extension-runtime",
   "./runtime/extension-runtime",
-  "@mariozechner/pi-coding-agent",
+  "@earendil-works/pi-coding-agent",
 ];
 const forbiddenLegacyResourceFragments = [
   "extensions/telegram-tunnel",
@@ -47,7 +47,7 @@ async function collectProjectFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
     const path = join(dir, entry.name);
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "trash") return [];
+    if ([".git", ".empryo", "node_modules", "trash"].includes(entry.name)) return [];
     if (entry.isDirectory()) return collectProjectFiles(path);
     return entry.isFile() ? [path] : [];
   }));
@@ -67,7 +67,7 @@ describe("relay import boundaries", () => {
     for (const file of files) {
       const source = await readFile(file, "utf8");
       for (const fragment of forbiddenImportFragments) {
-        if (fragment === "@mariozechner/pi-coding-agent" && file.endsWith(join("extensions", "relay", "core", "types.ts")) && source.includes("import type")) {
+        if (fragment === "@earendil-works/pi-coding-agent" && file.endsWith(join("extensions", "relay", "core", "types.ts")) && source.includes("import type")) {
           continue;
         }
         if (source.includes(`from "${fragment}`) || source.includes(`from '${fragment}`) || source.includes(`import("${fragment}`) || source.includes(`import('${fragment}`)) {

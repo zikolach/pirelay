@@ -2,6 +2,10 @@
 
 Use this checklist when validating the PiRelay against a real Pi session and a real Telegram client.
 
+## Automated Pi compatibility check
+
+Run `bash scripts/packed-host-smoke.sh 1.6.0` from the repository root. It installs the npm tarball and Pi into a temporary directory, starts the real RPC host, submits a simulated Telegram message, and checks that the model reply reaches the bound chat. Installation needs the npm registry; the conversation uses only local test endpoints and no credentials. Pass `latest` to check a newer Pi release.
+
 ## Preconditions
 
 - `TELEGRAM_BOT_TOKEN` or `~/.pi/agent/pirelay/config.json` is configured

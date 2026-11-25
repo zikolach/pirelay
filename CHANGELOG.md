@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Require Pi 1.6 or later in the 1.x series and Node.js 22.19 or newer. Telegram LLM summaries now use the active Pi session’s provider registry. Existing bindings do not require migration.
+
 ## 0.8.0 - 2026-06-14
 
 - Added cross-messenger live progress updates so supported Slack, Discord, and Telegram destinations update an existing progress message where possible instead of posting repeated snapshots. #78

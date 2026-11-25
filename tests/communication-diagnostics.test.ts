@@ -10,7 +10,7 @@ import {
   redactDiagnosticText,
   resolveCommunicationDiagnosticsConfig,
 } from "../extensions/relay/diagnostics/communication.js";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pirelay-diagnostics-"));

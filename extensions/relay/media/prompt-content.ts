@@ -1,4 +1,4 @@
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { safeTelegramImageFilename } from "../core/utils.js";
 import { prepareInboundImageForPrompt } from "./inbound-image.js";
 

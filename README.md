@@ -21,6 +21,8 @@ Typical flow:
 5. approve or trust the remote user locally if prompted
 6. receive updates and send prompts while the Pi session stays usable locally
 
+For how prompts, clarifying questions, and approvals reach the right session, see [Messenger conversations in PiRelay](docs/conversation-architecture.md).
+
 ## Supported messengers
 
 | Messenger | Current support | Reliable command form |
@@ -88,8 +90,8 @@ Discord and Slack still document text prefixes first because native slash comman
 
 ## Requirements
 
-- Pi installed and working
-- Node.js compatible with this package (`>=20.6.0`)
+- Pi 1.x, starting at 1.6.0 (`@earendil-works/pi-coding-agent`). Upgrade the Pi host before updating PiRelay from 0.8.0.
+- Node.js 22.19.0 or newer
 - at least one configured messenger:
   - Telegram bot token from BotFather
   - Discord bot token and application id
