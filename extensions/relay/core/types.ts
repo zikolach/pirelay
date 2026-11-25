@@ -1,5 +1,5 @@
-import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { StructuredAnswerMetadata } from "./guided-answer.js";
 import type { ChannelBinding } from "./channel-adapter.js";
 import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";

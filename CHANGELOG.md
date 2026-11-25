@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Require Pi 1.6 or later in the 1.x series and Node.js 22.19 or newer. Telegram LLM summaries now use the active Pi session’s provider registry. Existing bindings do not require migration.
+
 ## 0.10.0 - 2026-08-02
 
 - Added authorized remote new-session handoff across Telegram, Discord, and Slack, preserving eligible bindings and active selections while preventing ambiguous or stale routes from taking control. #84

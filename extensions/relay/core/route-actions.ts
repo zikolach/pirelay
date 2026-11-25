@@ -1,4 +1,4 @@
-import type { Model } from "@mariozechner/pi-ai";
+import type { Model } from "@earendil-works/pi-ai";
 import type { RelayFileDeliveryRequester } from "./requester-file-delivery.js";
 import type { DeliveryMode, ImageFileLoadResult, LatestTurnImage, SessionRoute, TelegramPromptContent } from "./types.js";
 

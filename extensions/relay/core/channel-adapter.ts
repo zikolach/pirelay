@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { DeliveryMode, ImageFileLoadResult, LatestTurnImage, SessionRoute } from "./types.js";
 
 export type ChannelAdapterKind = "telegram" | "discord" | "slack" | "signal" | "matrix" | (string & {});

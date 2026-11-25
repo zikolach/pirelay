@@ -1,5 +1,5 @@
-import { complete, type UserMessage } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { UserMessage } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SummaryMode } from "../../core/types.js";
 import { isStaleExtensionReferenceError } from "../../core/route-actions.js";
 import { summarizeTextDeterministically } from "../../core/utils.js";
@@ -11,10 +11,14 @@ const SUMMARY_PROMPT = [
   "Do not invent unstated success or failure details.",
 ].join("\n");
 
+type SummaryContext = Pick<ExtensionContext, "model"> & {
+  modelRegistry: Pick<ExtensionContext["modelRegistry"], "complete">;
+};
+
 export async function summarizeForTelegram(
   text: string,
   mode: SummaryMode,
-  ctx: ExtensionContext | undefined,
+  ctx: SummaryContext | undefined,
   onStaleContext?: () => void,
 ): Promise<string> {
   let model: ExtensionContext["model"] | undefined;
@@ -32,23 +36,16 @@ export async function summarizeForTelegram(
   }
 
   try {
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
-      return summarizeTextDeterministically(text);
-    }
     const userMessage: UserMessage = {
       role: "user",
       content: [{ type: "text", text }],
       timestamp: Date.now(),
     };
-    const response = await complete(
-      model,
-      {
-        systemPrompt: SUMMARY_PROMPT,
-        messages: [userMessage],
-      },
-      { apiKey: auth.apiKey, headers: auth.headers },
-    );
+    const response = await ctx.modelRegistry.complete(model, {
+      systemPrompt: SUMMARY_PROMPT,
+      messages: [userMessage],
+    });
+    if (response.stopReason === "error" || response.stopReason === "aborted") return summarizeTextDeterministically(text);
     const rendered = response.content
       .filter((part): part is { type: "text"; text: string } => part.type === "text")
       .map((part) => part.text)
