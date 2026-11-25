@@ -63,7 +63,7 @@ try {
     const entries = await readFile(diagnostics, 'utf8').catch(e => { if (e.code === 'ENOENT') return ''; throw e; });
     return entries.split('\n').slice(0, -1).some(line => {
       const event = JSON.parse(line);
-      return event.event === 'route.register' && event.details?.bound === true;
+      return event.event === 'route.reconcile' && event.outcome === 'ok' && event.details?.routeCount === 1 && event.details?.rejectedCount === 0;
     });
   }, 'bound route registration');
   const socketName = (await readdir(state)).find(n => n.endsWith('.sock'));
